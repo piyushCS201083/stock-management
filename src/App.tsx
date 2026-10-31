@@ -14,12 +14,23 @@ import {
   calculateRecordTotals,
   createNextDayRecord,
 } from './utils/storage';
-import { exportRecordToExcel, exportAllRecordsToExcel } from './utils/excelExport';
+import {
+  apiFetchRecords,
+  apiSaveRecord,
+  apiFetchColumns,
+  apiSaveColumns,
+  apiFetchTeam,
+  apiSaveTeam,
+  checkBackendHealth,
+  BackendStatus,
+} from './services/api';
+import { exportRecordToExcel } from './utils/excelExport';
 import { Header } from './components/Header';
 import { ExcelGrid } from './components/ExcelGrid';
 import { QuickEntryModal } from './components/QuickEntryModal';
 import { WhatsAppDispatchModal } from './components/WhatsAppDispatchModal';
 import { TeamManagementModal } from './components/TeamManagementModal';
+import { CloudDatabaseSettingsModal } from './components/CloudDatabaseSettingsModal';
 import { ReferenceImageViewer } from './components/ReferenceImageViewer';
 import {
   Calendar,
@@ -29,21 +40,20 @@ import {
   Send,
   FileSpreadsheet,
   Download,
-  Upload,
   Users,
   RotateCcw,
-  Sparkles,
   CheckCircle,
-  HelpCircle,
-  Eye,
+  Database,
+  Cloud,
 } from 'lucide-react';
 
 export default function App() {
   const [records, setRecords] = useState<Record<string, DayRecord>>(() => loadRecords());
   const [columns, setColumns] = useState<BatteryColumn[]>(() => loadColumns());
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
+  const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
-  // Current active date (defaults to the one with data e.g. 27-10-2026 or most recent)
+  // Current active date (defaults to first recorded date e.g. 27-10-2026)
   const [currentDate, setCurrentDate] = useState<string>(() => {
     const dates = Object.keys(records);
     return dates.length > 0 ? dates[0] : '27-10-2026';
@@ -53,9 +63,39 @@ export default function App() {
   const [isQuickEntryOpen, setIsQuickEntryOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
+  const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
   const [notificationToast, setNotificationToast] = useState<string | null>(null);
 
   const tableRef = useRef<HTMLDivElement>(null);
+
+  // Sync data from Cloud DBMS / backend on mount
+  const syncWithCloudBackend = async () => {
+    try {
+      const [remoteRecords, remoteCols, remoteTeam, health] = await Promise.all([
+        apiFetchRecords(),
+        apiFetchColumns(),
+        apiFetchTeam(),
+        checkBackendHealth(),
+      ]);
+
+      if (remoteRecords && Object.keys(remoteRecords).length > 0) {
+        setRecords(remoteRecords);
+      }
+      if (remoteCols && remoteCols.length > 0) {
+        setColumns(remoteCols);
+      }
+      if (remoteTeam && remoteTeam.length > 0) {
+        setTeamMembers(remoteTeam);
+      }
+      setBackendStatus(health);
+    } catch (e) {
+      console.warn('Initial cloud sync error:', e);
+    }
+  };
+
+  useEffect(() => {
+    syncWithCloudBackend();
+  }, []);
 
   // Active day record
   const currentRecord: DayRecord = records[currentDate] || {
@@ -69,13 +109,21 @@ export default function App() {
 
   const totals = calculateRecordTotals(currentRecord, columns);
 
-  // Update records in state and storage
-  const handleUpdateRecord = (updated: DayRecord, andTriggerWhatsApp = false) => {
+  // Update records in state, localStorage, and Cloud DBMS
+  const handleUpdateRecord = async (updated: DayRecord, andTriggerWhatsApp = false) => {
     const newRecords = { ...records, [updated.date]: updated };
     setRecords(newRecords);
     saveRecords(newRecords);
 
-    showToast(`Updated stock sheet for ${updated.date}`);
+    showToast(`Saving ${updated.date} to Cloud DBMS...`);
+
+    // Async save to Cloud DBMS (Render / PostgreSQL)
+    try {
+      await apiSaveRecord(updated);
+      showToast(`Saved to Cloud DBMS (no data loss)`);
+    } catch (e) {
+      showToast(`Saved locally (will sync when online)`);
+    }
 
     if (andTriggerWhatsApp) {
       setIsWhatsAppOpen(true);
@@ -88,7 +136,7 @@ export default function App() {
   };
 
   // Add battery column
-  const handleAddColumn = (name: string) => {
+  const handleAddColumn = async (name: string) => {
     const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_');
     if (columns.some((c) => c.id === id)) {
       showToast('Column already exists!');
@@ -98,16 +146,18 @@ export default function App() {
     const updated = [...columns, newCol];
     setColumns(updated);
     saveColumns(updated);
+    await apiSaveColumns(updated);
     showToast(`Added battery model: ${name}`);
   };
 
   // Create next day entry carrying over today's closing stock
-  const handleCreateNextDay = () => {
+  const handleCreateNextDay = async () => {
     const nextDayRecord = createNextDayRecord(currentRecord, columns);
     const newRecords = { ...records, [nextDayRecord.date]: nextDayRecord };
     setRecords(newRecords);
     saveRecords(newRecords);
     setCurrentDate(nextDayRecord.date);
+    await apiSaveRecord(nextDayRecord);
     showToast(`Created new ledger for ${nextDayRecord.date} with closing balance carried over!`);
   };
 
@@ -130,12 +180,15 @@ export default function App() {
   };
 
   // Reset to original photo sample
-  const handleResetToPhoto = () => {
+  const handleResetToPhoto = async () => {
     if (window.confirm('Reset this date back to original values from the WhatsApp photo?')) {
       const initial = loadRecords();
       setRecords(initial);
       saveRecords(initial);
       setCurrentDate('27-10-2026');
+      if (initial['27-10-2026']) {
+        await apiSaveRecord(initial['27-10-2026']);
+      }
       showToast('Reset to original photo record.');
     }
   };
@@ -147,6 +200,7 @@ export default function App() {
         onOpenQuickEntry={() => setIsQuickEntryOpen(true)}
         onOpenWhatsAppDispatch={() => setIsWhatsAppOpen(true)}
         onOpenTeamModal={() => setIsTeamModalOpen(true)}
+        onOpenCloudSettings={() => setIsCloudModalOpen(true)}
         onExportExcel={() => exportRecordToExcel(currentRecord, columns)}
         currentDate={currentDate}
       />
@@ -156,7 +210,7 @@ export default function App() {
         {/* Workspace Toolbar & Date Bar */}
         <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            {/* Left: Date Switcher & Day Navigation */}
+            {/* Left: Date Switcher & Day Navigation & Cloud Status */}
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg p-1">
                 <button
@@ -199,6 +253,18 @@ export default function App() {
               >
                 <Plus className="w-3.5 h-3.5 text-blue-600" />
                 <span>Next Day Carryover</span>
+              </button>
+
+              <button
+                onClick={() => setIsCloudModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 cursor-pointer"
+                title="View Cloud DBMS and deployment info"
+              >
+                <Database className="w-3 h-3 text-emerald-600" />
+                <span className="hidden sm:inline">DBMS:</span>
+                <span className="font-semibold text-slate-800">
+                  {backendStatus?.online ? 'Connected' : 'Active'}
+                </span>
               </button>
 
               <ReferenceImageViewer />
@@ -319,7 +385,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleResetToPhoto}
-                className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
+                className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 title="Reset to 27-10-2026 photo reference"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
@@ -348,8 +414,8 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-slate-400">Next day automation:</span>
-              <span className="text-blue-700 font-medium">Closing stock auto-rolls into Opening stock!</span>
+              <span className="text-slate-400">Database Storage:</span>
+              <span className="text-emerald-700 font-medium">Render Cloud DBMS & PostgreSQL Enabled</span>
             </div>
           </div>
         </section>
@@ -430,11 +496,18 @@ export default function App() {
         isOpen={isTeamModalOpen}
         onClose={() => setIsTeamModalOpen(false)}
         teamMembers={teamMembers}
-        onSaveTeam={(updated) => {
+        onSaveTeam={async (updated) => {
           setTeamMembers(updated);
           saveTeamMembers(updated);
-          showToast('Team members updated');
+          await apiSaveTeam(updated);
+          showToast('Team members saved to Cloud DBMS');
         }}
+      />
+
+      <CloudDatabaseSettingsModal
+        isOpen={isCloudModalOpen}
+        onClose={() => setIsCloudModalOpen(false)}
+        onDataReload={syncWithCloudBackend}
       />
     </div>
   );

@@ -5,6 +5,7 @@ interface HeaderProps {
   onOpenQuickEntry: () => void;
   onOpenWhatsAppDispatch: () => void;
   onOpenTeamModal: () => void;
+  onOpenCloudSettings: () => void;
   onExportExcel: () => void;
   currentDate: string;
 }
@@ -13,6 +14,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenQuickEntry,
   onOpenWhatsAppDispatch,
   onOpenTeamModal,
+  onOpenCloudSettings,
   onExportExcel,
   currentDate,
 }) => {
@@ -38,6 +40,12 @@ export const Header: React.FC<HeaderProps> = ({
           className="hover:text-blue-600 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           Team Contacts
+        </button>
+        <button
+          onClick={onOpenCloudSettings}
+          className="hover:text-blue-600 transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
+        >
+          <span>Cloud DBMS</span>
         </button>
         <button
           onClick={onExportExcel}
