@@ -75,17 +75,36 @@ export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[
   return lines.join('\n');
 }
 
+// Format phone number cleanly with Indian +91 prefix
+export function formatPhoneNumber(phone: string): string {
+  const clean = phone.replace(/\D/g, '');
+  if (clean.length === 10) {
+    return `+91 ${clean}`;
+  }
+  if (clean.length === 12 && clean.startsWith('91')) {
+    return `+91 ${clean.slice(2)}`;
+  }
+  return clean.startsWith('+') ? clean : `+${clean}`;
+}
+
 // Generate direct WhatsApp link for a team member
 export function getWhatsAppUrl(phone: string, message: string): string {
   // Strip non-numeric characters
-  const cleanPhone = phone.replace(/\D/g, '');
+  let cleanPhone = phone.replace(/\D/g, '');
+  // If 10-digit Indian phone (e.g. 9009156696), prepend India country code 91
+  if (cleanPhone.length === 10) {
+    cleanPhone = '91' + cleanPhone;
+  }
   const encodedText = encodeURIComponent(message);
   return `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodedText}`;
 }
 
 // Generate direct WhatsApp Web URL
 export function getWhatsAppWebUrl(phone: string, message: string): string {
-  const cleanPhone = phone.replace(/\D/g, '');
+  let cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.length === 10) {
+    cleanPhone = '91' + cleanPhone;
+  }
   const encodedText = encodeURIComponent(message);
   return `https://web.whatsapp.com/send?phone=${cleanPhone}&text=${encodedText}`;
 }

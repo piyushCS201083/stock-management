@@ -131,45 +131,10 @@ export const INITIAL_RECORD_31_10_2026: DayRecord = {
 
 export const DEFAULT_TEAM_MEMBERS: TeamMember[] = [
   {
-    id: 'piyush',
+    id: 'piyush_shivhare',
     name: 'Piyush Shivhare',
     role: 'Owner & Admin',
-    phone: '919826000000',
-    active: true,
-  },
-  {
-    id: 'luvkush',
-    name: 'Luvkush (Service Center)',
-    role: 'Service Center & Transport',
-    phone: '919827000005',
-    active: true,
-  },
-  {
-    id: 'sonu_bhaiya',
-    name: 'Sonu Bhaiya',
-    role: 'Logistics & Morar Transport',
-    phone: '919827000001',
-    active: true,
-  },
-  {
-    id: 'nikhil',
-    name: 'Nikhil (Morar)',
-    role: 'Morar Hub Dispatcher',
-    phone: '919827000002',
-    active: true,
-  },
-  {
-    id: 'reena_ent',
-    name: 'Reena Enterprises Rep',
-    role: 'Dealer & Service Coordinator',
-    phone: '919827000003',
-    active: true,
-  },
-  {
-    id: 'store_staff',
-    name: 'Store Counter / Workshop',
-    role: 'Inventory Manager',
-    phone: '919827000004',
+    phone: '9009156696',
     active: true,
   },
 ];

@@ -147,11 +147,41 @@ export function loadTeamMembers(): TeamMember[] {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.TEAM);
     if (data) {
-      return JSON.parse(data);
+      const parsed: TeamMember[] = JSON.parse(data);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Purge legacy placeholder team members removed per user request
+        const removedIds = ['luvkush', 'sonu_bhaiya', 'nikhil', 'reena_ent', 'store_staff'];
+        const filtered = parsed.filter(m => !removedIds.includes(m.id));
+
+        // Always ensure Piyush Shivhare is properly configured with 9009156696 & Owner & Admin
+        const hasPiyush = filtered.some(m => m.name.toLowerCase().includes('piyush') || m.id.includes('piyush'));
+        let finalTeam: TeamMember[];
+        if (hasPiyush) {
+          finalTeam = filtered.map(m => {
+            if (m.name.toLowerCase().includes('piyush') || m.id.includes('piyush')) {
+              return {
+                ...m,
+                id: 'piyush_shivhare',
+                name: 'Piyush Shivhare',
+                role: 'Owner & Admin',
+                phone: '9009156696',
+                active: true,
+              };
+            }
+            return m;
+          });
+        } else {
+          finalTeam = DEFAULT_TEAM_MEMBERS;
+        }
+
+        saveTeamMembers(finalTeam);
+        return finalTeam;
+      }
     }
   } catch (e) {
     console.error('Failed to load team members', e);
   }
+  saveTeamMembers(DEFAULT_TEAM_MEMBERS);
   return DEFAULT_TEAM_MEMBERS;
 }
 

@@ -51,6 +51,28 @@ function readLocalFile(): DatabaseState {
           parsed.records[INITIAL_RECORD_31_10_2026.date] = INITIAL_RECORD_31_10_2026;
           writeLocalFile(parsed);
         }
+        // Ensure team members only contain Piyush Shivhare (Owner & Admin) with 9009156696
+        const removedIds = ['luvkush', 'sonu_bhaiya', 'nikhil', 'reena_ent', 'store_staff'];
+        if (Array.isArray(parsed.teamMembers)) {
+          parsed.teamMembers = parsed.teamMembers
+            .filter((m: any) => !removedIds.includes(m.id))
+            .map((m: any) =>
+              m.name.toLowerCase().includes('piyush') || m.id.includes('piyush')
+                ? {
+                    ...m,
+                    id: 'piyush_shivhare',
+                    name: 'Piyush Shivhare',
+                    role: 'Owner & Admin',
+                    phone: '9009156696',
+                    active: true,
+                  }
+                : m
+            );
+          if (parsed.teamMembers.length === 0) {
+            parsed.teamMembers = DEFAULT_TEAM_MEMBERS;
+          }
+          writeLocalFile(parsed);
+        }
         return parsed;
       }
     }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { toPng, toJpeg } from 'html-to-image';
 import { BatteryColumn, DayRecord, TeamMember } from '../types/stock';
-import { formatWhatsAppMessage, getWhatsAppUrl, getWhatsAppWebUrl, DispatchResult } from '../utils/whatsapp';
+import { formatWhatsAppMessage, getWhatsAppUrl, getWhatsAppWebUrl, formatPhoneNumber, DispatchResult } from '../utils/whatsapp';
 import {
   MessageSquare,
   Camera,
@@ -485,7 +485,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
                         <div className="text-[11px] text-slate-500 flex items-center gap-1">
                           <span>{member.role}</span>
                           <span>·</span>
-                          <span className="font-mono text-slate-600">+{member.phone}</span>
+                          <span className="font-mono text-slate-600">{formatPhoneNumber(member.phone)}</span>
                         </div>
                       </div>
                     </div>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { TeamMember } from '../types/stock';
+import { formatPhoneNumber } from '../utils/whatsapp';
 import { Users, Plus, Trash2, Phone, UserCheck, UserX, X } from 'lucide-react';
 
 interface TeamManagementModalProps {
@@ -189,7 +190,7 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
                       <span>·</span>
                       <span className="font-mono text-slate-600 flex items-center gap-1">
                         <Phone className="w-2.5 h-2.5" />
-                        +{member.phone}
+                        {formatPhoneNumber(member.phone)}
                       </span>
                     </div>
                   </div>

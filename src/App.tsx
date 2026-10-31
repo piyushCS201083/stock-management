@@ -41,6 +41,7 @@ import { SerialTrackerModal } from './components/SerialTrackerModal';
 import { ReferenceImageViewer } from './components/ReferenceImageViewer';
 import { BatchStockOverview } from './components/BatchStockOverview';
 import { AssignSerialModal } from './components/AssignSerialModal';
+import { formatPhoneNumber, getWhatsAppUrl } from './utils/whatsapp';
 import {
   Calendar,
   ChevronLeft,
@@ -55,6 +56,7 @@ import {
   Database,
   Cloud,
   Barcode,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 
@@ -114,7 +116,21 @@ export default function App() {
         setColumns(remoteCols);
       }
       if (remoteTeam && remoteTeam.length > 0) {
-        setTeamMembers(remoteTeam);
+        const removedIds = ['luvkush', 'sonu_bhaiya', 'nikhil', 'reena_ent', 'store_staff'];
+        const sanitized = remoteTeam
+          .filter((m) => !removedIds.includes(m.id))
+          .map((m) =>
+            m.name.toLowerCase().includes('piyush') || m.id.includes('piyush')
+              ? {
+                  ...m,
+                  id: 'piyush_shivhare',
+                  name: 'Piyush Shivhare',
+                  role: 'Owner & Admin',
+                  phone: '9009156696',
+                }
+              : m
+          );
+        setTeamMembers(sanitized.length > 0 ? sanitized : loadTeamMembers());
       }
       if (remoteSerials && Object.keys(remoteSerials).length > 0) {
         setSerials(remoteSerials);
@@ -648,45 +664,71 @@ export default function App() {
           </div>
         </section>
 
-        {/* Team Members & Notification Channel Card */}
+        {/* Authorized Owner & Admin WhatsApp Dispatch Section */}
         <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Users className="w-4 h-4 text-emerald-600" />
-                <span>Active WhatsApp Team Recipients</span>
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Authorized Owner & Admin (WhatsApp Dispatch)</span>
               </h3>
               <p className="text-xs text-slate-500">
-                These team members are notified daily when stock records are updated.
+                Official stock ledger, verified Excel snapshots, and inward/outward alerts are routed directly to Owner & Admin.
               </p>
             </div>
 
             <button
               onClick={() => setIsTeamModalOpen(true)}
-              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline cursor-pointer"
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline cursor-pointer self-start sm:self-auto"
             >
-              Configure Contacts ({teamMembers.length})
+              Contact Settings
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {teamMembers.map((member) => (
               <div
                 key={member.id}
-                className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs flex flex-col justify-between"
+                className="p-4 bg-gradient-to-br from-emerald-50/60 via-slate-50 to-white rounded-xl border border-emerald-200 text-xs flex flex-col justify-between shadow-xs hover:border-emerald-300 transition-all"
               >
                 <div>
-                  <div className="font-bold text-slate-900 truncate">{member.name}</div>
-                  <div className="text-slate-500 text-[11px] truncate">{member.role}</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-extrabold text-base text-slate-900 tracking-tight">
+                      {member.name}
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                      <ShieldCheck className="w-3.5 h-3.5 text-amber-700" />
+                      <span>{member.role || 'Owner & Admin'}</span>
+                    </span>
+                  </div>
+                  <div className="text-emerald-700 text-xs font-medium mt-1 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Primary Stock Administrator & Owner</span>
+                  </div>
                 </div>
-                <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between">
-                  <span className="font-mono text-slate-600 text-[11px]">+{member.phone}</span>
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      member.active ? 'bg-emerald-500' : 'bg-slate-300'
-                    }`}
-                    title={member.active ? 'Active' : 'Paused'}
-                  ></span>
+
+                <div className="mt-4 pt-3 border-t border-emerald-100 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
+                      Verified WhatsApp Number
+                    </span>
+                    <span className="font-mono font-bold text-slate-900 text-sm">
+                      {formatPhoneNumber(member.phone)}
+                    </span>
+                  </div>
+
+                  <a
+                    href={getWhatsAppUrl(
+                      member.phone,
+                      `Hi ${member.name}, here is the current battery stock register summary for ${currentRecord.date}: ${totals.closingStockTotal} units closing stock.`
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Direct WhatsApp Chat</span>
+                  </a>
                 </div>
               </div>
             ))}
