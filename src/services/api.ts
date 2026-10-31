@@ -8,6 +8,8 @@ import {
   saveTeamMembers as saveLocalTeamMembers,
 } from '../utils/storage';
 
+export const DEFAULT_RENDER_BACKEND_URL = 'https://stock-management-hbuv.onrender.com';
+
 // Get base URL from environment or custom runtime override (e.g. from user settings)
 export function getApiBaseUrl(): string {
   if (typeof window !== 'undefined') {
@@ -20,7 +22,11 @@ export function getApiBaseUrl(): string {
   if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
     return envUrl.trim().replace(/\/+$/, '');
   }
-  // Default to relative /api (works in local dev, AI Studio, and single-host Render deployments)
+  // When running on Vercel (or any production host where frontend is separated from backend)
+  if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+    return DEFAULT_RENDER_BACKEND_URL;
+  }
+  // Default to relative /api when hosted together or in local dev proxy
   return '';
 }
 

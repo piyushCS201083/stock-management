@@ -156,10 +156,10 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
             <div className="flex gap-2">
               <input
                 type="url"
-                placeholder="https://battery-register-backend.onrender.com (or leave empty for default)"
+                placeholder="https://stock-management-hbuv.onrender.com"
                 value={backendUrl}
                 onChange={(e) => setBackendUrl(e.target.value)}
-                className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
               />
               <button
                 type="submit"
@@ -187,16 +187,13 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
               <div className="flex items-center justify-between">
                 <span className="font-bold text-slate-800 flex items-center gap-1.5">
                   <Server className="w-3.5 h-3.5 text-indigo-600" />
-                  1. Deploy Backend on Render (Web Service)
+                  1. Backend Deployed on Render
                 </span>
-                <span className="text-slate-400 font-mono text-[10px]">render.yaml included</span>
+                <span className="text-emerald-600 font-mono text-[10px] font-bold">ONLINE</span>
               </div>
-              <ol className="list-decimal list-inside space-y-1 text-slate-600 leading-relaxed pl-1">
-                <li>Create a new <strong>Web Service</strong> on <a href="https://render.com" target="_blank" rel="noreferrer" className="text-blue-600 underline">Render.com</a> connected to this repository.</li>
-                <li>Set <strong>Build Command</strong>: <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">npm install --legacy-peer-deps</code></li>
-                <li>Set <strong>Start Command</strong>: <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">npm start</code></li>
-                <li>(Optional) In Render dashboard, click <strong>New &gt; PostgreSQL</strong> and attach the <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">DATABASE_URL</code> environment variable!</li>
-              </ol>
+              <p className="text-slate-600 text-[11px]">
+                Active URL: <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px] font-mono text-blue-700 font-semibold">https://stock-management-hbuv.onrender.com</code>
+              </p>
             </div>
 
             {/* Vercel Frontend Guide */}
@@ -206,17 +203,17 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                   <Cloud className="w-3.5 h-3.5 text-blue-600" />
                   2. Deploy Frontend on Vercel
                 </span>
-                <span className="text-slate-400 font-mono text-[10px]">vercel.json included</span>
+                <span className="text-slate-400 font-mono text-[10px]">vercel.json configured</span>
               </div>
               <ol className="list-decimal list-inside space-y-1 text-slate-600 leading-relaxed pl-1">
                 <li>Import this repository on <a href="https://vercel.com" target="_blank" rel="noreferrer" className="text-blue-600 underline">Vercel.com</a>.</li>
-                <li>Under <strong>Environment Variables</strong>, add:</li>
+                <li>(Optional) Add the environment variable below (or leave blank, as <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">vercel.json</code> auto-proxies all <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">/api/*</code> traffic to Render):</li>
               </ol>
               <div className="flex items-center justify-between bg-slate-900 text-slate-200 p-2 rounded font-mono text-[11px]">
-                <span>VITE_API_BASE_URL = https://your-backend.onrender.com</span>
+                <span>VITE_API_BASE_URL = https://stock-management-hbuv.onrender.com</span>
                 <button
-                  onClick={() => handleCopy('VITE_API_BASE_URL', 'env_var')}
-                  className="text-slate-400 hover:text-white"
+                  onClick={() => handleCopy('https://stock-management-hbuv.onrender.com', 'env_var')}
+                  className="text-slate-400 hover:text-white cursor-pointer"
                 >
                   {copiedKey === 'env_var' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
