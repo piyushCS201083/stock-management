@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+  
+  .font-mono, [class*="tabular-nums"] {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom crisp Excel cell styles */
+.excel-cell {
+  border-right: 1px solid #c2c9d1;
+  border-bottom: 1px solid #c2c9d1;
+}
+
+.excel-header {
+  border-right: 1px solid #234882;
+  border-bottom: 1px solid #234882;
+}

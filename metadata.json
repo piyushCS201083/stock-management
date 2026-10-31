@@ -1,0 +1,6 @@
+{
+  "name": "Battery Stock Register & WhatsApp Dispatcher",
+  "description": "Daily battery inventory spreadsheet tracker with automated WhatsApp updates, high-res sheet image generation, Excel import/export, and team notification dispatch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
