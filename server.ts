@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import {
@@ -191,10 +192,27 @@ async function startServer() {
   } else {
     // Production Mode (Render standalone or monorepo)
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      // Pure Backend API Mode (e.g. Render backend with Vercel frontend)
+      app.get('/', (req, res) => {
+        res.json({
+          status: 'online',
+          message: 'Battery Stock Register API Server is running on Render',
+          endpoints: {
+            health: '/api/health',
+            records: '/api/records',
+            columns: '/api/columns',
+            team: '/api/team',
+          },
+          note: 'Connect your Vercel frontend with VITE_API_BASE_URL set to this domain',
+        });
+      });
+    }
   }
 
   app.listen(PORT, () => {
