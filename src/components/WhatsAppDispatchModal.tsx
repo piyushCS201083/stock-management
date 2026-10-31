@@ -17,6 +17,8 @@ import {
   Share2,
   AlertCircle,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 
 interface WhatsAppDispatchModalProps {
@@ -46,6 +48,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isSendingWebhook, setIsSendingWebhook] = useState(false);
   const [webhookStatus, setWebhookStatus] = useState<string | null>(null);
+  const [previewZoom, setPreviewZoom] = useState<'fit' | 'full'>('full');
 
   // Re-generate formatted text when record changes
   useEffect(() => {
@@ -58,7 +61,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
     }
   }, [isOpen, record, columns, teamMembers]);
 
-  // Capture the sheet photo using html-to-image
+  // Capture the sheet photo using html-to-image without cutting any data
   const captureSheetPhoto = async () => {
     setIsGeneratingPhoto(true);
     try {
@@ -69,12 +72,37 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
         return;
       }
 
-      // Generate crisp high resolution PNG
+      // Temporarily scroll to beginning so no left columns are cut off
+      const parentScroll = node.parentElement;
+      const originalScrollLeft = parentScroll ? parentScroll.scrollLeft : 0;
+      if (parentScroll) {
+        parentScroll.scrollLeft = 0;
+      }
+
+      // Full width and height guarantees all 14 columns from Date to Service Battery Total are captured
+      const fullWidth = Math.max(node.scrollWidth, node.offsetWidth, 1430);
+      const fullHeight = Math.max(node.scrollHeight, node.offsetHeight, 270);
+
+      // Generate crisp ultra high-resolution PNG
       const dataUrl = await toPng(node, {
         cacheBust: true,
-        pixelRatio: 2, // 2x crisp retina capture
+        pixelRatio: 2.5, // 2.5x crisp retina capture
+        width: fullWidth,
+        height: fullHeight,
+        style: {
+          width: `${fullWidth}px`,
+          minWidth: `${fullWidth}px`,
+          maxWidth: 'none',
+          overflow: 'visible',
+          transform: 'none',
+        },
         backgroundColor: '#ffffff',
       });
+
+      if (parentScroll) {
+        parentScroll.scrollLeft = originalScrollLeft;
+      }
+
       setPhotoDataUrl(dataUrl);
     } catch (err) {
       console.error('Failed to capture sheet photo', err);
@@ -308,12 +336,25 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Left: Generated Sheet Photo */}
             <div className="flex flex-col space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                  <Camera className="w-3.5 h-3.5 text-blue-600" />
-                  Daily Sheet Photo to Send
-                </span>
-                <div className="flex items-center gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <Camera className="w-3.5 h-3.5 text-blue-600" />
+                    Daily Sheet Photo to Send
+                  </span>
+                  <span className="text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-300">
+                    Full 14 Cols · No Data Cut
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => setPreviewZoom(prev => (prev === 'full' ? 'fit' : 'full'))}
+                    className="inline-flex items-center gap-1 text-[11px] text-slate-700 bg-white border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-100 font-medium transition-colors"
+                    title={previewZoom === 'full' ? 'Click to fit full image in frame' : 'Click for 100% full-detail zoom'}
+                  >
+                    {previewZoom === 'full' ? <ZoomOut className="w-3 h-3 text-slate-600" /> : <ZoomIn className="w-3 h-3 text-slate-600" />}
+                    <span>{previewZoom === 'full' ? 'Fit' : '100% Zoom'}</span>
+                  </button>
                   <button
                     onClick={captureSheetPhoto}
                     disabled={isGeneratingPhoto}
@@ -333,28 +374,35 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
                 </div>
               </div>
 
-              <div className="relative border border-slate-300 bg-slate-100 rounded-lg overflow-hidden flex items-center justify-center min-h-[220px] max-h-[300px]">
+              <div className="relative border border-slate-300 bg-slate-50 rounded-lg overflow-hidden flex flex-col min-h-[240px] max-h-[340px]">
                 {isGeneratingPhoto ? (
-                  <div className="flex flex-col items-center gap-2 p-6 text-slate-500">
+                  <div className="flex flex-col items-center justify-center flex-1 gap-2 p-6 text-slate-500">
                     <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
                     <span className="text-xs">Generating photo of Excel sheet...</span>
                   </div>
                 ) : photoDataUrl ? (
-                  <div className="w-full h-full p-2 overflow-auto bg-slate-50">
+                  <div className="w-full h-full p-2.5 overflow-x-auto overflow-y-auto bg-slate-100 flex flex-col items-start justify-start border border-slate-200 rounded">
                     <img
                       src={photoDataUrl}
-                      alt="Daily Battery Excel Snapshot"
-                      className="w-full h-auto object-contain shadow-xs border border-slate-200"
+                      alt="Daily Battery Excel Snapshot - All 14 Columns Full Width"
+                      className={`transition-all duration-150 block shadow-sm border border-slate-300 bg-white rounded ${
+                        previewZoom === 'full'
+                          ? 'min-w-[1050px] w-full max-w-none h-auto object-contain cursor-zoom-out'
+                          : 'w-full max-w-full h-auto object-contain cursor-zoom-in'
+                      }`}
+                      style={{ imageRendering: 'crisp-edges' }}
+                      onClick={() => setPreviewZoom(prev => (prev === 'full' ? 'fit' : 'full'))}
+                      title="Click to toggle between 100% Full Width Zoom and Fit Window"
                     />
                   </div>
                 ) : (
-                  <div className="p-6 text-xs text-slate-400 text-center">
+                  <div className="p-6 text-xs text-slate-400 text-center flex-1 flex items-center justify-center">
                     Snapshot pending capture. Click re-capture above.
                   </div>
                 )}
               </div>
               <p className="text-[11px] text-slate-500">
-                💡 <span className="font-semibold text-slate-700">Daily Routine:</span> Click <span className="text-emerald-700 font-medium">"Copy Photo (Ctrl+V)"</span> and paste right into your team WhatsApp group chat!
+                💡 <span className="font-semibold text-slate-700">Full Width Captured:</span> Contains all 14 columns from <span className="font-mono text-slate-800">Date</span> through <span className="font-mono text-slate-800">SERVICE BATTERY TOTAL</span>. Copy or download below to share.
               </p>
             </div>
 

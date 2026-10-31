@@ -1,4 +1,10 @@
-import { BatteryColumn, DayRecord, TeamMember } from '../types/stock';
+import {
+  BatteryColumn,
+  BatterySerialItem,
+  DayRecord,
+  TeamMember,
+  INITIAL_BASELINE_SERIALS,
+} from '../types/stock';
 import {
   loadRecords as loadLocalRecords,
   saveRecords as saveLocalRecords,
@@ -237,4 +243,98 @@ export async function apiLogWhatsAppDispatch(payload: {
   } catch (err) {
     console.warn('[API] WhatsApp log deferred:', err);
   }
+}
+
+// Local storage helpers for Serials
+const STORAGE_KEY_SERIALS = 'battery_stock_serials_v3';
+
+export function loadLocalSerials(): Record<string, BatterySerialItem> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_SERIALS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Object.keys(parsed).length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load local serials', e);
+  }
+  // Default to verified 31-10-2026 baseline serials
+  saveLocalSerials(INITIAL_BASELINE_SERIALS);
+  return INITIAL_BASELINE_SERIALS;
+}
+
+export function saveLocalSerials(serials: Record<string, BatterySerialItem>) {
+  try {
+    localStorage.setItem(STORAGE_KEY_SERIALS, JSON.stringify(serials));
+  } catch (e) {
+    console.error('Failed to save local serials', e);
+  }
+}
+
+// Fetch all serials
+export async function apiFetchSerials(): Promise<Record<string, BatterySerialItem>> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/serials`);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocalSerials(json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Serials fetch failed, using local cache:', err);
+  }
+  return loadLocalSerials();
+}
+
+// Save single serial
+export async function apiSaveSerial(item: BatterySerialItem): Promise<BatterySerialItem> {
+  const local = loadLocalSerials();
+  local[item.serialNo] = item;
+  saveLocalSerials(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/serials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) return json.data;
+    }
+  } catch (err) {
+    console.warn('[API] Cloud save serial deferred:', err);
+  }
+  return item;
+}
+
+// Bulk save serials
+export async function apiBulkSaveSerials(items: BatterySerialItem[]): Promise<BatterySerialItem[]> {
+  const local = loadLocalSerials();
+  items.forEach((item) => {
+    local[item.serialNo] = item;
+  });
+  saveLocalSerials(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/serials/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(items),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) return json.data;
+    }
+  } catch (err) {
+    console.warn('[API] Cloud bulk save serials deferred:', err);
+  }
+  return items;
 }

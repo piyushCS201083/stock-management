@@ -16,6 +16,11 @@ import {
   getTeamMembers,
   saveTeamMembers,
   logAudit,
+  getAllSerials,
+  getSerial,
+  saveSerial,
+  bulkSaveSerials,
+  deleteSerial,
 } from './server/db.ts';
 
 dotenv.config();
@@ -148,6 +153,63 @@ app.post('/api/team', async (req, res) => {
     }
     const saved = await saveTeamMembers(team);
     res.json({ success: true, data: saved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Battery Serial & Batch Tracker Routes
+app.get('/api/serials', async (req, res) => {
+  try {
+    const serials = await getAllSerials();
+    res.json({ success: true, data: serials });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/serials/:serialNo', async (req, res) => {
+  try {
+    const item = await getSerial(req.params.serialNo);
+    if (!item) {
+      return res.status(404).json({ success: false, error: 'Serial not found' });
+    }
+    res.json({ success: true, data: item });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/serials', async (req, res) => {
+  try {
+    const item = req.body;
+    if (!item || !item.serialNo) {
+      return res.status(400).json({ success: false, error: 'serialNo is required' });
+    }
+    const saved = await saveSerial(item);
+    res.json({ success: true, data: saved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/serials/bulk', async (req, res) => {
+  try {
+    const items = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ success: false, error: 'Items must be an array' });
+    }
+    const saved = await bulkSaveSerials(items);
+    res.json({ success: true, data: saved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/serials/:serialNo', async (req, res) => {
+  try {
+    const success = await deleteSerial(req.params.serialNo);
+    res.json({ success });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

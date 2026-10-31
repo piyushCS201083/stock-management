@@ -1,13 +1,40 @@
 import React, { useState } from 'react';
 import { BatteryColumn, DayRecord } from '../types/stock';
-import { PlusCircle, MinusCircle, Wrench, BatteryCharging, Check, X, ArrowRight } from 'lucide-react';
+import {
+  PlusCircle,
+  MinusCircle,
+  Wrench,
+  BatteryCharging,
+  Check,
+  X,
+  ArrowRight,
+  Barcode,
+  Tag,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
+
+export interface SerialEntryPayload {
+  serialNo: string;
+  batchNo?: string;
+  modelId: string;
+  modelName: string;
+  type: 'in' | 'out' | 'repair_in' | 'repair_out' | 'service';
+  cause: string;
+  partner?: string;
+  vehicle?: string;
+}
 
 interface QuickEntryModalProps {
   isOpen: boolean;
   onClose: () => void;
   record: DayRecord;
   columns: BatteryColumn[];
-  onSaveRecord: (updated: DayRecord, triggerWhatsApp?: boolean) => void;
+  onSaveRecord: (
+    updated: DayRecord,
+    triggerWhatsApp?: boolean,
+    serialEntries?: SerialEntryPayload[]
+  ) => void;
 }
 
 export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
@@ -21,10 +48,23 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [selectedColId, setSelectedColId] = useState<string>(columns[0]?.id || '60x24_old');
   const [quantity, setQuantity] = useState<number>(1);
   const [cause, setCause] = useState<string>('');
-  const [partnerName, setPartnerName] = useState<string>(''); // e.g. Aman Wadhwani, Reena Ent, Nikhil Morar
-  const [vehicleOrLocation, setVehicleOrLocation] = useState<string>(''); // e.g. Morar, Gaadi mai lagi, Maa Sati
+  const [partnerName, setPartnerName] = useState<string>(''); // e.g. Luvkush, Aman Wadhwani, Reena Ent, Nikhil
+  const [vehicleOrLocation, setVehicleOrLocation] = useState<string>(''); // e.g. Service center, Morar, Maa Sati
+  const [serialInput, setSerialInput] = useState<string>(''); // Serial numbers (comma or newline separated)
+  const [batchNo, setBatchNo] = useState<string>(''); // Optional batch number
 
   if (!isOpen) return null;
+
+  const handleAutoGenerateSerials = () => {
+    const colName = columns.find((c) => c.id === selectedColId)?.name || 'BAT';
+    const cleanPrefix = colName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase();
+    const generated: string[] = [];
+    const baseNum = Math.floor(1000 + Math.random() * 9000);
+    for (let i = 0; i < quantity; i++) {
+      generated.push(`${cleanPrefix}-${baseNum + i}`);
+    }
+    setSerialInput(generated.join(', '));
+  };
 
   const handleSave = (andSendWhatsApp = false) => {
     const updated = { ...record };
@@ -49,7 +89,6 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         [selectedColId]: currentCause ? `${currentCause}\n${fullCause}` : fullCause,
       };
 
-      // Also update totalInCause summary
       const targetCol = columns.find(c => c.id === selectedColId);
       const summaryLine = `${targetCol?.name || selectedColId}: ${fullCause}`;
       updated.totalInCause = updated.totalInCause
@@ -67,7 +106,6 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         [selectedColId]: currentCause ? `${currentCause}\n${fullCause}` : fullCause,
       };
 
-      // Also update totalOutCause summary
       const targetCol = columns.find(c => c.id === selectedColId);
       const summaryLine = `${targetCol?.name || selectedColId}: ${fullCause}`;
       updated.totalOutCause = updated.totalOutCause
@@ -93,8 +131,32 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       updated.stock = { ...updated.stock, service: current + quantity };
     }
 
+    // Process Serial Numbers entered (clean list)
+    const rawSerials = serialInput
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const targetModel =
+      entryType === 'repair_in' || entryType === 'repair_out'
+        ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
+        : entryType === 'service'
+        ? { id: 'service', name: 'SERVICE BATTERY' }
+        : columns.find((c) => c.id === selectedColId) || { id: selectedColId, name: selectedColId };
+
+    const serialEntries: SerialEntryPayload[] = rawSerials.map((s) => ({
+      serialNo: s,
+      batchNo: batchNo.trim() || targetModel.name,
+      modelId: targetModel.id,
+      modelName: targetModel.name,
+      type: entryType,
+      cause: fullCause,
+      partner: partnerName.trim() || undefined,
+      vehicle: vehicleOrLocation.trim() || undefined,
+    }));
+
     updated.lastModified = new Date().toISOString();
-    onSaveRecord(updated, andSendWhatsApp);
+    onSaveRecord(updated, andSendWhatsApp, serialEntries);
     onClose();
 
     // Reset form
@@ -102,6 +164,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     setCause('');
     setPartnerName('');
     setVehicleOrLocation('');
+    setSerialInput('');
+    setBatchNo('');
   };
 
   const selectedCol = columns.find((c) => c.id === selectedColId);
@@ -118,12 +182,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       : currentClosing;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden my-4">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-bold">Quick Log Battery Transaction</h2>
+            <h2 className="text-base font-bold">Log Battery Transaction & Serials</h2>
             <span className="text-xs text-slate-400 font-mono">({record.date})</span>
           </div>
           <button
@@ -135,7 +199,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
           {/* Movement Type Selector */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-2">
@@ -274,7 +338,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Aman Wadhwani / Reena Ent / Nikhil"
+                  placeholder="e.g. Luvkush / Aman Wadhwani / Reena Ent"
                   value={partnerName}
                   onChange={(e) => setPartnerName(e.target.value)}
                   className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500"
@@ -287,7 +351,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Gaadi mai lagi / Morar se / Maa Sati se"
+                  placeholder="e.g. Service center se / Morar se / Gaadi mai lagi"
                   value={vehicleOrLocation}
                   onChange={(e) => setVehicleOrLocation(e.target.value)}
                   className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500"
@@ -301,11 +365,64 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
               </label>
               <textarea
                 rows={2}
-                placeholder="e.g. wapas aai - exchange Reena ent see"
+                placeholder="e.g. Service center se, luvkush le kar aaya"
                 value={cause}
                 onChange={(e) => setCause(e.target.value)}
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 resize-none"
               />
+            </div>
+          </div>
+
+          {/* Dedicated Serial No. & Batch Section */}
+          <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 font-bold text-xs text-blue-900">
+                <Barcode className="w-4 h-4 text-blue-700" />
+                <span>Battery Serial Numbers & Batch Tracking (In-App Only)</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleAutoGenerateSerials}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 hover:text-blue-900 underline"
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>Auto-fill {quantity} Serials</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="sm:col-span-2">
+                <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                  Serial Number(s) <span className="text-slate-400">(comma or enter separated)</span>:
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 6024-FLAT-001, 6024-FLAT-002"
+                  value={serialInput}
+                  onChange={(e) => setSerialInput(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono border border-blue-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                  Batch (Battery Model):
+                </label>
+                <input
+                  type="text"
+                  placeholder={selectedCol?.name || 'e.g. 60×24 FLAT'}
+                  value={batchNo}
+                  onChange={(e) => setBatchNo(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono border border-blue-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 text-[11px] text-blue-800 pt-0.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Confidential:</strong> Serial numbers are saved for in-app tracking and history search, and will <strong>NOT</strong> appear on the WhatsApp Excel photo.
+              </span>
             </div>
           </div>
 
@@ -346,7 +463,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
               onClick={() => handleSave(false)}
               className="px-4 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
             >
-              Update Excel Only
+              Update Excel & Serials
             </button>
 
             <button

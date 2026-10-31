@@ -6,20 +6,45 @@ interface ReferenceImageViewerProps {
 }
 
 export const ReferenceImageViewer: React.FC<ReferenceImageViewerProps> = ({
-  imagePath = '/assets/aistudio/WhatsApp_Image_2026-10-31_at_10.47.20_AM_23659019.jpeg',
+  imagePath = '/assets/aistudio/image_99e1f4ad.png',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [activePhoto, setActivePhoto] = useState<string>(imagePath);
   const [zoom, setZoom] = useState(1);
+
+  const referencePhotos = [
+    {
+      id: 'clear',
+      label: 'Clear Header Snap (Reference)',
+      path: '/assets/aistudio/image_99e1f4ad.png',
+      badge: 'Visual Design Ref',
+    },
+    {
+      id: 'baseline',
+      label: 'Official Baseline (31-10-2026)',
+      path: '/assets/aistudio/image_854e73a7.png',
+      badge: 'Official Baseline',
+    },
+    {
+      id: 'prev',
+      label: 'Photo (27-10-2026)',
+      path: '/assets/aistudio/WhatsApp_Image_2026-10-31_at_10.47.20_AM_23659019.jpeg',
+      badge: 'Historical',
+    },
+  ];
 
   return (
     <>
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={() => {
+          setActivePhoto(imagePath);
+          setIsOpen(true);
+        }}
         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs cursor-pointer"
-        title="Compare with original spreadsheet photo"
+        title="Compare with official Excel photo reference"
       >
         <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
-        <span>View Reference Photo</span>
+        <span>View Excel Reference Snaps</span>
       </button>
 
       {isOpen && (
@@ -27,10 +52,30 @@ export const ReferenceImageViewer: React.FC<ReferenceImageViewerProps> = ({
           <div className="bg-slate-900 rounded-xl shadow-2xl border border-slate-700 w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-3.5 border-b border-slate-800 text-white shrink-0">
-              <div className="flex items-center gap-2">
-                <ImageIcon className="w-5 h-5 text-blue-400" />
-                <span className="text-sm font-bold">Original Excel Photo Reference</span>
-                <span className="text-xs text-slate-400">(Date: 27-10-2026)</span>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="w-5 h-5 text-blue-400" />
+                  <span className="text-sm font-bold">Excel Photo References</span>
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-slate-800 p-1 rounded-lg border border-slate-700">
+                  {referencePhotos.map((photo) => (
+                    <button
+                      key={photo.id}
+                      onClick={() => {
+                        setActivePhoto(photo.path);
+                        setZoom(1);
+                      }}
+                      className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors cursor-pointer ${
+                        activePhoto === photo.path
+                          ? 'bg-blue-600 text-white shadow-xs font-semibold'
+                          : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                      }`}
+                    >
+                      {photo.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="flex items-center gap-2">
@@ -72,7 +117,7 @@ export const ReferenceImageViewer: React.FC<ReferenceImageViewerProps> = ({
                 className="transition-transform duration-150"
               >
                 <img
-                  src={imagePath}
+                  src={activePhoto}
                   alt="Original Battery Excel Register"
                   className="max-w-full h-auto rounded border border-slate-800 shadow-2xl"
                 />

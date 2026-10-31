@@ -1,5 +1,6 @@
 import { BatteryColumn, DayRecord, TeamMember } from '../types/stock';
 import { calculateRecordTotals } from './storage';
+import { getIndianCurrentTime } from './date';
 
 export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[]): string {
   const totals = calculateRecordTotals(record, columns);
@@ -68,7 +69,7 @@ export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[
     `🛠 *SERVICE BATTERY TOTAL:* *${totals.service.closing}* units`,
     `━━━━━━━━━━━━━━━━━━━━━━━━━`,
     `📷 *Excel sheet snapshot photo updated & verified.*`,
-    `⏱ _Updated at: ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}_`,
+    `⏱ _Updated at: ${getIndianCurrentTime()}_`,
   ].filter(line => line !== '');
 
   return lines.join('\n');

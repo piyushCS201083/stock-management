@@ -3,12 +3,15 @@ import path from 'path';
 import pg from 'pg';
 import {
   BatteryColumn,
+  BatterySerialItem,
+  BatteryMovementEvent,
   DayRecord,
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_TEAM_MEMBERS,
-  INITIAL_RECORD_27_10_2026,
+  INITIAL_RECORD_31_10_2026,
+  INITIAL_BASELINE_SERIALS,
   TeamMember,
-} from '../src/types/stock';
+} from '../src/types/stock.ts';
 
 const { Pool } = pg;
 
@@ -16,6 +19,7 @@ interface DatabaseState {
   records: Record<string, DayRecord>;
   columns: BatteryColumn[];
   teamMembers: TeamMember[];
+  serials: Record<string, BatterySerialItem>;
   logs: any[];
 }
 
@@ -30,29 +34,43 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Fallback in-memory/file storage
+// Fallback in-memory/file storage with 31-10-2026 official baseline
 function readLocalFile(): DatabaseState {
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (parsed) {
+        parsed.serials = parsed.serials || {};
+        if (Object.keys(parsed.serials).length === 0) {
+          parsed.serials = { ...INITIAL_BASELINE_SERIALS };
+          writeLocalFile(parsed);
+        }
+        // Ensure 31-10-2026 baseline is present
+        if (parsed.records && !parsed.records[INITIAL_RECORD_31_10_2026.date]) {
+          parsed.records[INITIAL_RECORD_31_10_2026.date] = INITIAL_RECORD_31_10_2026;
+          writeLocalFile(parsed);
+        }
+        return parsed;
+      }
     }
   } catch (err) {
     console.error('[DBMS] Error reading local database file:', err);
   }
 
-  // Initial seed
+  // Initial fresh seed for 31-10-2026
   const initialState: DatabaseState = {
     records: {
-      [INITIAL_RECORD_27_10_2026.date]: INITIAL_RECORD_27_10_2026,
+      [INITIAL_RECORD_31_10_2026.date]: INITIAL_RECORD_31_10_2026,
     },
     columns: DEFAULT_BATTERY_COLUMNS,
     teamMembers: DEFAULT_TEAM_MEMBERS,
+    serials: { ...INITIAL_BASELINE_SERIALS },
     logs: [
       {
-        action: 'INITIAL_SEED',
+        action: 'BASELINE_31_10_2026',
         timestamp: new Date().toISOString(),
-        details: 'Initial battery register seed from WhatsApp photo created',
+        details: 'Stock baseline reset to official verified photo dated 31-10-2026',
       },
     ],
   };
@@ -95,6 +113,11 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
             data JSONB NOT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
+          CREATE TABLE IF NOT EXISTS battery_serials (
+            serial_no VARCHAR(100) PRIMARY KEY,
+            data JSONB NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
           CREATE TABLE IF NOT EXISTS audit_logs (
             id SERIAL PRIMARY KEY,
             action VARCHAR(100) NOT NULL,
@@ -103,23 +126,26 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
           );
         `);
 
-        // Check if initial record exists
-        const res = await client.query('SELECT COUNT(*) FROM stock_records');
-        if (parseInt(res.rows[0].count, 10) === 0) {
-          console.log('[DBMS] Seeding PostgreSQL with initial WhatsApp photo record...');
-          await client.query(
-            'INSERT INTO stock_records (date, data) VALUES ($1, $2)',
-            [INITIAL_RECORD_27_10_2026.date, JSON.stringify(INITIAL_RECORD_27_10_2026)]
-          );
-          await client.query(
-            'INSERT INTO battery_metadata (key, data) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET data = $2',
-            ['columns', JSON.stringify(DEFAULT_BATTERY_COLUMNS)]
-          );
-          await client.query(
-            'INSERT INTO battery_metadata (key, data) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET data = $2',
-            ['team_members', JSON.stringify(DEFAULT_TEAM_MEMBERS)]
-          );
-        }
+        // Upsert 31-10-2026 official baseline record
+        console.log('[DBMS] Inserting verified 31-10-2026 stock baseline into PostgreSQL...');
+        await client.query(
+          `INSERT INTO stock_records (date, data, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (date) DO UPDATE SET data = $2, updated_at = NOW()`,
+          [INITIAL_RECORD_31_10_2026.date, JSON.stringify(INITIAL_RECORD_31_10_2026)]
+        );
+        await client.query(
+          `INSERT INTO battery_metadata (key, data, updated_at)
+           VALUES ('columns', $1, NOW())
+           ON CONFLICT (key) DO NOTHING`,
+          [JSON.stringify(DEFAULT_BATTERY_COLUMNS)]
+        );
+        await client.query(
+          `INSERT INTO battery_metadata (key, data, updated_at)
+           VALUES ('team_members', $1, NOW())
+           ON CONFLICT (key) DO UPDATE SET data = $1`,
+          [JSON.stringify(DEFAULT_TEAM_MEMBERS)]
+        );
 
         isPostgresConnected = true;
         console.log('[DBMS] Successfully connected to PostgreSQL database!');
@@ -331,4 +357,88 @@ export async function logAudit(action: string, details: any) {
     if (local.logs.length > 100) local.logs = local.logs.slice(0, 100);
     writeLocalFile(local);
   }
+}
+
+// Battery Serial & Batch Tracker DBMS Functions
+export async function getAllSerials(): Promise<Record<string, BatterySerialItem>> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query('SELECT serial_no, data FROM battery_serials ORDER BY updated_at DESC');
+      const map: Record<string, BatterySerialItem> = {};
+      res.rows.forEach((r) => {
+        map[r.serial_no] = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+      });
+      return map;
+    } catch (err) {
+      console.error('[DBMS] PG getAllSerials error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  return local.serials || {};
+}
+
+export async function getSerial(serialNo: string): Promise<BatterySerialItem | null> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query('SELECT data FROM battery_serials WHERE serial_no = $1', [serialNo]);
+      if (res.rows.length > 0) {
+        return typeof res.rows[0].data === 'string' ? JSON.parse(res.rows[0].data) : res.rows[0].data;
+      }
+      return null;
+    } catch (err) {
+      console.error('[DBMS] PG getSerial error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  return local.serials?.[serialNo] || null;
+}
+
+export async function saveSerial(item: BatterySerialItem): Promise<BatterySerialItem> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO battery_serials (serial_no, data, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (serial_no) DO UPDATE SET data = $2, updated_at = NOW()`,
+        [item.serialNo, JSON.stringify(item)]
+      );
+      return item;
+    } catch (err) {
+      console.error('[DBMS] PG saveSerial error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  local.serials = local.serials || {};
+  local.serials[item.serialNo] = item;
+  writeLocalFile(local);
+  return item;
+}
+
+export async function bulkSaveSerials(items: BatterySerialItem[]): Promise<BatterySerialItem[]> {
+  for (const item of items) {
+    await saveSerial(item);
+  }
+  return items;
+}
+
+export async function deleteSerial(serialNo: string): Promise<boolean> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query('DELETE FROM battery_serials WHERE serial_no = $1', [serialNo]);
+      return true;
+    } catch (err) {
+      console.error('[DBMS] PG deleteSerial error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  if (local.serials && local.serials[serialNo]) {
+    delete local.serials[serialNo];
+    writeLocalFile(local);
+    return true;
+  }
+  return false;
 }

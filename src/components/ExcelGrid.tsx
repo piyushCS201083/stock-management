@@ -149,67 +149,85 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
         <div
           ref={tableRef}
           id="battery-stock-sheet-table"
-          className="min-w-[1100px] select-text bg-white"
+          className="w-max min-w-[1430px] select-text bg-white"
           style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}
         >
-          <table className="w-full border-collapse border border-slate-400 text-sm table-fixed">
+          <table className="min-w-[1430px] border-collapse border border-slate-400 text-sm table-fixed">
             <thead>
-              {/* Header Row - Royal Blue with Excel Filters */}
-              <tr className="bg-[#3066be] text-white text-[13px] font-semibold tracking-wide">
+              {/* Header Row - Royal Blue (#3066be) with Excel Centered Filters */}
+              <tr className="bg-[#3066be] text-white text-[13px] font-bold tracking-tight">
                 {/* Date */}
-                <th className="w-[100px] py-2.5 px-2 border border-[#234d91] text-center font-bold">
-                  <div className="flex items-center justify-center gap-1.5">
-                    <span>Date</span>
-                    <span className="w-3.5 h-3.5 bg-white/90 rounded-sm inline-flex items-center justify-center shadow-xs">
-                      <span className="w-0 h-0 border-l-[3.5px] border-l-transparent border-r-[3.5px] border-r-transparent border-t-[4px] border-t-[#3066be]"></span>
-                    </span>
+                <th className="w-[105px] min-w-[100px] p-0 border border-[#20498b] text-center font-bold">
+                  <div className="flex flex-col items-center justify-between min-h-[56px] py-1.5 px-1">
+                    <span className="text-[13px] font-bold text-white tracking-tight">Date</span>
+                    <div className="mt-1">
+                      <span className="w-3.5 h-3.5 bg-white border border-[#94a3b8] rounded-[2px] inline-flex items-center justify-center shadow-xs">
+                        <span className="w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-t-[3.5px] border-t-[#224f94]"></span>
+                      </span>
+                    </div>
                   </div>
                 </th>
 
                 {/* Particulars */}
-                <th className="w-[115px] py-2.5 px-2 border border-[#234d91] text-center font-bold">
-                  <div className="flex items-center justify-center gap-1.5">
-                    <span>Particulars</span>
-                    <span className="w-3.5 h-3.5 bg-white/90 rounded-sm inline-flex items-center justify-center shadow-xs">
-                      <span className="w-0 h-0 border-l-[3.5px] border-l-transparent border-r-[3.5px] border-r-transparent border-t-[4px] border-t-[#3066be]"></span>
-                    </span>
+                <th className="w-[115px] min-w-[110px] p-0 border border-[#20498b] text-center font-bold">
+                  <div className="flex flex-col items-center justify-between min-h-[56px] py-1.5 px-1">
+                    <span className="text-[13px] font-bold text-white tracking-tight">Particulars</span>
+                    <div className="mt-1">
+                      <span className="w-3.5 h-3.5 bg-white border border-[#94a3b8] rounded-[2px] inline-flex items-center justify-center shadow-xs">
+                        <span className="w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-t-[3.5px] border-t-[#224f94]"></span>
+                      </span>
+                    </div>
                   </div>
                 </th>
 
-                {/* Battery Columns */}
+                {/* Battery Columns - Centered name with centered Excel filter button below */}
                 {columns.map((col) => (
                   <th
                     key={col.id}
-                    className="py-2.5 px-1.5 border border-[#234d91] text-center text-[12px] font-bold"
-                    style={{ width: `${Math.max(88, 100 / (columns.length + 5))}%` }}
+                    className="w-[98px] min-w-[94px] p-0 border border-[#20498b] text-center font-bold"
                   >
-                    <div className="flex items-center justify-center gap-1">
-                      <span className="whitespace-nowrap">{col.name}</span>
-                      <span className="w-3 h-3 bg-white/90 rounded-xs inline-flex items-center justify-center shadow-xs shrink-0">
-                        <span className="w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-t-[3.5px] border-t-[#3066be]"></span>
-                      </span>
+                    <div className="flex flex-col items-center justify-between min-h-[56px] py-1.5 px-1">
+                      <div className="flex flex-col items-center justify-center flex-1">
+                        <span className="text-[12.5px] font-bold text-white leading-tight whitespace-nowrap">
+                          {col.name}
+                        </span>
+                      </div>
+                      <div className="mt-1">
+                        <span className="w-3.5 h-3.5 bg-white border border-[#94a3b8] rounded-[2px] inline-flex items-center justify-center shadow-xs">
+                          <span className="w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-t-[3.5px] border-t-[#224f94]"></span>
+                        </span>
+                      </div>
                     </div>
                   </th>
                 ))}
 
                 {/* Total */}
-                <th className="w-[90px] py-2.5 px-2 border border-[#234d91] text-center font-bold">
-                  <div className="flex items-center justify-center gap-1">
-                    <span>Total</span>
-                    <span className="w-3.5 h-3.5 bg-white/90 rounded-sm inline-flex items-center justify-center shadow-xs">
-                      <span className="w-0 h-0 border-l-[3.5px] border-l-transparent border-r-[3.5px] border-r-transparent border-t-[4px] border-t-[#3066be]"></span>
-                    </span>
+                <th className="w-[90px] min-w-[85px] p-0 border border-[#20498b] text-center font-bold">
+                  <div className="flex flex-col items-center justify-between min-h-[56px] py-1.5 px-1">
+                    <span className="text-[13px] font-bold text-white tracking-tight">Total</span>
+                    <div className="mt-1">
+                      <span className="w-3.5 h-3.5 bg-white border border-[#94a3b8] rounded-[2px] inline-flex items-center justify-center shadow-xs">
+                        <span className="w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-t-[3.5px] border-t-[#224f94]"></span>
+                      </span>
+                    </div>
                   </div>
                 </th>
 
-                {/* OLD BATTERY FOR REPAIR */}
-                <th className="w-[130px] py-2 px-1.5 border border-[#234d91] text-center font-bold leading-tight text-[11.5px]">
-                  <span>OLD BATTERY<br />FOR REPAIR</span>
+                {/* OLD BATTERY FOR REPAIR - 2 lines, centered, no filter */}
+                <th className="w-[126px] min-w-[120px] p-0 border border-[#20498b] text-center font-bold">
+                  <div className="flex flex-col items-center justify-center min-h-[56px] py-1.5 px-1 leading-snug">
+                    <span className="text-[11.5px] font-bold text-white text-center">OLD BATTERY</span>
+                    <span className="text-[11.5px] font-bold text-white text-center">FOR REPAIR</span>
+                  </div>
                 </th>
 
-                {/* SERVICE BATTERY TOTAL */}
-                <th className="w-[110px] py-2 px-1.5 border border-[#234d91] text-center font-bold leading-tight text-[11.5px]">
-                  <span>SERVICE<br />BATTERY TOTAL</span>
+                {/* SERVICE BATTERY TOTAL - 3 lines, centered, no filter */}
+                <th className="w-[110px] min-w-[105px] p-0 border border-[#20498b] text-center font-bold">
+                  <div className="flex flex-col items-center justify-center min-h-[56px] py-1.5 px-1 leading-tight">
+                    <span className="text-[11px] font-bold text-white text-center">SERVICE</span>
+                    <span className="text-[11px] font-bold text-white text-center">BATTERY</span>
+                    <span className="text-[11px] font-bold text-white text-center">TOTAL</span>
+                  </div>
                 </th>
               </tr>
             </thead>
@@ -220,9 +238,9 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                 {/* Date Cell (Merged visually across the daily block) */}
                 <td
                   rowSpan={5}
-                  className="border border-slate-400 text-center font-bold text-slate-900 text-[13px] bg-white align-top pt-4 px-1"
+                  className="border border-slate-400 text-center font-bold text-slate-900 text-[13px] bg-white align-middle px-1"
                 >
-                  <div className="sticky top-2">
+                  <div>
                     <span className="block text-[14px] font-extrabold text-slate-800 tracking-tight">
                       {record.date}
                     </span>
@@ -648,8 +666,8 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
               </tr>
 
               {/* Row 6: Today's Stock - Light Mint Sage (#e2f0d9) */}
-              <tr className="bg-[#e2f0d9] hover:bg-[#d8ebd0] transition-colors border-t-2 border-slate-400">
-                <td className="border-t-2 border-slate-400 text-center font-bold text-slate-900 text-[13px] bg-white">
+              <tr className="bg-[#e2f0d9] hover:bg-[#d8ebd0] transition-colors font-bold">
+                <td className="border border-slate-400 bg-white">
                   {/* Empty cell matching rowSpan=5 layout */}
                 </td>
 

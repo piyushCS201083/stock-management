@@ -3,15 +3,16 @@ import {
   DayRecord,
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_TEAM_MEMBERS,
-  INITIAL_RECORD_27_10_2026,
+  INITIAL_RECORD_31_10_2026,
   TeamMember,
 } from '../types/stock';
+import { addDaysToDateString } from './date';
 
 const STORAGE_KEYS = {
-  RECORDS: 'battery_stock_records_v1',
-  COLUMNS: 'battery_stock_columns_v1',
-  TEAM: 'battery_stock_team_v1',
-  SELECTED_DATE: 'battery_stock_selected_date_v1',
+  RECORDS: 'battery_stock_records_v3_ist',
+  COLUMNS: 'battery_stock_columns_v3',
+  TEAM: 'battery_stock_team_v3',
+  SELECTED_DATE: 'battery_stock_selected_date_v3',
 };
 
 // Calculate summary totals for a day's record
@@ -92,20 +93,23 @@ export function generateAutoCausesSummary(record: DayRecord, columns: BatteryCol
   return causes.map((c, i) => `${i + 1}. ${c}`).join('\n');
 }
 
-// Load records from LocalStorage
+// Load records from LocalStorage (with clean 31-10-2026 baseline)
 export function loadRecords(): Record<string, DayRecord> {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.RECORDS);
     if (data) {
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (parsed && Object.keys(parsed).length > 0) {
+        return parsed;
+      }
     }
   } catch (e) {
     console.error('Failed to load records from storage', e);
   }
 
-  // Seed default initial record
+  // Seed with 31-10-2026 official photo baseline
   const initialMap: Record<string, DayRecord> = {
-    [INITIAL_RECORD_27_10_2026.date]: INITIAL_RECORD_27_10_2026,
+    [INITIAL_RECORD_31_10_2026.date]: INITIAL_RECORD_31_10_2026,
   };
   saveRecords(initialMap);
   return initialMap;
@@ -159,27 +163,9 @@ export function saveTeamMembers(team: TeamMember[]) {
   }
 }
 
-// Create next date string given DD-MM-YYYY
-export function getNextDateString(dateStr: string): string {
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    const day = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
-    const year = parseInt(parts[2], 10);
-    const date = new Date(year, month, day);
-    date.setDate(date.getDate() + 1);
-
-    const nextDay = String(date.getDate()).padStart(2, '0');
-    const nextMonth = String(date.getMonth() + 1).padStart(2, '0');
-    const nextYear = date.getFullYear();
-    return `${nextDay}-${nextMonth}-${nextYear}`;
-  }
-  return dateStr;
-}
-
 // Initialize a new day carrying over closing stock from previous day
 export function createNextDayRecord(prevRecord: DayRecord, columns: BatteryColumn[]): DayRecord {
-  const nextDate = getNextDateString(prevRecord.date);
+  const nextDate = addDaysToDateString(prevRecord.date, 1);
   const totals = calculateRecordTotals(prevRecord, columns);
 
   const newStock: Record<string, number> = {};
@@ -213,6 +199,6 @@ export function createNextDayRecord(prevRecord: DayRecord, columns: BatteryColum
     repairInCause: '',
     repairOutCause: '',
     lastModified: new Date().toISOString(),
-    notes: `Carried forward from ${prevRecord.date}`,
+    notes: `Carried forward from ${prevRecord.date} closing stock`,
   };
 }
