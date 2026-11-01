@@ -4,6 +4,7 @@ import {
   BatterySerialItem,
   DayRecord,
   TeamMember,
+  INITIAL_RECORD_31_10_2026,
 } from './types/stock';
 import {
   loadRecords,
@@ -70,19 +71,46 @@ import {
   isAfterTodayIST,
 } from './utils/date';
 
+// Helper to guarantee today's ledger exists with carried forward closing stock
+function ensureTodayLedger(
+  recordsMap: Record<string, DayRecord>,
+  cols: BatteryColumn[]
+): Record<string, DayRecord> {
+  const today = getIndianTodayDate();
+  if (recordsMap[today]) {
+    return recordsMap;
+  }
+
+  const sortedDates = Object.keys(recordsMap).sort((a, b) => {
+    return toISODateString(a).localeCompare(toISODateString(b));
+  });
+
+  const latestDate = sortedDates[sortedDates.length - 1];
+  const baseRecord = recordsMap[latestDate] || INITIAL_RECORD_31_10_2026;
+
+  const todayRecord = createNextDayRecord(baseRecord, cols);
+  todayRecord.date = today;
+  todayRecord.notes = `Auto-created for Today (${today}) carrying forward closing stock from ${baseRecord.date}`;
+
+  const updated = { ...recordsMap, [today]: todayRecord };
+  saveRecords(updated);
+  apiSaveRecord(todayRecord).catch(() => {});
+  return updated;
+}
+
 export default function App() {
-  const [records, setRecords] = useState<Record<string, DayRecord>>(() => loadRecords());
   const [columns, setColumns] = useState<BatteryColumn[]>(() => loadColumns());
+  const [records, setRecords] = useState<Record<string, DayRecord>>(() => {
+    const loaded = loadRecords();
+    const cols = loadColumns();
+    return ensureTodayLedger(loaded, cols);
+  });
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
   const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() => loadLocalSerials());
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
-  // Current active date (defaults to 31-10-2026 baseline or current IST date)
-  const [currentDate, setCurrentDate] = useState<string>(() => {
-    const dates = Object.keys(records);
-    if (dates.includes('31-10-2026')) return '31-10-2026';
-    return dates.length > 0 ? dates[0] : '31-10-2026';
-  });
+  // Current active date automatically defaults to today's date in Indian Standard Time (IST)
+  const [currentDate, setCurrentDate] = useState<string>(() => getIndianTodayDate());
 
   // Modal states
   const [isQuickEntryOpen, setIsQuickEntryOpen] = useState(false);
@@ -117,8 +145,11 @@ export default function App() {
         checkBackendHealth(),
       ]);
 
+      const activeCols = remoteCols && remoteCols.length > 0 ? remoteCols : columns;
+
       if (remoteRecords && Object.keys(remoteRecords).length > 0) {
-        setRecords(remoteRecords);
+        const withToday = ensureTodayLedger(remoteRecords, activeCols);
+        setRecords(withToday);
       }
       if (remoteCols && remoteCols.length > 0) {
         setColumns(remoteCols);
@@ -384,9 +415,36 @@ export default function App() {
     showToast(`Created ${targetDate} ledger carrying forward closing balance!`);
   };
 
-  // Navigate between recorded dates
-  const recordedDates = Object.keys(records).sort();
+  // Today in Indian Standard Time (IST)
+  const todayIST = getIndianTodayDate();
+  const isViewingToday = currentDate === todayIST;
+
+  // Chronologically sorted recorded dates
+  const recordedDates = useMemo(() => {
+    return Object.keys(records).sort((a, b) => {
+      return toISODateString(a).localeCompare(toISODateString(b));
+    });
+  }, [records]);
+
   const currentIndex = recordedDates.indexOf(currentDate);
+
+  // Periodically check if day rolled over in IST and keep today updated
+  useEffect(() => {
+    const checkDayRollover = () => {
+      const liveToday = getIndianTodayDate();
+      setRecords((prev) => {
+        if (!prev[liveToday]) {
+          const withToday = ensureTodayLedger(prev, columns);
+          setCurrentDate(liveToday);
+          return withToday;
+        }
+        return prev;
+      });
+    };
+
+    const interval = setInterval(checkDayRollover, 30000);
+    return () => clearInterval(interval);
+  }, [columns]);
 
   const handlePrevDate = () => {
     if (currentIndex > 0) {
@@ -400,7 +458,7 @@ export default function App() {
     } else {
       const nextDate = addDaysToDateString(currentDate, 1);
       if (isAfterTodayIST(nextDate)) {
-        showToast(`Already at latest ledger up to today (${getIndianTodayDate()})`);
+        showToast(`Already at today's active ledger (${todayIST})`);
         return;
       }
       handleCreateNextDay();
@@ -423,12 +481,11 @@ export default function App() {
 
   // Jump to Indian Standard Time (IST) Today
   const handleJumpToTodayIST = () => {
-    const todayIST = getIndianTodayDate();
     if (records[todayIST]) {
       setCurrentDate(todayIST);
       showToast(`Switched to today's date in India: ${todayIST}`);
     } else {
-      // Prompt to create today carrying forward from the latest record
+      // Create today carrying forward from the latest record
       const latestDate = recordedDates[recordedDates.length - 1];
       const baseRecord = records[latestDate] || currentRecord;
       const newDayRecord = createNextDayRecord(baseRecord, columns);
@@ -483,7 +540,13 @@ export default function App() {
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             {/* Left: Date Switcher & Day Navigation & Cloud Status */}
             <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg p-1">
+              <div
+                className={`flex items-center rounded-lg p-1 transition-all ${
+                  isViewingToday
+                    ? 'bg-blue-50/90 border-2 border-blue-500 shadow-xs ring-2 ring-blue-500/20'
+                    : 'bg-slate-50 border border-slate-300'
+                }`}
+              >
                 <button
                   onClick={handlePrevDate}
                   disabled={currentIndex <= 0}
@@ -502,10 +565,28 @@ export default function App() {
                   >
                     {recordedDates.map((d) => (
                       <option key={d} value={d}>
-                        {d} {d === '31-10-2026' ? '(Official Photo Baseline)' : ''}
+                        {d} {d === todayIST ? '★ (Today)' : d === '31-10-2026' ? '(Official Photo Baseline)' : ''}
                       </option>
                     ))}
                   </select>
+
+                  {/* Auto-updating Today indicator badge */}
+                  {isViewingToday ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span>Today</span>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleJumpToTodayIST}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer"
+                      title="Return to today's active ledger"
+                    >
+                      <span>Jump to Today</span>
+                    </button>
+                  )}
+
                   <input
                     type="date"
                     max={getIndianTodayISODate()}
@@ -523,8 +604,9 @@ export default function App() {
 
                 <button
                   onClick={handleNextDate}
-                  className="p-1.5 text-slate-600 hover:text-slate-900 rounded hover:bg-slate-200 cursor-pointer"
-                  title="Next Date or Create Tomorrow"
+                  disabled={isViewingToday}
+                  className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
+                  title={isViewingToday ? "Already at today's active ledger" : "Next Date / Tomorrow"}
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
@@ -532,10 +614,15 @@ export default function App() {
 
               <button
                 onClick={handleJumpToTodayIST}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-300 transition-colors cursor-pointer"
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                  isViewingToday
+                    ? 'text-emerald-900 bg-emerald-50 border-emerald-400 font-bold shadow-2xs'
+                    : 'text-amber-900 bg-amber-50 hover:bg-amber-100 border-amber-300'
+                }`}
                 title="Jump to today's date in India Standard Time"
               >
-                <span>Today (IST)</span>
+                {isViewingToday && <span className="w-2 h-2 rounded-full bg-emerald-500"></span>}
+                <span>Today ({todayIST})</span>
               </button>
 
               <button
