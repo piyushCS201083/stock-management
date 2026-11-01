@@ -12,7 +12,9 @@ import {
   Edit2,
   Clock,
   Sparkles,
+  Camera,
 } from 'lucide-react';
+import { BarcodeScannerModal } from './BarcodeScannerModal';
 
 interface AssignSerialModalProps {
   isOpen: boolean;
@@ -73,6 +75,30 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
   });
 
   const [activeTab, setActiveTab] = useState<'assign_missing' | 'manage_existing'>('assign_missing');
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+
+  const handleScanComplete = (scannedSerial: string) => {
+    const trimmed = scannedSerial.trim();
+    if (!trimmed) return;
+    setNewSerials((prev) => {
+      // If already in list, do not duplicate
+      if (prev.some((r) => r.serialNo.toLowerCase() === trimmed.toLowerCase())) {
+        return prev;
+      }
+      // If first row is empty, fill it
+      if (prev.length === 1 && !prev[0].serialNo.trim()) {
+        return [{ ...prev[0], serialNo: trimmed }];
+      }
+      return [
+        ...prev,
+        {
+          serialNo: trimmed,
+          inwardPartner: '',
+          inwardCause: `Barcode scanned on ${activeDate}`,
+        },
+      ];
+    });
+  };
 
   // Initialize new serial input rows when modal opens or missingCount changes
   useEffect(() => {
@@ -324,14 +350,25 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs font-bold text-slate-700">
                   <span>Battery Serial Number Rows</span>
-                  <button
-                    type="button"
-                    onClick={handleAddRow}
-                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-semibold cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Another Serial</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsScannerOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-all cursor-pointer shadow-2xs"
+                      title="Scan battery barcodes or QR codes with camera"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>Scan Barcode</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAddRow}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md font-semibold cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Row</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-2 max-h-[42vh] overflow-y-auto pr-1">
@@ -659,6 +696,13 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
           )}
         </div>
       </div>
+
+      <BarcodeScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        initialModelName={modelName}
+        onScanComplete={handleScanComplete}
+      />
     </div>
   );
 };

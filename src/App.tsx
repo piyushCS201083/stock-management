@@ -47,6 +47,7 @@ import { SerialTrackerModal } from './components/SerialTrackerModal';
 import { ReferenceImageViewer } from './components/ReferenceImageViewer';
 import { BatchStockOverview } from './components/BatchStockOverview';
 import { AssignSerialModal } from './components/AssignSerialModal';
+import { BarcodeScannerModal } from './components/BarcodeScannerModal';
 import { formatPhoneNumber, getWhatsAppUrl } from './utils/whatsapp';
 import {
   Calendar,
@@ -159,6 +160,7 @@ export default function App() {
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
   const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
   const [isSerialModalOpen, setIsSerialModalOpen] = useState(false);
+  const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
   const [assignModal, setAssignModal] = useState<{
     isOpen: boolean;
     modelId: string;
@@ -172,6 +174,27 @@ export default function App() {
   });
   const [selectedSerialHistory, setSelectedSerialHistory] = useState<BatterySerialItem | null>(null);
   const [notificationToast, setNotificationToast] = useState<string | null>(null);
+
+  const handleBarcodeScanComplete = (scannedSerial: string, detectedBatch?: string) => {
+    const trimmed = scannedSerial.trim();
+    if (!trimmed) return;
+    try {
+      navigator.clipboard.writeText(trimmed);
+    } catch {}
+
+    const found =
+      serials[trimmed] ||
+      Object.values(serials).find(
+        (s) => s.serialNo.toLowerCase() === trimmed.toLowerCase()
+      );
+
+    if (found) {
+      setSelectedSerialHistory(found);
+      showToast(`✓ Found Battery: ${found.serialNo} (${found.modelName}) — Copied to clipboard!`);
+    } else {
+      showToast(`✓ Scanned Serial: ${trimmed} (Copied to clipboard)`);
+    }
+  };
 
   const tableRef = useRef<HTMLDivElement>(null);
 
@@ -775,6 +798,15 @@ export default function App() {
             {/* Right: Quick Action Buttons */}
             <div className="flex items-center gap-2 flex-wrap">
               <button
+                onClick={() => setIsBarcodeScannerOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 border border-blue-700 rounded-lg shadow-xs transition-all cursor-pointer ring-2 ring-blue-500/20"
+                title="Scan any barcode or QR code with high-speed camera scanner"
+              >
+                <Barcode className="w-4 h-4 text-white" />
+                <span>Scan Barcode</span>
+              </button>
+
+              <button
                 onClick={() => setIsSerialModalOpen(true)}
                 className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 border border-amber-500 rounded-lg shadow-xs transition-all cursor-pointer ring-1 ring-amber-400/50"
                 title="Search battery serials, view batchwise stock, and trace complete history"
@@ -1123,6 +1155,12 @@ export default function App() {
         activeDate={currentRecord.date}
         onSaveSerials={handleBulkSaveSerials}
         onUpdateSerial={handleUpdateSingleSerial}
+      />
+
+      <BarcodeScannerModal
+        isOpen={isBarcodeScannerOpen}
+        onClose={() => setIsBarcodeScannerOpen(false)}
+        onScanComplete={handleBarcodeScanComplete}
       />
 
       {/* Direct Lifecycle History Timeline Modal from Top Search Bar */}
