@@ -177,8 +177,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       updated.stock = { ...updated.stock, service: current + quantity };
     }
 
-    // Process Serial Numbers entered (clean list)
-    const rawSerials = serialInput
+    // Process Serial Numbers (user-provided or auto-serialized for 100% cloud tracking)
+    let finalSerials = serialInput
       .split(/[\n,]+/)
       .map((s) => s.trim())
       .filter(Boolean);
@@ -190,7 +190,20 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         ? { id: 'service', name: 'SERVICE BATTERY' }
         : columns.find((c) => c.id === selectedColId) || { id: selectedColId, name: selectedColId };
 
-    const serialEntries: SerialEntryPayload[] = rawSerials.map((s) => ({
+    // If inward transaction and user didn't enter all serials, auto-generate unique serials for remaining units
+    if (entryType === 'in' && finalSerials.length < quantity) {
+      const cleanPrefix = targetModel.name
+        .replace(/[×x\s]/g, '')
+        .replace(/[^A-Za-z0-9]/g, '')
+        .toUpperCase()
+        .slice(0, 6) || 'BAT';
+      const randomBase = Math.floor(1000 + Math.random() * 9000);
+      const needed = quantity - finalSerials.length;
+      const generated = Array.from({ length: needed }, (_, i) => `BAT-${cleanPrefix}-${randomBase + i}`);
+      finalSerials = [...finalSerials, ...generated];
+    }
+
+    const serialEntries: SerialEntryPayload[] = finalSerials.map((s) => ({
       serialNo: s,
       batchNo: batchNo.trim() || targetModel.name,
       modelId: targetModel.id,

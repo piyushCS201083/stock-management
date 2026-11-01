@@ -35,6 +35,8 @@ import {
   saveLocalSerials,
   checkBackendHealth,
   BackendStatus,
+  subscribeRealtimeSync,
+  apiBackupPermanentCodebase,
 } from './services/api';
 import { exportRecordToExcel } from './utils/excelExport';
 import { Header } from './components/Header';
@@ -198,7 +200,9 @@ export default function App() {
 
   const tableRef = useRef<HTMLDivElement>(null);
 
-  // Sync data from Cloud DBMS / backend on mount
+  const [isRealtimeActive, setIsRealtimeActive] = useState<boolean>(true);
+
+  // Sync data from Cloud DBMS / backend on mount & subscribe to Real-Time SSE
   const syncWithCloudBackend = async () => {
     try {
       const [remoteRecords, remoteCols, remoteTeam, remoteSerials, health] = await Promise.all([
@@ -246,6 +250,61 @@ export default function App() {
 
   useEffect(() => {
     syncWithCloudBackend();
+
+    // Subscribe to live multi-device Real-Time Cloud Synchronization
+    const unsubscribe = subscribeRealtimeSync({
+      onRecordUpdated: (updatedRecord) => {
+        setRecords((prev) => ({
+          ...prev,
+          [updatedRecord.date]: updatedRecord,
+        }));
+        showToast(`⚡ Real-Time Cloud: Updated ledger for ${updatedRecord.date}`);
+      },
+      onRecordDeleted: (deletedDate) => {
+        setRecords((prev) => {
+          const copy = { ...prev };
+          delete copy[deletedDate];
+          return copy;
+        });
+      },
+      onSerialUpdated: (updatedSerial) => {
+        setSerials((prev) => ({
+          ...prev,
+          [updatedSerial.serialNo]: updatedSerial,
+        }));
+        showToast(`⚡ Real-Time Cloud: Updated serial ${updatedSerial.serialNo}`);
+      },
+      onSerialsBulkUpdated: (updatedList) => {
+        setSerials((prev) => {
+          const copy = { ...prev };
+          updatedList.forEach((s) => {
+            copy[s.serialNo] = s;
+          });
+          return copy;
+        });
+        showToast(`⚡ Real-Time Cloud: ${updatedList.length} battery serials synchronized`);
+      },
+      onSerialDeleted: (deletedSerialNo) => {
+        setSerials((prev) => {
+          const copy = { ...prev };
+          delete copy[deletedSerialNo];
+          return copy;
+        });
+      },
+      onColumnsUpdated: (updatedCols) => {
+        setColumns(updatedCols);
+      },
+      onTeamUpdated: (updatedTeam) => {
+        setTeamMembers(updatedTeam);
+      },
+      onConnectionChange: (connected) => {
+        setIsRealtimeActive(connected);
+      },
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   // Active day record
@@ -308,7 +367,8 @@ export default function App() {
     setSerials(updated);
     saveLocalSerials(updated);
     await apiBulkSaveSerials(newItems);
-    showToast(`Assigned & registered ${newItems.length} serial number(s) successfully!`);
+    await apiBackupPermanentCodebase(records, updated);
+    showToast(`✓ Assigned & permanently registered ${newItems.length} serials in Cloud DBMS!`);
   };
 
   // Update single serial from edit form
@@ -317,7 +377,8 @@ export default function App() {
     setSerials(updated);
     saveLocalSerials(updated);
     await apiSaveSerial(updatedItem);
-    showToast(`Updated battery serial: ${updatedItem.serialNo}`);
+    await apiBackupPermanentCodebase(records, updated);
+    showToast(`✓ Permanently updated serial: ${updatedItem.serialNo} in Cloud DBMS`);
   };
 
   // Update records in state, localStorage, and Cloud DBMS
@@ -330,11 +391,11 @@ export default function App() {
     setRecords(newRecords);
     saveRecords(newRecords);
 
-    // Process serial numbers if entered (tracked in-app only, NOT on Excel photo)
-    if (serialEntries && serialEntries.length > 0) {
-      const updatedSerials = { ...serials };
-      const savedList: BatterySerialItem[] = [];
+    let updatedSerials = { ...serials };
+    const savedList: BatterySerialItem[] = [];
 
+    // Process serial numbers if entered or auto-generated for inward
+    if (serialEntries && serialEntries.length > 0) {
       serialEntries.forEach((entry) => {
         const existing: BatterySerialItem = updatedSerials[entry.serialNo] || {
           serialNo: entry.serialNo,
@@ -390,15 +451,18 @@ export default function App() {
       });
 
       setSerials(updatedSerials);
-      apiBulkSaveSerials(savedList);
-      showToast(`Tracked ${savedList.length} battery serial numbers in app`);
+      saveLocalSerials(updatedSerials);
+      await apiBulkSaveSerials(savedList);
+      showToast(`✓ Inward ${savedList.length} batteries serialized & backed up in Cloud!`);
     } else {
       showToast(`Saving ${updated.date} to Cloud DBMS...`);
     }
 
-    // Async save to Cloud DBMS (Render / PostgreSQL)
+    // Async save to Cloud DBMS (Render / PostgreSQL) and permanent disk backup
     try {
       await apiSaveRecord(updated);
+      await apiBackupPermanentCodebase(newRecords, updatedSerials);
+      showToast(`✓ Stock change permanently backed up to Cloud DBMS & real-time broadcasted!`);
     } catch (e) {
       showToast(`Saved locally (will sync when online)`);
     }
@@ -580,6 +644,7 @@ export default function App() {
         activeCategory={activeCategory}
         onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
         onSelectCategory={(cat) => setActiveCategory(cat)}
+        isRealtimeActive={isRealtimeActive}
       />
 
       {/* Branch & Category Navigation Bar */}

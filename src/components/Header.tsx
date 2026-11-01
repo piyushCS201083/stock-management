@@ -25,6 +25,7 @@ interface HeaderProps {
   activeCategory: StockCategoryId;
   onOpenBranchPortal: () => void;
   onSelectCategory: (cat: StockCategoryId) => void;
+  isRealtimeActive?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -39,6 +40,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeCategory,
   onOpenBranchPortal,
   onSelectCategory,
+  isRealtimeActive = true,
 }) => {
   const [istTime, setIstTime] = useState<string>(() => getIndianCurrentTime());
 
@@ -88,6 +90,29 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Clock className="w-3 h-3 text-amber-700" />
           <span>IST: {istTime}</span>
+        </div>
+
+        {/* Real-time Cloud Synchronization Indicator */}
+        <div
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+            isRealtimeActive
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+              : 'bg-amber-50 border-amber-300 text-amber-800'
+          }`}
+          title={
+            isRealtimeActive
+              ? 'Real-Time Cloud Synchronization Active: All stock and serial changes persist permanently to cloud and sync instantly across all devices'
+              : 'Reconnecting to Real-Time Cloud...'
+          }
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${
+              isRealtimeActive ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+            }`}
+          />
+          <span className="hidden sm:inline">
+            {isRealtimeActive ? 'Cloud Live Synced' : 'Syncing...'}
+          </span>
         </div>
       </div>
 

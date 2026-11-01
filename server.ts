@@ -21,6 +21,7 @@ import {
   saveSerial,
   bulkSaveSerials,
   deleteSerial,
+  backupPermanentCodebase,
 } from './server/db.ts';
 
 dotenv.config();
@@ -31,6 +32,25 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
+
+// Real-Time Server-Sent Events (SSE) Hub
+interface RealtimeClient {
+  id: string;
+  res: express.Response;
+}
+const realtimeClients: RealtimeClient[] = [];
+
+function broadcastRealtime(event: string, payload: any) {
+  const message = `data: ${JSON.stringify({ event, payload, timestamp: new Date().toISOString() })}\n\n`;
+  for (let i = realtimeClients.length - 1; i >= 0; i--) {
+    const client = realtimeClients[i];
+    try {
+      client.res.write(message);
+    } catch {
+      realtimeClients.splice(i, 1);
+    }
+  }
+}
 
 // CORS configuration to allow Vercel frontend or any domain
 const allowedOrigins = process.env.CORS_ORIGIN
@@ -52,6 +72,44 @@ app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 // Initialize DBMS connection (PostgreSQL or persistent file)
 initDb().catch((err) => {
   console.error('[Server] DBMS initialization error:', err);
+});
+
+// Real-Time SSE Stream Endpoint
+app.get('/api/realtime', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders?.();
+
+  const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+  const client: RealtimeClient = { id: clientId, res };
+  realtimeClients.push(client);
+
+  res.write(
+    `data: ${JSON.stringify({
+      event: 'CONNECTED',
+      clientId,
+      activeClients: realtimeClients.length,
+      timestamp: new Date().toISOString(),
+    })}\n\n`
+  );
+
+  const pingInterval = setInterval(() => {
+    try {
+      res.write(`:ping\n\n`);
+    } catch {
+      clearInterval(pingInterval);
+    }
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(pingInterval);
+    const idx = realtimeClients.findIndex((c) => c.id === clientId);
+    if (idx !== -1) {
+      realtimeClients.splice(idx, 1);
+    }
+  });
 });
 
 // API Routes
@@ -97,6 +155,7 @@ app.post('/api/records', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Date is required' });
     }
     const saved = await saveRecord(record);
+    broadcastRealtime('RECORD_UPDATED', saved);
     res.json({ success: true, data: saved });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -106,6 +165,9 @@ app.post('/api/records', async (req, res) => {
 app.delete('/api/records/:date', async (req, res) => {
   try {
     const success = await deleteRecord(req.params.date);
+    if (success) {
+      broadcastRealtime('RECORD_DELETED', { date: req.params.date });
+    }
     res.json({ success });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -129,6 +191,7 @@ app.post('/api/columns', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Columns must be an array' });
     }
     const saved = await saveColumns(columns);
+    broadcastRealtime('COLUMNS_UPDATED', saved);
     res.json({ success: true, data: saved });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -152,6 +215,7 @@ app.post('/api/team', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Team members must be an array' });
     }
     const saved = await saveTeamMembers(team);
+    broadcastRealtime('TEAM_UPDATED', saved);
     res.json({ success: true, data: saved });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -187,6 +251,7 @@ app.post('/api/serials', async (req, res) => {
       return res.status(400).json({ success: false, error: 'serialNo is required' });
     }
     const saved = await saveSerial(item);
+    broadcastRealtime('SERIAL_UPDATED', saved);
     res.json({ success: true, data: saved });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -200,6 +265,7 @@ app.post('/api/serials/bulk', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Items must be an array' });
     }
     const saved = await bulkSaveSerials(items);
+    broadcastRealtime('SERIALS_BULK_UPDATED', saved);
     res.json({ success: true, data: saved });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -209,7 +275,22 @@ app.post('/api/serials/bulk', async (req, res) => {
 app.delete('/api/serials/:serialNo', async (req, res) => {
   try {
     const success = await deleteSerial(req.params.serialNo);
+    if (success) {
+      broadcastRealtime('SERIAL_DELETED', { serialNo: req.params.serialNo });
+    }
     res.json({ success });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Permanent Codebase & Disk Backup Sync
+app.post('/api/backup-permanent', async (req, res) => {
+  try {
+    const { records, serials } = req.body || {};
+    const result = await backupPermanentCodebase(records, serials);
+    broadcastRealtime('PERMANENT_SYNC_COMPLETE', result);
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

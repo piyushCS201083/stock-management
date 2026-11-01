@@ -162,7 +162,7 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
         await client.query(
           `INSERT INTO stock_records (date, data, updated_at)
            VALUES ($1, $2, NOW())
-           ON CONFLICT (date) DO UPDATE SET data = $2, updated_at = NOW()`,
+           ON CONFLICT (date) DO NOTHING`,
           [INITIAL_RECORD_31_10_2026.date, JSON.stringify(INITIAL_RECORD_31_10_2026)]
         );
         await client.query(
@@ -480,4 +480,46 @@ export async function deleteSerial(serialNo: string): Promise<boolean> {
     return true;
   }
   return false;
+}
+
+export async function backupPermanentCodebase(
+  records?: Record<string, DayRecord>,
+  serials?: Record<string, BatterySerialItem>
+): Promise<{ success: boolean; timestamp: string; recordCount: number; serialCount: number }> {
+  const local = readLocalFile();
+  if (records && Object.keys(records).length > 0) {
+    local.records = { ...local.records, ...records };
+  }
+  if (serials && Object.keys(serials).length > 0) {
+    local.serials = { ...local.serials, ...serials };
+  }
+  local.logs.unshift({
+    action: 'PERMANENT_CODEBASE_BACKUP',
+    timestamp: new Date().toISOString(),
+    details: 'Permanent stock and serial snapshot flushed to disk and cloud state',
+  });
+  writeLocalFile(local);
+
+  // If Postgres is connected, ensure all records and serials are synced
+  if (isPostgresConnected && pgPool) {
+    try {
+      if (records) {
+        for (const [date, rec] of Object.entries(records)) {
+          await saveRecord(rec);
+        }
+      }
+      if (serials) {
+        await bulkSaveSerials(Object.values(serials));
+      }
+    } catch (e) {
+      console.warn('[DBMS] PG backup warning:', e);
+    }
+  }
+
+  return {
+    success: true,
+    timestamp: new Date().toISOString(),
+    recordCount: Object.keys(local.records).length,
+    serialCount: Object.keys(local.serials).length,
+  };
 }

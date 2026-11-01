@@ -338,3 +338,174 @@ export async function apiBulkSaveSerials(items: BatterySerialItem[]): Promise<Ba
   }
   return items;
 }
+
+// Backup current state permanently to disk & cloud database
+export async function apiBackupPermanentCodebase(
+  records?: Record<string, DayRecord>,
+  serials?: Record<string, BatterySerialItem>
+): Promise<boolean> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/backup-permanent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records, serials }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('[API] Backup permanent codebase deferred:', err);
+    return false;
+  }
+}
+
+// Real-Time Cloud Synchronization Callback Interface
+export interface RealtimeSyncCallbacks {
+  onRecordUpdated?: (record: DayRecord) => void;
+  onRecordDeleted?: (date: string) => void;
+  onSerialUpdated?: (serial: BatterySerialItem) => void;
+  onSerialsBulkUpdated?: (serials: BatterySerialItem[]) => void;
+  onSerialDeleted?: (serialNo: string) => void;
+  onColumnsUpdated?: (columns: BatteryColumn[]) => void;
+  onTeamUpdated?: (team: TeamMember[]) => void;
+  onConnectionChange?: (connected: boolean) => void;
+}
+
+// Subscribe to Real-Time Cloud Synchronization (SSE + BroadcastChannel)
+export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => void {
+  const base = getApiBaseUrl();
+  let eventSource: EventSource | null = null;
+  let isClosed = false;
+  let reconnectTimeout: any = null;
+
+  // 1. Instant local cross-tab BroadcastChannel
+  let channel: BroadcastChannel | null = null;
+  if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+    try {
+      channel = new BroadcastChannel('stock_realtime_hub');
+      channel.onmessage = (evt) => {
+        const { event, payload } = evt.data || {};
+        handleIncomingEvent(event, payload);
+      };
+    } catch {
+      // BroadcastChannel not available
+    }
+  }
+
+  function handleIncomingEvent(event: string, payload: any) {
+    switch (event) {
+      case 'RECORD_UPDATED':
+        if (payload?.date) {
+          const local = loadLocalRecords();
+          local[payload.date] = payload;
+          saveLocalRecords(local);
+          callbacks.onRecordUpdated?.(payload);
+        }
+        break;
+      case 'RECORD_DELETED':
+        if (payload?.date) {
+          const local = loadLocalRecords();
+          delete local[payload.date];
+          saveLocalRecords(local);
+          callbacks.onRecordDeleted?.(payload.date);
+        }
+        break;
+      case 'SERIAL_UPDATED':
+        if (payload?.serialNo) {
+          const local = loadLocalSerials();
+          local[payload.serialNo] = payload;
+          saveLocalSerials(local);
+          callbacks.onSerialUpdated?.(payload);
+        }
+        break;
+      case 'SERIALS_BULK_UPDATED':
+        if (Array.isArray(payload)) {
+          const local = loadLocalSerials();
+          payload.forEach((s: BatterySerialItem) => {
+            local[s.serialNo] = s;
+          });
+          saveLocalSerials(local);
+          callbacks.onSerialsBulkUpdated?.(payload);
+        }
+        break;
+      case 'SERIAL_DELETED':
+        if (payload?.serialNo) {
+          const local = loadLocalSerials();
+          delete local[payload.serialNo];
+          saveLocalSerials(local);
+          callbacks.onSerialDeleted?.(payload.serialNo);
+        }
+        break;
+      case 'COLUMNS_UPDATED':
+        if (Array.isArray(payload)) {
+          saveLocalColumns(payload);
+          callbacks.onColumnsUpdated?.(payload);
+        }
+        break;
+      case 'TEAM_UPDATED':
+        if (Array.isArray(payload)) {
+          saveLocalTeamMembers(payload);
+          callbacks.onTeamUpdated?.(payload);
+        }
+        break;
+      case 'PERMANENT_SYNC_COMPLETE':
+        // Full sync refreshed
+        break;
+    }
+  }
+
+  // 2. Connect to Server-Sent Events stream from Cloud backend
+  function connectSSE() {
+    if (isClosed) return;
+    try {
+      const url = `${base}/api/realtime`;
+      eventSource = new EventSource(url);
+
+      eventSource.onopen = () => {
+        callbacks.onConnectionChange?.(true);
+      };
+
+      eventSource.onmessage = (msg) => {
+        try {
+          const parsed = JSON.parse(msg.data);
+          if (parsed && parsed.event) {
+            handleIncomingEvent(parsed.event, parsed.payload);
+            // Also mirror to other local tabs
+            try {
+              channel?.postMessage(parsed);
+            } catch {}
+          }
+        } catch {
+          // ignore heartbeats
+        }
+      };
+
+      eventSource.onerror = () => {
+        callbacks.onConnectionChange?.(false);
+        eventSource?.close();
+        if (!isClosed) {
+          reconnectTimeout = setTimeout(connectSSE, 4000);
+        }
+      };
+    } catch (e) {
+      callbacks.onConnectionChange?.(false);
+      if (!isClosed) {
+        reconnectTimeout = setTimeout(connectSSE, 4000);
+      }
+    }
+  }
+
+  connectSSE();
+
+  return () => {
+    isClosed = true;
+    clearTimeout(reconnectTimeout);
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+    if (channel) {
+      channel.close();
+      channel = null;
+    }
+  };
+}
