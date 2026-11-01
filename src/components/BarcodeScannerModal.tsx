@@ -18,6 +18,10 @@ import {
   Copy,
   Volume2,
   VolumeX,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Scan,
 } from 'lucide-react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { getApiBaseUrl } from '../services/api';
@@ -88,6 +92,41 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
   // Manual input fallback field
   const [manualSerialInput, setManualSerialInput] = useState<string>('');
+
+  // Zoom & Barcode Enlarge controls (to perfectly fit barcode in box)
+  const [zoomLevel, setZoomLevel] = useState<number>(1.0);
+  const [hardwareZoomSupported, setHardwareZoomSupported] = useState<boolean>(false);
+  const [maxHardwareZoom, setMaxHardwareZoom] = useState<number>(3.5);
+  const [boxPreset, setBoxPreset] = useState<'standard' | 'wide' | 'tall'>('standard');
+
+  // Enlarge barcode image to perfectly fill laser targeting box
+  const applyZoom = useCallback(
+    async (targetZoom: number) => {
+      const clamped = Math.max(1.0, Math.min(3.5, Number(targetZoom.toFixed(1))));
+      setZoomLevel(clamped);
+
+      // 1. Hardware camera track zoom (supported on Android Chrome, webcams & high-end mobile cameras)
+      if (scannerRef.current) {
+        try {
+          await scannerRef.current.applyVideoConstraints({
+            advanced: [{ zoom: clamped } as any],
+          });
+        } catch {
+          // Hardware zoom unsupported or denied, fallback seamlessly to CSS scale
+        }
+      }
+
+      // 2. CSS transform scale on video element inside #html5-barcode-scanner-viewfinder
+      // Visually and physically enlarges the barcode image inside the container so it fits the targeting box exactly!
+      const videoEl = document.querySelector(`#${containerId} video`) as HTMLVideoElement | null;
+      if (videoEl) {
+        videoEl.style.transform = `scale(${clamped})`;
+        videoEl.style.transformOrigin = 'center center';
+        videoEl.style.transition = 'transform 0.15s ease-out';
+      }
+    },
+    [containerId]
+  );
 
   // Handle successful barcode recognition
   const handleBarcodeDetected = useCallback(
@@ -198,14 +237,27 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
       setIsCameraActive(true);
 
-      // Check torch capability
+      // Check torch and hardware zoom capabilities
       try {
         const capabilities = (scanner.getRunningTrackCapabilities?.() || {}) as any;
         if (capabilities.torch) {
           setHasTorch(true);
         }
+        if (capabilities.zoom) {
+          setHardwareZoomSupported(true);
+          if (capabilities.zoom.max) {
+            setMaxHardwareZoom(capabilities.zoom.max);
+          }
+        }
       } catch {
         setHasTorch(false);
+      }
+
+      // Re-apply preserved zoom level so enlarged view persists
+      if (zoomLevel > 1.0) {
+        setTimeout(() => {
+          applyZoom(zoomLevel);
+        }, 150);
       }
     } catch (err: any) {
       console.warn('Barcode scanner start error:', err);
@@ -487,6 +539,118 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
           )}
         </div>
 
+        {/* Zoom & Enlarge Controls Bar (Quickly enlarge barcode to fit box) */}
+        <div className="px-3.5 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2.5 text-xs shrink-0 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+              <ZoomIn className="w-3.5 h-3.5 text-blue-400" />
+              <span>Zoom & Enlarge:</span>
+            </span>
+
+            {/* Quick Zoom Presets */}
+            <div className="flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
+              {[1.0, 1.5, 2.0, 2.5, 3.0].map((level) => {
+                const isActive = Math.abs(zoomLevel - level) < 0.15;
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => applyZoom(level)}
+                    className={`px-2 py-1 rounded text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-blue-600 text-white shadow-2xs'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                    title={`Enlarge barcode to ${level}x`}
+                  >
+                    {level}x
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Fine-tuning Slider & +/- Controls */}
+            <div className="flex items-center gap-1 bg-slate-950 px-2 py-0.5 rounded-lg border border-slate-800">
+              <button
+                type="button"
+                onClick={() => applyZoom(zoomLevel - 0.2)}
+                disabled={zoomLevel <= 1.0}
+                className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                title="Zoom Out (-)"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+
+              <input
+                type="range"
+                min="1.0"
+                max="3.5"
+                step="0.1"
+                value={zoomLevel}
+                onChange={(e) => applyZoom(parseFloat(e.target.value))}
+                className="w-16 sm:w-20 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                title={`Slider Zoom: ${zoomLevel.toFixed(1)}x`}
+              />
+
+              <button
+                type="button"
+                onClick={() => applyZoom(zoomLevel + 0.2)}
+                disabled={zoomLevel >= 3.5}
+                className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                title="Zoom In (+)"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+
+              <span className="text-[11px] font-mono font-bold text-amber-300 w-7 text-right">
+                {zoomLevel.toFixed(1)}x
+              </span>
+            </div>
+
+            {/* Box Shape Presets to match different battery barcode aspect ratios */}
+            <div className="hidden xs:flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setBoxPreset('standard')}
+                className={`px-2 py-1 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                  boxPreset === 'standard'
+                    ? 'bg-slate-700 text-white font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Standard Battery Label Box"
+              >
+                Standard Box
+              </button>
+              <button
+                type="button"
+                onClick={() => setBoxPreset('wide')}
+                className={`px-2 py-1 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                  boxPreset === 'wide'
+                    ? 'bg-slate-700 text-white font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Long Barcode Strip Box"
+              >
+                Wide Box
+              </button>
+              <button
+                type="button"
+                onClick={() => setBoxPreset('tall')}
+                className={`px-2 py-1 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                  boxPreset === 'tall'
+                    ? 'bg-slate-700 text-white font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Square QR / Tall Label Box"
+              >
+                Tall Box
+              </button>
+            </div>
+          </div>
+        </div>
+
         {/* Viewfinder / Camera Video Area */}
         <div className="relative flex-1 bg-black min-h-[280px] sm:min-h-[320px] flex items-center justify-center overflow-hidden">
           {/* HTML5-QRCode Mount Container */}
@@ -495,10 +659,55 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
             className="w-full h-full min-h-[280px] sm:min-h-[320px] flex items-center justify-center [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
           />
 
+          {/* On-screen Floating Thumb Zoom Buttons (Easily accessible while pointing camera) */}
+          {!detectedResult && !cameraError && (
+            <div className="absolute right-3 top-3 z-15 flex flex-col gap-1 bg-slate-950/85 backdrop-blur-md p-1 rounded-xl border border-slate-700/80 shadow-xl">
+              <button
+                type="button"
+                onClick={() => applyZoom(zoomLevel + 0.3)}
+                disabled={zoomLevel >= 3.5}
+                className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 disabled:opacity-40 text-white flex items-center justify-center font-bold text-xs cursor-pointer shadow-xs"
+                title="Enlarge Barcode (+)"
+              >
+                <ZoomIn className="w-4 h-4 text-blue-400" />
+              </button>
+              <div className="text-[10px] font-mono font-bold text-center text-amber-300 py-0.5">
+                {zoomLevel.toFixed(1)}x
+              </div>
+              <button
+                type="button"
+                onClick={() => applyZoom(zoomLevel - 0.3)}
+                disabled={zoomLevel <= 1.0}
+                className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 disabled:opacity-40 text-white flex items-center justify-center font-bold text-xs cursor-pointer shadow-xs"
+                title="Reduce Barcode (-)"
+              >
+                <ZoomOut className="w-4 h-4 text-slate-300" />
+              </button>
+              {zoomLevel > 1.0 && (
+                <button
+                  type="button"
+                  onClick={() => applyZoom(1.0)}
+                  className="px-1 py-0.5 text-[9px] font-bold text-slate-400 hover:text-white text-center cursor-pointer border-t border-slate-800"
+                  title="Reset Zoom to 1x"
+                >
+                  1x
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Visual Red Laser Scan Line Overlay */}
           {!detectedResult && !cameraError && (
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-4 z-10">
-              <div className="relative w-72 h-36 sm:w-80 sm:h-40 border-2 border-dashed border-blue-400/80 rounded-xl flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.48)]">
+              <div
+                className={`relative border-2 border-dashed border-blue-400/90 rounded-xl flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.52)] transition-all duration-200 ${
+                  boxPreset === 'wide'
+                    ? 'w-80 h-28 sm:w-96 sm:h-32'
+                    : boxPreset === 'tall'
+                    ? 'w-64 h-52 sm:w-72 sm:h-56'
+                    : 'w-72 h-36 sm:w-80 sm:h-40'
+                }`}
+              >
                 {/* Corner markers */}
                 <span className="absolute -top-1 -left-1 w-4 h-4 border-t-3 border-l-3 border-blue-400 rounded-tl"></span>
                 <span className="absolute -top-1 -right-1 w-4 h-4 border-t-3 border-r-3 border-blue-400 rounded-tr"></span>
@@ -508,8 +717,13 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                 {/* Animated Red Laser Scan Line */}
                 <div className="w-full h-0.5 bg-rose-500 shadow-[0_0_12px_#f43f5e] animate-pulse"></div>
 
-                <div className="absolute bottom-2 text-[10px] text-slate-200 bg-slate-950/85 px-2 py-0.5 rounded backdrop-blur-xs font-mono font-medium">
-                  Align Barcode Inside Box
+                <div className="absolute bottom-2 text-[10px] text-slate-200 bg-slate-950/90 px-2 py-0.5 rounded backdrop-blur-xs font-mono font-medium flex items-center gap-1.5 shadow-sm">
+                  <span>Align Barcode Inside Box</span>
+                  {zoomLevel > 1.05 && (
+                    <span className="text-amber-300 font-bold bg-amber-950/80 px-1 py-0.2 rounded border border-amber-500/30">
+                      {zoomLevel.toFixed(1)}x Zoomed
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
