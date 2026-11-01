@@ -242,12 +242,92 @@ app.post('/api/whatsapp/dispatch', async (req, res) => {
   }
 });
 
+// Battery Barcode & Serial OCR via Gemini Flash / Vision
+app.post('/api/scan-barcode-ocr', async (req, res) => {
+  try {
+    const { imageBase64, mimeType = 'image/jpeg' } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ success: false, error: 'No image data provided' });
+    }
+
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (apiKey) {
+      try {
+        const { GoogleGenAI } = await import('@google/genai');
+        const ai = new GoogleGenAI();
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `Analyze this image of a battery or battery barcode / serial label sticker.
+Extract:
+1. The Battery Serial Number (e.g. alphanumeric strings like BAT-1029, 6024-FLAT-001, EXIDE-XXX, AMARON-XXX, or printed barcode numbers).
+2. Any detected Battery Model / Specification (e.g. 60x24 FLAT, 60x30, 48x24, 72x30, etc.) if visible.
+3. Any Batch Number.
+
+Return ONLY a JSON object with this exact shape without markdown backticks:
+{
+  "serialNo": "extracted serial or empty string",
+  "model": "extracted model or empty string",
+  "batchNo": "extracted batch or empty string",
+  "confidence": "high" | "medium" | "low",
+  "rawText": "short summary of text detected"
+}`,
+                },
+                {
+                  inlineData: {
+                    mimeType: mimeType || 'image/jpeg',
+                    data: cleanBase64,
+                  },
+                },
+              ],
+            },
+          ],
+        });
+
+        const rawText = response.text?.trim() || '';
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          return res.json({ success: true, data: parsed, engine: 'gemini-3.8-flash' });
+        }
+      } catch (geminiErr: any) {
+        console.warn('[Server] Gemini OCR failed, falling back:', geminiErr?.message);
+      }
+    }
+
+    // Fallback if no Gemini key configured or image unclear
+    return res.json({
+      success: true,
+      data: {
+        serialNo: '',
+        model: '',
+        batchNo: '',
+        confidence: 'low',
+        rawText: 'No API key configured or barcode not clear in photo',
+      },
+      engine: 'fallback',
+    });
+  } catch (err: any) {
+    console.error('[Server] OCR scanning error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Development Mode: Mount Vite Middlewares
 async function startServer() {
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -277,7 +357,7 @@ async function startServer() {
     }
   }
 
-  app.listen(PORT, () => {
+  app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`[Server] Battery Register Server listening on http://0.0.0.0:${PORT}`);
     console.log(`[Server] Production mode: ${isProduction}`);
     console.log(`[Server] Ready for Render backend and Vercel frontend deployments`);

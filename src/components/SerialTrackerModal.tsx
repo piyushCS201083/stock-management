@@ -17,7 +17,9 @@ import {
   Plus,
   X,
   FileSpreadsheet,
+  Camera,
 } from 'lucide-react';
+import { BarcodeScannerModal } from './BarcodeScannerModal';
 
 interface SerialTrackerModalProps {
   isOpen: boolean;
@@ -49,6 +51,31 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   const [newStatus, setNewStatus] = useState<'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'>('in_stock');
   const [newPartner, setNewPartner] = useState('');
   const [newCause, setNewCause] = useState('');
+
+  // Barcode Camera Scanner state
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [scannerTarget, setScannerTarget] = useState<'search' | 'add'>('search');
+
+  const handleScanCompleted = (scannedSerial: string, detectedBatch?: string) => {
+    const trimmed = scannedSerial.trim();
+    if (!trimmed) return;
+
+    if (scannerTarget === 'search') {
+      setSearchTerm(trimmed);
+      const match = serialList.find(
+        (s) => s.serialNo.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (match) {
+        setSelectedSerial(match);
+      }
+    } else {
+      setNewSerialNo(trimmed);
+      if (detectedBatch && !newBatchNo) {
+        setNewBatchNo(detectedBatch);
+      }
+      setShowAddModal(true);
+    }
+  };
 
   const serialList = useMemo(() => Object.values(serials), [serials]);
 
@@ -157,10 +184,13 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden my-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+      <div
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-5xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-blue-600/30 flex items-center justify-center text-blue-400">
               <Barcode className="w-5 h-5" />
@@ -242,23 +272,39 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         <div className="p-4 sm:px-6 bg-white border-b border-slate-200 shrink-0 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             {/* Search Input */}
-            <div className="relative flex-1 max-w-md">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            <div className="relative flex-1 max-w-md flex items-center">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search Serial No, Batch, Model, Dealer (e.g. Luvkush, Reena)..."
+                placeholder="Search Serial No, Batch, Model, Dealer..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                className="w-full pl-9 pr-20 py-1.5 text-xs border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
               />
-              {searchTerm && (
+              <div className="absolute right-1.5 flex items-center gap-1">
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button
-                  onClick={() => setSearchTerm('')}
-                  className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                  type="button"
+                  onClick={() => {
+                    setScannerTarget('search');
+                    setIsScannerOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded text-[11px] font-semibold cursor-pointer transition-colors"
+                  title="Scan barcode with camera to find battery"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <Camera className="w-3 h-3 text-blue-600" />
+                  <span>Scan</span>
                 </button>
-              )}
+              </div>
             </div>
 
             {/* Model & Batch Dropdowns */}
@@ -469,7 +515,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="flex items-center justify-between px-6 py-3.5 bg-slate-50 border-t border-slate-200 shrink-0">
+        <div className="flex items-center justify-between px-6 py-3.5 bg-slate-100 border-t-2 border-slate-200 shrink-0 rounded-b-2xl">
           <span className="text-xs text-slate-500">
             Showing <strong>{filteredSerials.length}</strong> of {serialList.length} total tracked serial numbers.
           </span>
@@ -626,17 +672,42 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
 
             <form onSubmit={handleCreateNewSerial} className="p-6 space-y-3.5 text-xs">
               <div>
-                <label className="block font-medium text-slate-700 mb-1">
-                  Serial Number *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. 6024-FLAT-0091"
-                  value={newSerialNo}
-                  onChange={(e) => setNewSerialNo(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded font-mono uppercase bg-slate-50 focus:bg-white"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-medium text-slate-700">
+                    Serial Number *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScannerTarget('add');
+                      setIsScannerOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 font-semibold cursor-pointer"
+                  >
+                    <Camera className="w-3 h-3" />
+                    <span>Scan with Camera</span>
+                  </button>
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. 6024-FLAT-0091"
+                    value={newSerialNo}
+                    onChange={(e) => setNewSerialNo(e.target.value)}
+                    className="w-full pl-2.5 pr-18 py-1.5 border border-slate-300 rounded font-mono uppercase bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScannerTarget('add');
+                      setIsScannerOpen(true);
+                    }}
+                    className="absolute right-1 px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-semibold cursor-pointer"
+                  >
+                    Scan
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -732,6 +803,13 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
           </div>
         </div>
       )}
+
+      {/* Barcode Camera Scanner Modal */}
+      <BarcodeScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onScanComplete={handleScanCompleted}
+      />
     </div>
   );
 };

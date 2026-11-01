@@ -214,10 +214,13 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden my-auto animate-in fade-in zoom-in-95">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+      <div
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-3xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10 animate-in fade-in zoom-in-95"
+        style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+      >
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
               <Barcode className="w-5 h-5" />

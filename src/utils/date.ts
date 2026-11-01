@@ -56,3 +56,33 @@ export function addDaysToDateString(dateStr: string, days = 1): string {
   const nextYear = date.getFullYear();
   return `${nextDay}-${nextMonth}-${nextYear}`;
 }
+
+// Convert DD-MM-YYYY to YYYY-MM-DD for HTML date inputs
+export function toISODateString(ddmmyyyy: string): string {
+  if (!ddmmyyyy) return '';
+  const parts = ddmmyyyy.split('-');
+  if (parts.length !== 3) return '';
+  const [day, month, year] = parts;
+  return `${year.padStart(4, '2000')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
+// Convert YYYY-MM-DD (from HTML date input) to DD-MM-YYYY
+export function fromISODateString(yyyymmdd: string): string {
+  if (!yyyymmdd) return '';
+  const parts = yyyymmdd.split('-');
+  if (parts.length !== 3) return '';
+  const [year, month, day] = parts;
+  return `${day.padStart(2, '0')}-${month.padStart(2, '0')}-${year}`;
+}
+
+// Get today's date in YYYY-MM-DD format in IST for input max attribute
+export function getIndianTodayISODate(): string {
+  return toISODateString(getIndianTodayDate());
+}
+
+// Check if a DD-MM-YYYY date is strictly after today in IST
+export function isAfterTodayIST(ddmmyyyy: string): boolean {
+  const todayISO = getIndianTodayISODate();
+  const targetISO = toISODateString(ddmmyyyy);
+  return targetISO > todayISO;
+}

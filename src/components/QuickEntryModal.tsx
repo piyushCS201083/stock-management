@@ -12,7 +12,19 @@ import {
   Tag,
   ShieldCheck,
   Sparkles,
+  Send,
+  Calendar,
+  Camera,
+  CheckCircle2,
 } from 'lucide-react';
+import { BarcodeScannerModal } from './BarcodeScannerModal';
+import {
+  toISODateString,
+  fromISODateString,
+  getIndianTodayDate,
+  getIndianTodayISODate,
+  isAfterTodayIST,
+} from '../utils/date';
 
 export interface SerialEntryPayload {
   serialNo: string;
@@ -35,6 +47,8 @@ interface QuickEntryModalProps {
     triggerWhatsApp?: boolean,
     serialEntries?: SerialEntryPayload[]
   ) => void;
+  recordedDates?: string[];
+  onSelectDate?: (date: string) => void;
 }
 
 export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
@@ -43,6 +57,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   record,
   columns,
   onSaveRecord,
+  recordedDates,
+  onSelectDate,
 }) => {
   const [entryType, setEntryType] = useState<'in' | 'out' | 'repair_in' | 'repair_out' | 'service'>('in');
   const [selectedColId, setSelectedColId] = useState<string>(columns[0]?.id || '60x24_old');
@@ -52,6 +68,36 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [vehicleOrLocation, setVehicleOrLocation] = useState<string>(''); // e.g. Service center, Morar, Maa Sati
   const [serialInput, setSerialInput] = useState<string>(''); // Serial numbers (comma or newline separated)
   const [batchNo, setBatchNo] = useState<string>(''); // Optional batch number
+  const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
+  const [lastScannedSerial, setLastScannedSerial] = useState<string | null>(null);
+
+  const todayIST = getIndianTodayDate();
+  const todayISO = getIndianTodayISODate();
+
+  const handleScanComplete = (scannedSerial: string, detectedBatch?: string) => {
+    const trimmed = scannedSerial.trim();
+    if (!trimmed) return;
+
+    setSerialInput((prev) => {
+      if (!prev || !prev.trim()) {
+        return trimmed;
+      }
+      const existingList = prev.split(/[\n,]+/).map((s) => s.trim());
+      if (existingList.includes(trimmed)) {
+        return prev;
+      }
+      return `${prev.trim()}, ${trimmed}`;
+    });
+
+    if (detectedBatch && !batchNo) {
+      setBatchNo(detectedBatch);
+    }
+
+    setLastScannedSerial(trimmed);
+    setTimeout(() => {
+      setLastScannedSerial(null);
+    }, 5000);
+  };
 
   if (!isOpen) return null;
 
@@ -182,24 +228,55 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       : currentClosing;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden my-4">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white">
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-bold">Log Battery Transaction & Serials</h2>
-            <span className="text-xs text-slate-400 font-mono">({record.date})</span>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+      <div
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+      >
+        {/* Header - Fixed & Rounded Top */}
+        <div className="flex items-center justify-between px-5 sm:px-6 py-3.5 bg-slate-900 text-white shrink-0 rounded-t-2xl gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-sm sm:text-base font-bold whitespace-nowrap">Log Battery Transaction & Serials</h2>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded-lg text-xs font-mono transition-colors">
+              <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <input
+                type="date"
+                aria-label="Change transaction date till today"
+                title={`Change transaction date (Max till today in IST: ${todayIST})`}
+                max={todayISO}
+                value={toISODateString(record.date)}
+                onChange={(e) => {
+                  const iso = e.target.value;
+                  if (!iso) return;
+                  const targetDate = fromISODateString(iso);
+                  if (targetDate && !isAfterTodayIST(targetDate)) {
+                    onSelectDate?.(targetDate);
+                  }
+                }}
+                className="bg-transparent text-slate-100 text-xs font-semibold focus:outline-none cursor-pointer [color-scheme:dark]"
+              />
+              {record.date !== todayIST && onSelectDate && (
+                <button
+                  type="button"
+                  onClick={() => onSelectDate(todayIST)}
+                  title={`Jump to today: ${todayIST}`}
+                  className="px-1.5 py-0.5 text-[10px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold font-sans rounded transition-colors cursor-pointer"
+                >
+                  Today
+                </button>
+              )}
+            </span>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors"
+            className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+        {/* Content Body - Smooth internal scroll, cleanly contained */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-3.5 overscroll-contain">
           {/* Movement Type Selector */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-2">
@@ -329,6 +406,67 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
             </div>
           )}
 
+          {/* Live Preview Box - Placed ABOVE before Particulars and Serials */}
+          {entryType !== 'repair_in' && entryType !== 'repair_out' && entryType !== 'service' ? (
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <span className="text-slate-700 font-semibold flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
+                <span>Stock Impact on</span>
+                <strong className="text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-300 font-bold">
+                  {selectedCol?.name}
+                </strong>
+                :
+              </span>
+              <div className="flex items-center gap-2 font-mono">
+                <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-slate-200 text-xs">
+                  Current: <strong className="text-slate-900">{currentClosing}</strong>
+                </span>
+                <ArrowRight className="w-3.5 h-3.5 text-blue-600" />
+                <span
+                  className={`font-bold px-2.5 py-1 rounded border text-xs shadow-2xs ${
+                    entryType === 'in'
+                      ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                      : 'bg-rose-100 text-rose-900 border-rose-300'
+                  }`}
+                >
+                  New Closing: {previewClosing} ({entryType === 'in' ? `+${quantity}` : `-${quantity}`})
+                </span>
+              </div>
+            </div>
+          ) : (entryType === 'repair_in' || entryType === 'repair_out') ? (
+            <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <span className="text-amber-900 font-semibold flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>
+                <span>Repair Battery Pool Impact:</span>
+              </span>
+              <div className="flex items-center gap-2 font-mono">
+                <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-amber-200 text-xs">
+                  Current: <strong className="text-slate-900">{record.stock['repair'] || 0}</strong>
+                </span>
+                <ArrowRight className="w-3.5 h-3.5 text-amber-600" />
+                <span className="font-bold px-2.5 py-1 rounded border border-amber-300 bg-amber-100 text-amber-900 text-xs">
+                  New Closing: {entryType === 'repair_in' ? (record.stock['repair'] || 0) + quantity : (record.stock['repair'] || 0) - quantity}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <span className="text-indigo-900 font-semibold flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse"></span>
+                <span>Service Standby Pool Impact:</span>
+              </span>
+              <div className="flex items-center gap-2 font-mono">
+                <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-indigo-200 text-xs">
+                  Current: <strong className="text-slate-900">{record.stock['service'] || 0}</strong>
+                </span>
+                <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />
+                <span className="font-bold px-2.5 py-1 rounded border border-indigo-300 bg-indigo-100 text-indigo-900 text-xs">
+                  New Closing: {(record.stock['service'] || 0) + quantity}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Particulars / Cause Details */}
           <div className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -375,37 +513,81 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
           {/* Dedicated Serial No. & Batch Section */}
           <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-1.5 font-bold text-xs text-blue-900">
                 <Barcode className="w-4 h-4 text-blue-700" />
                 <span>Battery Serial Numbers & Batch Tracking (In-App Only)</span>
               </div>
-              <button
-                type="button"
-                onClick={handleAutoGenerateSerials}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 hover:text-blue-900 underline"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span>Auto-fill {quantity} Serials</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsScannerOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-xs font-bold rounded-md shadow-xs transition-colors cursor-pointer"
+                  title="Scan barcode with camera or capture battery label photo"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>Scan Barcode (Camera)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAutoGenerateSerials}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 hover:text-blue-900 underline cursor-pointer"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Auto-fill {quantity}</span>
+                </button>
+              </div>
             </div>
+
+            {/* Notification badge for recently scanned barcode */}
+            {lastScannedSerial && (
+              <div className="p-2 bg-emerald-100/90 border border-emerald-300 rounded-md text-emerald-900 text-xs font-semibold flex items-center justify-between animate-fade-in">
+                <span className="flex items-center gap-1.5 font-mono">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Scanned & Added: <strong>{lastScannedSerial}</strong></span>
+                </span>
+                <span className="text-[10px] text-emerald-700 font-sans font-normal">Ready for next or Save</span>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div className="sm:col-span-2">
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">
-                  Serial Number(s) <span className="text-slate-400">(comma or enter separated)</span>:
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 6024-FLAT-001, 6024-FLAT-002"
-                  value={serialInput}
-                  onChange={(e) => setSerialInput(e.target.value)}
-                  className="w-full px-2.5 py-1.5 text-xs font-mono border border-blue-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-700">
+                    Serial Number(s) <span className="text-slate-400 font-normal">(comma or enter separated)</span>:
+                  </label>
+                  {serialInput.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setSerialInput('')}
+                      className="text-[10px] text-rose-600 hover:text-rose-800 underline cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    type="text"
+                    placeholder="e.g. 6024-FLAT-001 (or click Camera to scan)"
+                    value={serialInput}
+                    onChange={(e) => setSerialInput(e.target.value)}
+                    className="w-full pl-2.5 pr-24 py-2 text-xs font-mono font-medium border border-blue-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setIsScannerOpen(true)}
+                    className="absolute right-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-md text-[11px] font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                    title="Open Camera to scan battery barcode or label"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Scan</span>
+                  </button>
+                </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                   Batch (Battery Model):
                 </label>
                 <input
@@ -413,7 +595,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   placeholder={selectedCol?.name || 'e.g. 60×24 FLAT'}
                   value={batchNo}
                   onChange={(e) => setBatchNo(e.target.value)}
-                  className="w-full px-2.5 py-1.5 text-xs font-mono border border-blue-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-2.5 py-2 text-xs font-mono border border-blue-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
                 />
               </div>
             </div>
@@ -425,58 +607,49 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
               </span>
             </div>
           </div>
-
-          {/* Live Preview Box */}
-          {entryType !== 'repair_in' && entryType !== 'repair_out' && entryType !== 'service' && (
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between text-xs">
-              <span className="text-slate-600 font-medium">
-                Effect on <strong className="text-slate-900">{selectedCol?.name}</strong>:
-              </span>
-              <div className="flex items-center gap-2 font-mono">
-                <span className="text-slate-500">Current: {currentClosing}</span>
-                <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-                <span
-                  className={`font-bold ${
-                    entryType === 'in' ? 'text-emerald-700' : 'text-rose-700'
-                  }`}
-                >
-                  New Closing: {previewClosing}
-                </span>
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-t border-slate-200">
+        {/* Pinned Footer - Completes closed rounded shape from below */}
+        <div className="shrink-0 bg-slate-100 border-t-2 border-slate-200 px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 rounded-b-2xl">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800"
+            className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200/80 rounded-lg transition-colors order-3 sm:order-1 text-center cursor-pointer"
           >
             Cancel
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 order-1 sm:order-2">
             <button
               type="button"
               onClick={() => handleSave(false)}
-              className="px-4 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-all shadow-xs active:scale-[0.98] cursor-pointer"
+              title="Save changes and update spreadsheet ledger"
             >
-              Update Excel & Serials
+              <Check className="w-4 h-4 text-slate-600" />
+              <span>Update Excel & Serials</span>
             </button>
 
             <button
               type="button"
               onClick={() => handleSave(true)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-extrabold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-all shadow-sm active:scale-[0.98] cursor-pointer ring-2 ring-emerald-500/30"
+              title="Save transaction and immediately open WhatsApp dispatch"
             >
-              <Check className="w-4 h-4" />
+              <Send className="w-4 h-4" />
               <span>Update & Send WhatsApp</span>
             </button>
           </div>
         </div>
       </div>
+
+      {/* Camera Barcode Scanner Viewfinder Modal */}
+      <BarcodeScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onScanComplete={handleScanComplete}
+        initialModelName={selectedCol?.name}
+      />
     </div>
   );
 };

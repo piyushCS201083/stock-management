@@ -62,24 +62,27 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+      <div
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-lg flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-2">
             <Users className="w-5 h-5 text-emerald-400" />
             <h2 className="text-base font-bold">Manage WhatsApp Team Members</h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors"
+            className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+        <div className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto">
           <div className="flex items-center justify-between">
             <p className="text-xs text-slate-600">
               Team members receive daily stock confirmations and sheet photos via WhatsApp.
@@ -209,10 +212,10 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-50 border-t border-slate-200">
+        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-100 border-t-2 border-slate-200 shrink-0 rounded-b-2xl">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors"
+            className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
           >
             Close
           </button>

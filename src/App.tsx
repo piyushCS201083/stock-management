@@ -60,7 +60,15 @@ import {
   X,
 } from 'lucide-react';
 
-import { getIndianTodayDate, getIndianFullDateString, addDaysToDateString } from './utils/date';
+import {
+  getIndianTodayDate,
+  getIndianFullDateString,
+  addDaysToDateString,
+  toISODateString,
+  fromISODateString,
+  getIndianTodayISODate,
+  isAfterTodayIST,
+} from './utils/date';
 
 export default function App() {
   const [records, setRecords] = useState<Record<string, DayRecord>>(() => loadRecords());
@@ -325,15 +333,55 @@ export default function App() {
     showToast(`Added battery model: ${name}`);
   };
 
-  // Create next day entry carrying over today's closing stock
+  // Create next day entry carrying over today's closing stock (up to today in IST)
   const handleCreateNextDay = async () => {
+    const nextDate = addDaysToDateString(currentRecord.date, 1);
+    if (isAfterTodayIST(nextDate)) {
+      showToast(`Cannot create ledger beyond today in IST (${getIndianTodayDate()})`);
+      return;
+    }
     const nextDayRecord = createNextDayRecord(currentRecord, columns);
+    nextDayRecord.date = nextDate;
     const newRecords = { ...records, [nextDayRecord.date]: nextDayRecord };
     setRecords(newRecords);
     saveRecords(newRecords);
     setCurrentDate(nextDayRecord.date);
     await apiSaveRecord(nextDayRecord);
     showToast(`Created new ledger for ${nextDayRecord.date} with closing balance carried over!`);
+  };
+
+  // Switch to or create date record (strictly up to today in IST)
+  const handleSelectOrCreateDate = async (targetDate: string) => {
+    if (isAfterTodayIST(targetDate)) {
+      showToast(`Cannot select future date beyond today in IST (${getIndianTodayDate()})`);
+      return;
+    }
+
+    if (records[targetDate]) {
+      setCurrentDate(targetDate);
+      showToast(`Switched to ${targetDate} ledger`);
+      return;
+    }
+
+    // Date does not exist yet: find the closest previous date to carry forward
+    const sortedDates = Object.keys(records).sort((a, b) => {
+      return toISODateString(a).localeCompare(toISODateString(b));
+    });
+
+    const priorDates = sortedDates.filter((d) => toISODateString(d) <= toISODateString(targetDate));
+    const baseDate = priorDates.length > 0 ? priorDates[priorDates.length - 1] : sortedDates[0];
+    const baseRecord = records[baseDate] || currentRecord;
+
+    const newDayRecord = createNextDayRecord(baseRecord, columns);
+    newDayRecord.date = targetDate;
+    newDayRecord.notes = `Created for ${targetDate} carrying forward closing balance from ${baseRecord.date}`;
+
+    const newRecords = { ...records, [targetDate]: newDayRecord };
+    setRecords(newRecords);
+    saveRecords(newRecords);
+    setCurrentDate(targetDate);
+    await apiSaveRecord(newDayRecord);
+    showToast(`Created ${targetDate} ledger carrying forward closing balance!`);
   };
 
   // Navigate between recorded dates
@@ -350,6 +398,11 @@ export default function App() {
     if (currentIndex < recordedDates.length - 1) {
       setCurrentDate(recordedDates[currentIndex + 1]);
     } else {
+      const nextDate = addDaysToDateString(currentDate, 1);
+      if (isAfterTodayIST(nextDate)) {
+        showToast(`Already at latest ledger up to today (${getIndianTodayDate()})`);
+        return;
+      }
       handleCreateNextDay();
     }
   };
@@ -405,7 +458,26 @@ export default function App() {
       />
 
       {/* Main Content Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
+        {/* Top: Batchwise Stock (Battery Models) & Serial Number History Search */}
+        <BatchStockOverview
+          currentRecord={currentRecord}
+          columns={columns}
+          serials={serials}
+          closingStock={totals.closingStock}
+          onOpenAssignModal={(modelId, modelName, currentStock) => {
+            setAssignModal({
+              isOpen: true,
+              modelId,
+              modelName,
+              currentStock,
+            });
+          }}
+          onOpenSerialTrackerModal={() => setIsSerialModalOpen(true)}
+          onUpdateSerial={handleUpdateSingleSerial}
+          onSelectSerialHistory={(item) => setSelectedSerialHistory(item)}
+        />
+
         {/* Workspace Toolbar & Date Bar */}
         <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -422,10 +494,10 @@ export default function App() {
                 </button>
 
                 <div className="flex items-center gap-2 px-3 py-1 font-bold text-slate-900 text-sm">
-                  <Calendar className="w-4 h-4 text-blue-600" />
+                  <Calendar className="w-4 h-4 text-blue-600 shrink-0" />
                   <select
                     value={currentDate}
-                    onChange={(e) => setCurrentDate(e.target.value)}
+                    onChange={(e) => handleSelectOrCreateDate(e.target.value)}
                     className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer"
                   >
                     {recordedDates.map((d) => (
@@ -434,6 +506,19 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+                  <input
+                    type="date"
+                    max={getIndianTodayISODate()}
+                    value={toISODateString(currentDate)}
+                    onChange={(e) => {
+                      const iso = e.target.value;
+                      if (!iso) return;
+                      const target = fromISODateString(iso);
+                      if (target) handleSelectOrCreateDate(target);
+                    }}
+                    title="Change date till today (IST)"
+                    className="text-xs text-slate-600 border border-slate-300 rounded px-1.5 py-0.5 bg-white cursor-pointer focus:outline-blue-500"
+                  />
                 </div>
 
                 <button
@@ -594,25 +679,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Top: Batchwise Stock (Battery Models) & Serial Number History Search */}
-        <BatchStockOverview
-          currentRecord={currentRecord}
-          columns={columns}
-          serials={serials}
-          closingStock={totals.closingStock}
-          onOpenAssignModal={(modelId, modelName, currentStock) => {
-            setAssignModal({
-              isOpen: true,
-              modelId,
-              modelName,
-              currentStock,
-            });
-          }}
-          onOpenSerialTrackerModal={() => setIsSerialModalOpen(true)}
-          onUpdateSerial={handleUpdateSingleSerial}
-          onSelectSerialHistory={(item) => setSelectedSerialHistory(item)}
-        />
-
         {/* The Excel Spreadsheet (Exact replica of user's photo) */}
         <section className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-3">
           <div className="flex items-center justify-between">
@@ -646,20 +712,35 @@ export default function App() {
             tableRef={tableRef}
           />
 
-          {/* Workflow instruction tip */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100 gap-2">
-            <div className="flex items-center gap-2">
+          {/* Bottom Action & Dispatch Bar directly under Spreadsheet */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 pt-3 border-t border-slate-100 gap-3">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-slate-700">Daily Workflow:</span>
-              <span>1. Update Inward/Outward counts & causes</span>
+              <span>1. Direct cell edits or Log Transaction</span>
               <span>→</span>
-              <span>2. Click "Dispatch to WhatsApp"</span>
+              <span>2. Click "Send WhatsApp"</span>
               <span>→</span>
-              <span>3. Copy/Send Photo & Text to team</span>
+              <span>3. Send verified photo & report</span>
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Database Storage:</span>
-              <span className="text-emerald-700 font-medium">Render Cloud DBMS & PostgreSQL Enabled</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setIsQuickEntryOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer shadow-2xs"
+                title="Open quick update dialog to log inward/outward changes"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Update Ledger</span>
+              </button>
+
+              <button
+                onClick={() => setIsWhatsAppOpen(true)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+                title="Send verified sheet photo and summary to WhatsApp"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Send WhatsApp</span>
+              </button>
             </div>
           </div>
         </section>
@@ -736,6 +817,25 @@ export default function App() {
         </section>
       </main>
 
+      {/* Mobile/Compact Persistent Sticky Action Bar - Always easily accessible when scrolling */}
+      <div className="md:hidden fixed bottom-3 left-3 right-3 z-40 bg-white/95 backdrop-blur-md border border-slate-300 rounded-xl p-2 shadow-xl flex items-center justify-between gap-2.5">
+        <button
+          onClick={() => setIsQuickEntryOpen(true)}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold text-blue-800 bg-blue-50 active:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+        >
+          <Plus className="w-4 h-4 text-blue-600" />
+          <span>Update Ledger</span>
+        </button>
+
+        <button
+          onClick={() => setIsWhatsAppOpen(true)}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-extrabold text-white bg-emerald-600 active:bg-emerald-700 rounded-lg shadow-sm transition-colors cursor-pointer"
+        >
+          <Send className="w-4 h-4" />
+          <span>Send WhatsApp</span>
+        </button>
+      </div>
+
       {/* Floating Notification Toast */}
       {notificationToast && (
         <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-xs font-medium flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2">
@@ -753,6 +853,8 @@ export default function App() {
         onSaveRecord={(updated, andWhatsApp, serialEntries) =>
           handleUpdateRecord(updated, andWhatsApp, serialEntries)
         }
+        recordedDates={recordedDates}
+        onSelectDate={handleSelectOrCreateDate}
       />
 
       <WhatsAppDispatchModal

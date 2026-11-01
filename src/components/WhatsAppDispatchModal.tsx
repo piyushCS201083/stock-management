@@ -265,10 +265,13 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden my-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+      <div
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-4xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+      >
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-emerald-600 text-white shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 bg-emerald-600 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-white/20 flex items-center justify-center shadow-xs">
               <MessageSquare className="w-6 h-6 text-white" />
@@ -569,7 +572,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="flex items-center justify-between px-6 py-3.5 bg-slate-50 border-t border-slate-200 shrink-0">
+        <div className="flex items-center justify-between px-6 py-3.5 bg-slate-100 border-t-2 border-slate-200 shrink-0 rounded-b-2xl">
           <div className="text-xs text-slate-500 flex items-center gap-1.5">
             <Check className="w-4 h-4 text-emerald-600" />
             <span>Excel sheet records saved and auto-calculated</span>

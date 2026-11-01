@@ -111,18 +111,25 @@ function writeLocalFile(state: DatabaseState) {
 
 export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; ready: boolean; error?: string }> {
   const dbUrl = process.env.DATABASE_URL;
+  const isPostgresUrl = Boolean(
+    dbUrl && (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://'))
+  );
 
-  if (dbUrl) {
+  if (isPostgresUrl && dbUrl) {
     try {
       console.log('[DBMS] Connecting to PostgreSQL on Render / Cloud...');
-      pgPool = new Pool({
+      const pool = new Pool({
         connectionString: dbUrl,
         ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false },
-        connectionTimeoutMillis: 5000,
+        connectionTimeoutMillis: 3000,
+      });
+
+      pool.on('error', (err) => {
+        console.warn('[DBMS] PostgreSQL pool error:', err.message);
       });
 
       // Verify connection
-      const client = await pgPool.connect();
+      const client = await pool.connect();
       try {
         await client.query(`
           CREATE TABLE IF NOT EXISTS stock_records (
@@ -169,6 +176,7 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
           [JSON.stringify(DEFAULT_TEAM_MEMBERS)]
         );
 
+        pgPool = pool;
         isPostgresConnected = true;
         console.log('[DBMS] Successfully connected to PostgreSQL database!');
         return { type: 'postgresql', ready: true };
@@ -176,10 +184,15 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
         client.release();
       }
     } catch (err: any) {
-      console.warn('[DBMS] PostgreSQL connection failed, falling back to persistent file DBMS:', err.message);
+      console.warn('[DBMS] PostgreSQL connection unavailable, falling back to persistent file DBMS:', err.message);
+      if (pgPool) {
+        await pgPool.end().catch(() => {});
+      }
       isPostgresConnected = false;
       pgPool = null;
     }
+  } else if (dbUrl && (dbUrl.startsWith('http://') || dbUrl.startsWith('https://'))) {
+    console.log('[DBMS] DATABASE_URL is configured as a remote web API URL. Using persistent local file DBMS for server storage.');
   }
 
   // Fallback to local persistent JSON file
@@ -190,10 +203,12 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
 
 export function getDbStatus() {
   const isPg = Boolean(isPostgresConnected && pgPool);
+  const dbUrl = process.env.DATABASE_URL;
+  const isPgUrl = Boolean(dbUrl && (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://')));
   return {
     engine: isPg ? 'PostgreSQL (Cloud / Render)' : 'Persistent DBMS (Render Disk / JSON)',
     status: 'connected',
-    hasPostgresUrl: Boolean(process.env.DATABASE_URL),
+    hasPostgresUrl: isPgUrl,
     storageLocation: isPg ? 'Remote Cloud Database' : DATA_FILE,
   };
 }
