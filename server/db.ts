@@ -1,16 +1,18 @@
 import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
-import {
+import type {
   BatteryColumn,
   BatterySerialItem,
   BatteryMovementEvent,
   DayRecord,
+  TeamMember,
+} from '../src/types/stock.ts';
+import {
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_TEAM_MEMBERS,
   INITIAL_RECORD_31_10_2026,
   INITIAL_BASELINE_SERIALS,
-  TeamMember,
 } from '../src/types/stock.ts';
 
 const { Pool } = pg;

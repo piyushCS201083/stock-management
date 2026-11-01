@@ -250,13 +250,13 @@ app.post('/api/scan-barcode-ocr', async (req, res) => {
       return res.status(400).json({ success: false, error: 'No image data provided' });
     }
 
-    const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const apiKey = process.env.GEMINI_API_KEY;
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
 
     if (apiKey) {
       try {
         const { GoogleGenAI } = await import('@google/genai');
-        const ai = new GoogleGenAI();
+        const ai = new GoogleGenAI({ apiKey });
         const response = await ai.models.generateContent({
           model: 'gemini-3.8-flash',
           contents: [
@@ -264,19 +264,19 @@ app.post('/api/scan-barcode-ocr', async (req, res) => {
               role: 'user',
               parts: [
                 {
-                  text: `Analyze this image of a battery or battery barcode / serial label sticker.
-Extract:
-1. The Battery Serial Number (e.g. alphanumeric strings like BAT-1029, 6024-FLAT-001, EXIDE-XXX, AMARON-XXX, or printed barcode numbers).
-2. Any detected Battery Model / Specification (e.g. 60x24 FLAT, 60x30, 48x24, 72x30, etc.) if visible.
-3. Any Batch Number.
+                  text: `You are an expert industrial battery inventory scanner. Analyze this image of an automotive, inverter, or commercial battery, serial sticker label, or barcode.
+Locate and extract:
+1. The unique Battery Serial Number (e.g. printed under a barcode, etched, or stamped, like BAT-6024-001, 60x24-FLAT-009, 24FLAT109, AM1234567, EX9928374, or pure numeric strings like 890123456789).
+2. Battery Model or Specifications (e.g. 60x24 OLD, 60x24 FLAT, 60x30, 48x24, 72x30, 12V 100Ah, etc.) if visible on the casing or label.
+3. Any Batch Number or Date Code (e.g. BATCH-2026-10, MFD 10/26).
 
-Return ONLY a JSON object with this exact shape without markdown backticks:
+Return ONLY valid JSON with this exact schema (no markdown fences, no explanatory text):
 {
-  "serialNo": "extracted serial or empty string",
-  "model": "extracted model or empty string",
-  "batchNo": "extracted batch or empty string",
+  "serialNo": "extracted serial or barcode digits, or empty string",
+  "model": "extracted battery model or empty string",
+  "batchNo": "extracted batch/date code or empty string",
   "confidence": "high" | "medium" | "low",
-  "rawText": "short summary of text detected"
+  "rawText": "short summary of label text found"
 }`,
                 },
                 {
@@ -293,8 +293,32 @@ Return ONLY a JSON object with this exact shape without markdown backticks:
         const rawText = response.text?.trim() || '';
         const jsonMatch = rawText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return res.json({ success: true, data: parsed, engine: 'gemini-3.8-flash' });
+          try {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed.serialNo) {
+              return res.json({ success: true, data: parsed, engine: 'gemini-3.8-flash' });
+            }
+          } catch {
+            // Regex extraction fallback below
+          }
+        }
+
+        // Regex extraction from raw text if JSON parse failed or serial was empty
+        const serialMatch = rawText.match(/"serialNo"\s*:\s*"([^"]+)"/) ||
+          rawText.match(/\b(BAT-[A-Z0-9-]+|[A-Z0-9]{3,8}-[A-Z0-9]{2,8}(?:-[A-Z0-9]+)?|[0-9]{8,18})\b/i);
+
+        if (serialMatch && serialMatch[1]) {
+          return res.json({
+            success: true,
+            data: {
+              serialNo: serialMatch[1].trim(),
+              model: '',
+              batchNo: '',
+              confidence: 'medium',
+              rawText: rawText.slice(0, 150),
+            },
+            engine: 'gemini-3.8-flash-regex',
+          });
         }
       } catch (geminiErr: any) {
         console.warn('[Server] Gemini OCR failed, falling back:', geminiErr?.message);
@@ -309,7 +333,7 @@ Return ONLY a JSON object with this exact shape without markdown backticks:
         model: '',
         batchNo: '',
         confidence: 'low',
-        rawText: 'No API key configured or barcode not clear in photo',
+        rawText: apiKey ? 'Barcode not clear in photo' : 'No GEMINI_API_KEY set',
       },
       engine: 'fallback',
     });
