@@ -5,7 +5,12 @@ import {
   DayRecord,
   TeamMember,
   INITIAL_RECORD_31_10_2026,
+  BRANCHES,
+  BranchInfo,
+  StockCategoryId,
 } from './types/stock';
+import { BranchCategoryPortal } from './components/BranchCategoryPortal';
+import { ChargerStockView } from './components/ChargerStockView';
 import {
   loadRecords,
   saveRecords,
@@ -59,6 +64,11 @@ import {
   Barcode,
   ShieldCheck,
   X,
+  Building2,
+  BatteryCharging,
+  Zap,
+  Boxes,
+  ArrowRight,
 } from 'lucide-react';
 
 import {
@@ -111,6 +121,37 @@ export default function App() {
 
   // Current active date automatically defaults to today's date in Indian Standard Time (IST)
   const [currentDate, setCurrentDate] = useState<string>(() => getIndianTodayDate());
+
+  // Active branch (1-Chandravadni Naka, 2-Morar, 3-Yard City Center, 4-Service Center)
+  const [activeBranchId, setActiveBranchId] = useState<string>(() => {
+    return localStorage.getItem('active_branch_id') || 'chandravadni_naka';
+  });
+
+  // Active stock category (battery, charger)
+  const [activeCategory, setActiveCategory] = useState<StockCategoryId>(() => {
+    return (localStorage.getItem('active_stock_category') as StockCategoryId) || 'battery';
+  });
+
+  // When opening the app, show the 4 branches selection portal
+  const [isBranchPortalOpen, setIsBranchPortalOpen] = useState<boolean>(() => {
+    const hasVisited = sessionStorage.getItem('has_selected_branch_session');
+    return !hasVisited;
+  });
+
+  const activeBranch = useMemo(() => {
+    return BRANCHES.find((b) => b.id === activeBranchId) || BRANCHES[0];
+  }, [activeBranchId]);
+
+  const handleSelectBranchAndCategory = (branchId: string, categoryId: StockCategoryId) => {
+    setActiveBranchId(branchId);
+    setActiveCategory(categoryId);
+    localStorage.setItem('active_branch_id', branchId);
+    localStorage.setItem('active_stock_category', categoryId);
+    sessionStorage.setItem('has_selected_branch_session', 'true');
+    setIsBranchPortalOpen(false);
+    const branchName = BRANCHES.find((b) => b.id === branchId)?.name || branchId;
+    showToast(`Opened ${branchName} · ${categoryId === 'battery' ? 'Battery Stock' : 'Charger Stock'}`);
+  };
 
   // Modal states
   const [isQuickEntryOpen, setIsQuickEntryOpen] = useState(false);
@@ -512,11 +553,93 @@ export default function App() {
         onOpenSerialTracker={() => setIsSerialModalOpen(true)}
         onExportExcel={() => exportRecordToExcel(currentRecord, columns)}
         currentDate={currentDate}
+        activeBranch={activeBranch}
+        activeCategory={activeCategory}
+        onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
+        onSelectCategory={(cat) => setActiveCategory(cat)}
       />
 
+      {/* Branch & Category Navigation Bar */}
+      <div className="bg-slate-900 text-white px-4 sm:px-6 py-2.5 border-b border-slate-800 shadow-xs flex items-center justify-between text-xs flex-wrap gap-2.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setIsBranchPortalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-500/40 text-blue-200 font-bold transition-all cursor-pointer shadow-2xs text-xs"
+            title="Click to view all 4 branches: 1-Chandravadni Naka, 2-Morar, 3-Yard City Center, 4-Service Center"
+          >
+            <Building2 className="w-3.5 h-3.5 text-blue-400" />
+            <span>{activeBranch.name}</span>
+            <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
+              Switch Branch (1-4)
+            </span>
+          </button>
+
+          <span className="text-slate-600">/</span>
+
+          {/* Quick Category Switcher */}
+          <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+            <button
+              onClick={() => setActiveCategory('battery')}
+              className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                activeCategory === 'battery'
+                  ? 'bg-blue-600 text-white shadow-2xs'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <BatteryCharging className="w-3.5 h-3.5" />
+              <span>Battery Stock</span>
+            </button>
+            <button
+              onClick={() => setActiveCategory('charger')}
+              className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                activeCategory === 'charger'
+                  ? 'bg-amber-600 text-white shadow-2xs'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Charger Stock</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-slate-400 hidden lg:inline">
+            📍 {activeBranch.address}
+          </span>
+          <button
+            onClick={() => setIsBranchPortalOpen(true)}
+            className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer flex items-center gap-1"
+          >
+            <span>All 4 Branches & Categories</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
       {/* Main Content Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
-        {/* Top: Batchwise Stock (Battery Models) & Serial Number History Search */}
+      {isBranchPortalOpen ? (
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6">
+          <BranchCategoryPortal
+            currentBranchId={activeBranchId}
+            currentCategoryId={activeCategory}
+            onSelectBranchAndCategory={handleSelectBranchAndCategory}
+            onClose={() => setIsBranchPortalOpen(false)}
+            isModal={false}
+          />
+        </main>
+      ) : activeCategory === 'charger' ? (
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
+          <ChargerStockView
+            branch={activeBranch}
+            onSwitchStockCategory={(cat) => setActiveCategory(cat)}
+            onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
+            activeDate={currentDate}
+          />
+        </main>
+      ) : (
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
+          {/* Top: Batchwise Stock (Battery Models) & Serial Number History Search */}
         <BatchStockOverview
           currentRecord={currentRecord}
           columns={columns}
@@ -903,6 +1026,7 @@ export default function App() {
           </div>
         </section>
       </main>
+      )}
 
       {/* Mobile/Compact Persistent Sticky Action Bar - Always easily accessible when scrolling */}
       <div className="md:hidden fixed bottom-3 left-3 right-3 z-40 bg-white/95 backdrop-blur-md border border-slate-300 rounded-xl p-2 shadow-xl flex items-center justify-between gap-2.5">

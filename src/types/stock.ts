@@ -4,6 +4,85 @@ export interface BatteryColumn {
   isSpecial?: boolean; // For Total, OLD BATTERY FOR REPAIR, SERVICE BATTERY TOTAL
 }
 
+export interface BranchInfo {
+  id: string;
+  number: number;
+  name: string;
+  shortName: string;
+  subtitle: string;
+  code: string;
+  address?: string;
+  contactPerson?: string;
+  phone?: string;
+  badge?: string;
+}
+
+export type StockCategoryId = 'battery' | 'charger' | 'spare_parts';
+
+export interface StockCategoryInfo {
+  id: StockCategoryId;
+  name: string;
+  tagline: string;
+  badge?: string;
+}
+
+export const BRANCHES: BranchInfo[] = [
+  {
+    id: 'chandravadni_naka',
+    number: 1,
+    name: '1 - Chandravadni Naka',
+    shortName: 'Chandravadni Naka',
+    subtitle: 'Main Central Depot & Stock Register',
+    code: 'CN-01',
+    address: 'Chandravadni Naka, Lashkar / Main Depot',
+    contactPerson: 'Piyush Shivhare (Owner & Admin)',
+    phone: '9009156696',
+    badge: 'Main Central Branch',
+  },
+  {
+    id: 'morar',
+    number: 2,
+    name: '2 - Morar',
+    shortName: 'Morar',
+    subtitle: 'Morar Regional Warehouse & Distribution Hub',
+    code: 'MR-02',
+    address: 'Morar Cantt / Market Area',
+    contactPerson: 'Store Incharge',
+    badge: 'Regional Warehouse',
+  },
+  {
+    id: 'yard_city_center',
+    number: 3,
+    name: '3 - Yard City Center',
+    shortName: 'Yard City Center',
+    subtitle: 'City Center Logistics Yard & Transit Hub',
+    code: 'CC-03',
+    address: 'City Center Yard Depot',
+    contactPerson: 'Yard Supervisor',
+    badge: 'Logistics Yard',
+  },
+  {
+    id: 'service_center',
+    number: 4,
+    name: '4 - Service Center',
+    shortName: 'Service Center',
+    subtitle: 'Repairs, Testing & Standby Battery Unit',
+    code: 'SC-04',
+    address: 'Workshop & Technical Service Depot',
+    contactPerson: 'Service Lead',
+    badge: 'Technical & Repairs',
+  },
+];
+
+export const DEFAULT_CHARGER_COLUMNS: BatteryColumn[] = [
+  { id: '48v_15a_smart', name: '48V 15A Smart' },
+  { id: '60v_20a_fast', name: '60V 20A Fast' },
+  { id: '72v_25a_heavy', name: '72V 25A Heavy Duty' },
+  { id: '48_60v_universal', name: '48V/60V Universal' },
+  { id: '72v_30a_lithium', name: '72V 30A Lithium' },
+  { id: 'old_charger_repair', name: 'Charger for Repair' },
+];
+
 export interface DayRecord {
   date: string; // "DD-MM-YYYY" e.g. "31-10-2026"
   // Opening stock values by column ID
