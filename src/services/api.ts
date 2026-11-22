@@ -29,10 +29,17 @@ export function getApiBaseUrl(): string {
     const custom = localStorage.getItem('battery_custom_backend_url');
     if (custom && custom.trim()) {
       const cleaned = custom.trim().replace(/\/+$/, '');
-      if (isFullStackHost && cleaned === DEFAULT_RENDER_BACKEND_URL && !host.endsWith('.onrender.com')) {
+      const isBrokenTarget =
+        cleaned.includes('supabase.co') ||
+        (window.location.protocol === 'https:' && cleaned.startsWith('http://localhost')) ||
+        (isFullStackHost && cleaned === DEFAULT_RENDER_BACKEND_URL && !host.endsWith('.onrender.com'));
+      if (isBrokenTarget) {
         localStorage.removeItem('battery_custom_backend_url');
-      } else {
+      } else if (!isFullStackHost) {
         return cleaned;
+      } else {
+        // On full-stack hosts, only use custom URL if explicitly different and valid; otherwise prefer built-in
+        localStorage.removeItem('battery_custom_backend_url');
       }
     }
 
@@ -81,77 +88,81 @@ export interface BackendStatus {
   error?: string;
 }
 
+function mapHealthResponse(data: any, resolvedUrl: string): BackendStatus {
+  return {
+    online: true,
+    engine: data.db?.engine || 'Cloud DBMS',
+    url: resolvedUrl,
+    storageLocation: data.db?.storageLocation,
+    hasPostgresUrl: data.db?.hasPostgresUrl,
+    supabaseConfigured: data.db?.supabaseConfigured,
+    supabaseReady: data.db?.supabaseReady,
+    supabaseNeedsSchema: data.db?.supabaseNeedsSchema,
+    supabaseNeedsServiceKey: data.db?.supabaseNeedsServiceKey,
+    supabaseUsingSecretKey: data.db?.supabaseUsingSecretKey,
+    supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
+    supabaseLastError: data.db?.supabaseLastError,
+    supabaseProjectRef: data.db?.supabaseProjectRef,
+  };
+}
+
 export async function checkBackendHealth(): Promise<BackendStatus> {
   const base = getApiBaseUrl();
-  try {
-    const res = await fetch(`${base}/api/health`, {
-      method: 'GET',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
-    });
+  const candidates = base ? [base, ''] : [''];
+  let lastError = 'Cannot reach backend';
+  let lastStatus: number | null = null;
 
-    if (res.ok) {
-      const data = await res.json();
-      return {
-        online: true,
-        engine: data.db?.engine || 'Cloud DBMS',
-        url: base || window.location.origin,
-        storageLocation: data.db?.storageLocation,
-        hasPostgresUrl: data.db?.hasPostgresUrl,
-        supabaseConfigured: data.db?.supabaseConfigured,
-        supabaseReady: data.db?.supabaseReady,
-        supabaseNeedsSchema: data.db?.supabaseNeedsSchema,
-        supabaseNeedsServiceKey: data.db?.supabaseNeedsServiceKey,
-        supabaseUsingSecretKey: data.db?.supabaseUsingSecretKey,
-        supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
-        supabaseLastError: data.db?.supabaseLastError,
-        supabaseProjectRef: data.db?.supabaseProjectRef,
-      };
+  for (const candidateBase of candidates) {
+    try {
+      const res = await fetch(`${candidateBase}/api/health`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (base && candidateBase === '' && typeof window !== 'undefined') {
+          localStorage.removeItem('battery_custom_backend_url');
+        }
+        return mapHealthResponse(data, candidateBase || (typeof window !== 'undefined' ? window.location.origin : ''));
+      }
+      lastStatus = res.status;
+      lastError = `Server status: ${res.status}`;
+    } catch (err: any) {
+      lastError = err?.message || 'Cannot reach backend';
     }
-    return {
-      online: false,
-      engine: 'Disconnected',
-      url: base || window.location.origin,
-      error: `Server status: ${res.status}`,
-    };
-  } catch (err: any) {
-    return {
-      online: false,
-      engine: 'Offline / Standalone Cache',
-      url: base || window.location.origin,
-      error: err.message || 'Cannot reach backend',
-    };
   }
+
+  return {
+    online: false,
+    engine: lastStatus ? 'Disconnected' : 'Offline / Standalone Cache',
+    url: base || (typeof window !== 'undefined' ? window.location.origin : ''),
+    error: lastError,
+  };
 }
 
 export async function retestBackendConnection(): Promise<BackendStatus> {
   const base = getApiBaseUrl();
-  try {
-    const res = await fetch(`${base}/api/db/test`, {
-      method: 'POST',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return {
-        online: true,
-        engine: data.db?.engine || 'Cloud DBMS',
-        url: base || window.location.origin,
-        storageLocation: data.db?.storageLocation,
-        hasPostgresUrl: data.db?.hasPostgresUrl,
-        supabaseConfigured: data.db?.supabaseConfigured,
-        supabaseReady: data.db?.supabaseReady,
-        supabaseNeedsSchema: data.db?.supabaseNeedsSchema,
-        supabaseNeedsServiceKey: data.db?.supabaseNeedsServiceKey,
-        supabaseUsingSecretKey: data.db?.supabaseUsingSecretKey,
-        supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
-        supabaseLastError: data.db?.supabaseLastError,
-        supabaseProjectRef: data.db?.supabaseProjectRef,
-      };
+  const candidates = base ? [base, ''] : [''];
+
+  for (const candidateBase of candidates) {
+    try {
+      const res = await fetch(`${candidateBase}/api/db/test`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (base && candidateBase === '' && typeof window !== 'undefined') {
+          localStorage.removeItem('battery_custom_backend_url');
+        }
+        return mapHealthResponse(data, candidateBase || (typeof window !== 'undefined' ? window.location.origin : ''));
+      }
+    } catch {
+      // try next candidate or health fallback
     }
-  } catch {
-    // fallback to regular health check
   }
   return checkBackendHealth();
 }

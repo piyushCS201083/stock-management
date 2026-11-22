@@ -58,9 +58,10 @@ function broadcastRealtime(event: string, payload: any) {
 }
 
 // CORS configuration to allow Vercel frontend or any domain
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim())
-  : '*';
+const allowedOrigins =
+  process.env.CORS_ORIGIN && process.env.CORS_ORIGIN.trim() !== '*'
+    ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim())
+    : true;
 
 app.use(
   cors({

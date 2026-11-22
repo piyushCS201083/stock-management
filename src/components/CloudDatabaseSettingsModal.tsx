@@ -49,6 +49,7 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
     setIsChecking(true);
     const res = await retestBackendConnection();
     setStatus(res);
+    setBackendUrl(getApiBaseUrl());
     if (res.supabaseReady || res.hasPostgresUrl) {
       onDataReload();
     }
@@ -147,6 +148,13 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                 <strong>Zero Data Loss Guarantee:</strong> All changes sync to Supabase PostgreSQL when configured and are cached locally so records never get lost.
               </span>
             </div>
+
+            {status && !status.online && status.error && (
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 text-[11px]">
+                <span className="font-bold block">Backend unreachable ({status.url || 'same-origin'}):</span>
+                <code className="font-mono text-[10px]">{status.error}</code>
+              </div>
+            )}
 
             {status?.supabaseNeedsSchema && (
               <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-2">
