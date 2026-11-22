@@ -26,6 +26,7 @@ interface HeaderProps {
   onOpenBranchPortal: () => void;
   onSelectCategory: (cat: StockCategoryId) => void;
   isRealtimeActive?: boolean;
+  isCloudDbConnected?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -41,6 +42,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenBranchPortal,
   onSelectCategory,
   isRealtimeActive = true,
+  isCloudDbConnected = false,
 }) => {
   const [istTime, setIstTime] = useState<string>(() => getIndianCurrentTime());
 
@@ -92,17 +94,19 @@ export const Header: React.FC<HeaderProps> = ({
           <span>IST: {istTime}</span>
         </div>
 
-        {/* Real-time Cloud Synchronization Indicator */}
-        <div
-          className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+        {/* Real-time Cloud Database Status Button */}
+        <button
+          type="button"
+          onClick={onOpenCloudSettings}
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors cursor-pointer ${
             isRealtimeActive
-              ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
-              : 'bg-amber-50 border-amber-300 text-amber-800'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+              : 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
           }`}
           title={
-            isRealtimeActive
-              ? 'Real-Time Cloud Synchronization Active: All stock and serial changes persist permanently to cloud and sync instantly across all devices'
-              : 'Reconnecting to Real-Time Cloud...'
+            isCloudDbConnected
+              ? 'Supabase PostgreSQL Connected & Live Synced'
+              : 'Real-Time Cloud Synchronization Active'
           }
         >
           <span
@@ -111,9 +115,15 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           />
           <span className="hidden sm:inline">
-            {isRealtimeActive ? 'Cloud Live Synced' : 'Syncing...'}
+            {isCloudDbConnected
+              ? isRealtimeActive
+                ? 'Supabase Live'
+                : 'Syncing...'
+              : isRealtimeActive
+              ? 'Cloud Live Synced'
+              : 'Syncing...'}
           </span>
-        </div>
+        </button>
       </div>
 
       {/* Zone 2: Category Toggle Tabs & Quick Nav */}

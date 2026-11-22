@@ -7,6 +7,8 @@ import dotenv from 'dotenv';
 import { verifyAuth } from '@supabase/server/core';
 import {
   initDb,
+  ensureDbReady,
+  getActiveStorageTarget,
   getDbStatus,
   getAllRecords,
   getRecord,
@@ -73,16 +75,23 @@ app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
 // Disable browser/proxy caching on all /api/* routes so mobile & desktop always get fresh state
-app.use('/api', (req, res, next) => {
+app.use('/api', async (req, res, next) => {
   if (req.path !== '/realtime') {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
+    if (req.path !== '/db/test') {
+      try {
+        await ensureDbReady();
+      } catch {
+        // fallback handled by db layer
+      }
+    }
   }
   next();
 });
 
-// Initialize DBMS connection (PostgreSQL or persistent file)
+// Initialize DBMS connection (PostgreSQL or Supabase or persistent file)
 initDb().catch((err) => {
   console.error('[Server] DBMS initialization error:', err);
 });
@@ -207,8 +216,14 @@ app.post('/api/records', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Date is required' });
     }
     const saved = await saveRecord(record);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('RECORD_UPDATED', saved);
-    res.json({ success: true, data: saved });
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -243,8 +258,14 @@ app.post('/api/columns', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Columns must be an array' });
     }
     const saved = await saveColumns(columns);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('COLUMNS_UPDATED', saved);
-    res.json({ success: true, data: saved });
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -267,8 +288,14 @@ app.post('/api/team', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Team members must be an array' });
     }
     const saved = await saveTeamMembers(team);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('TEAM_UPDATED', saved);
-    res.json({ success: true, data: saved });
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -303,8 +330,14 @@ app.post('/api/serials', async (req, res) => {
       return res.status(400).json({ success: false, error: 'serialNo is required' });
     }
     const saved = await saveSerial(item);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('SERIAL_UPDATED', saved);
-    res.json({ success: true, data: saved });
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -317,8 +350,14 @@ app.post('/api/serials/bulk', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Items must be an array' });
     }
     const saved = await bulkSaveSerials(items);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('SERIALS_BULK_UPDATED', saved);
-    res.json({ success: true, data: saved });
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -353,8 +392,14 @@ app.post('/api/chargers', async (req, res) => {
       return res.status(400).json({ success: false, error: 'branchId, date, and record are required' });
     }
     const saved = await saveChargerRecord(branchId, date, record);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('CHARGER_UPDATED', saved);
-    res.json({ success: true, data: saved });
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -365,8 +410,13 @@ app.post('/api/backup-permanent', async (req, res) => {
   try {
     const { records, serials } = req.body || {};
     const result = await backupPermanentCodebase(records, serials);
+    const storage = getActiveStorageTarget();
     broadcastRealtime('PERMANENT_SYNC_COMPLETE', result);
-    res.json(result);
+    res.json({
+      ...result,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -541,7 +591,6 @@ async function startServer() {
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`[Server] Battery Register Server listening on http://0.0.0.0:${PORT}`);
     console.log(`[Server] Production mode: ${isProduction}`);
-    console.log(`[Server] Ready for Render backend and Vercel frontend deployments`);
   });
 }
 

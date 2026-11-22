@@ -35,6 +35,7 @@ interface ChargerStockViewProps {
   activeDate: string;
   remoteChargerRecords?: Record<string, any>;
   onSaveChargerRecord?: (branchId: string, date: string, record: Record<string, any>) => void;
+  isCloudDbConnected?: boolean;
 }
 
 export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
@@ -44,6 +45,7 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
   activeDate,
   remoteChargerRecords,
   onSaveChargerRecord,
+  isCloudDbConnected = false,
 }) => {
   const [columns] = useState<BatteryColumn[]>(DEFAULT_CHARGER_COLUMNS);
   const compositeKey = `${branch.id}::${activeDate}`;
@@ -97,7 +99,11 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
         } else {
           apiSaveChargerRecord(branch.id, activeDate, next).catch(() => {});
         }
-        showToast('✓ Charger stock synced to Cloud');
+        showToast(
+          isCloudDbConnected
+            ? '✓ Charger stock synced to Supabase'
+            : '✓ Charger stock saved & live synced'
+        );
       }, 450);
       return next;
     });

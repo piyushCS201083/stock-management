@@ -128,6 +128,7 @@ export default function App() {
   const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() => loadLocalSerials());
   const [chargerRecords, setChargerRecords] = useState<Record<string, any>>(() => loadLocalChargers());
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const isCloudDbConnected = Boolean(backendStatus?.supabaseReady || backendStatus?.hasPostgresUrl);
 
   // Current active date automatically defaults to today's date in Indian Standard Time (IST)
   const [currentDate, setCurrentDate] = useState<string>(() => getIndianTodayDate());
@@ -260,6 +261,9 @@ export default function App() {
         setChargerRecords(remoteChargers);
       }
       setBackendStatus(health);
+      if (health.online) {
+        setIsRealtimeActive(true);
+      }
     } catch (e) {
       console.warn('Cloud sync error:', e);
     } finally {
@@ -426,7 +430,11 @@ export default function App() {
     setSerials(updated);
     saveLocalSerials(updated);
     await apiBulkSaveSerials(newItems);
-    showToast(`✓ Assigned & permanently registered ${newItems.length} serials in Cloud DBMS!`);
+    showToast(
+      isCloudDbConnected
+        ? `✓ Assigned & saved ${newItems.length} serials to Supabase`
+        : `✓ Assigned & permanently registered ${newItems.length} serials in Cloud DBMS!`
+    );
   };
 
   // Update single serial from edit form
@@ -435,7 +443,11 @@ export default function App() {
     setSerials(updated);
     saveLocalSerials(updated);
     await apiSaveSerial(updatedItem);
-    showToast(`✓ Permanently updated serial: ${updatedItem.serialNo} in Cloud DBMS`);
+    showToast(
+      isCloudDbConnected
+        ? `✓ Updated serial ${updatedItem.serialNo} in Supabase`
+        : `✓ Permanently updated serial: ${updatedItem.serialNo} in Cloud DBMS`
+    );
   };
 
   // Update records in state, localStorage, and Cloud DBMS
@@ -510,16 +522,24 @@ export default function App() {
       setSerials(updatedSerials);
       saveLocalSerials(updatedSerials);
       await apiBulkSaveSerials(savedList);
-      showToast(`✓ Inward ${savedList.length} batteries serialized & backed up in Cloud!`);
+      showToast(
+        isCloudDbConnected
+          ? `✓ Inward ${savedList.length} batteries serialized & saved to Supabase!`
+          : `✓ Inward ${savedList.length} batteries serialized & backed up in Cloud!`
+      );
     } else {
-      showToast(`Saving ${updated.date} to Cloud DBMS...`);
+      showToast(`Saving ${updated.date}...`);
     }
 
     // Async save to Cloud DBMS (Supabase / PostgreSQL)
     try {
       const saved = await apiSaveRecord(updated);
       setRecords((prev) => ({ ...prev, [saved.date]: saved }));
-      showToast(`✓ Stock change synced to Cloud DBMS & real-time broadcasted!`);
+      showToast(
+        isCloudDbConnected
+          ? `✓ Stock change saved to Supabase & synced live!`
+          : `✓ Stock change synced to Cloud DBMS & real-time broadcasted!`
+      );
     } catch (e) {
       showToast(`Saved locally (will sync when online)`);
     }
@@ -702,6 +722,7 @@ export default function App() {
         onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
         onSelectCategory={(cat) => setActiveCategory(cat)}
         isRealtimeActive={isRealtimeActive}
+        isCloudDbConnected={isCloudDbConnected}
       />
 
       {/* Branch & Category Navigation Bar */}
@@ -781,6 +802,7 @@ export default function App() {
             onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
             activeDate={currentDate}
             remoteChargerRecords={chargerRecords}
+            isCloudDbConnected={isCloudDbConnected}
             onSaveChargerRecord={async (branchId, date, record) => {
               const saved = await apiSaveChargerRecord(branchId, date, record);
               setChargerRecords((prev) => {

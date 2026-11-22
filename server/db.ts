@@ -42,6 +42,11 @@ let supabaseProjectRef = '';
 let supabaseUsingSecretKey = false;
 let supabaseJwksConfigured = false;
 let supabaseLastError = '';
+let initDbPromise: Promise<{
+  type: 'postgresql' | 'supabase_rest' | 'file_dbms';
+  ready: boolean;
+  error?: string;
+}> | null = null;
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
@@ -53,12 +58,22 @@ if (!fs.existsSync(DATA_DIR)) {
 
 function cleanEnvValue(raw?: string): string {
   if (!raw) return '';
-  let val = raw.trim();
-  if (
-    (val.startsWith('"') && val.endsWith('"')) ||
-    (val.startsWith("'") && val.endsWith("'"))
-  ) {
-    val = val.slice(1, -1).trim();
+  let val = raw.replace(/[\r\n\u200B-\u200D\uFEFF]+/g, '').trim();
+  const stripQuotes = (s: string) =>
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'")) ||
+    (s.startsWith('`') && s.endsWith('`'))
+      ? s.slice(1, -1).trim()
+      : s;
+  val = stripQuotes(val);
+  // Strip accidental "KEY_NAME=value" paste into secret value field
+  const eqMatch = val.match(/^[A-Z0-9_]+\s*[:=]\s*(.+)$/);
+  if (eqMatch && eqMatch[1]) {
+    val = eqMatch[1].trim();
+  }
+  val = stripQuotes(val);
+  if (val.toLowerCase().startsWith('bearer ')) {
+    val = val.slice(7).trim();
   }
   return val;
 }
@@ -76,21 +91,25 @@ function parseSupabaseProjectRef(url?: string): string {
 
 function isPlaceholderDatabaseUrl(dbUrl?: string): boolean {
   if (!dbUrl) return true;
+  const lower = dbUrl.toLowerCase();
   return (
     dbUrl.includes('[YOUR-DATABASE-PASSWORD]') ||
     dbUrl.includes('<YOUR-DATABASE-PASSWORD>') ||
-    dbUrl.includes('YOUR_PASSWORD')
+    lower.includes('your_password') ||
+    lower.includes('your-database-password')
   );
 }
 
 function isPlaceholderKey(key?: string): boolean {
   if (!key) return true;
+  const lower = key.toLowerCase();
   return (
     key.includes('•') ||
     key.includes('\u2022') ||
     key.includes('***') ||
     key.includes('...') ||
-    key.includes('YOUR_') ||
+    lower.includes('your_') ||
+    lower.includes('your-') ||
     key.includes('<')
   );
 }
@@ -168,41 +187,58 @@ function writeLocalFile(state: DatabaseState) {
 }
 
 async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
+  const local = readLocalFile();
+  const now = new Date().toISOString();
+
+  // Ensure baseline + any locally captured records are seeded into Supabase (without overwriting existing newer Supabase rows)
+  const localRecords = Object.values(local.records || {});
+  const recordsToSeed = localRecords.length > 0 ? localRecords : [INITIAL_RECORD_31_10_2026];
+  const recordRows = recordsToSeed
+    .filter((rec) => rec && rec.date)
+    .map((rec) => ({
+      date: rec.date,
+      data: rec,
+      updated_at: rec.lastModified || now,
+    }));
+
   const { error: recErr } = await client
     .from('stock_records')
-    .upsert(
-      {
-        date: INITIAL_RECORD_31_10_2026.date,
-        data: INITIAL_RECORD_31_10_2026,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'date', ignoreDuplicates: true }
-    );
+    .upsert(recordRows, { onConflict: 'date', ignoreDuplicates: true });
 
   if (recErr) {
     throw recErr;
   }
 
-  await client.from('battery_metadata').upsert(
-    [
-      {
-        key: 'columns',
-        data: DEFAULT_BATTERY_COLUMNS,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        key: 'team_members',
-        data: DEFAULT_TEAM_MEMBERS,
-        updated_at: new Date().toISOString(),
-      },
-    ],
-    { onConflict: 'key', ignoreDuplicates: true }
-  );
+  const metaRows: Array<{ key: string; data: any; updated_at: string }> = [
+    {
+      key: 'columns',
+      data: local.columns?.length ? local.columns : DEFAULT_BATTERY_COLUMNS,
+      updated_at: now,
+    },
+    {
+      key: 'team_members',
+      data: local.teamMembers?.length ? local.teamMembers : DEFAULT_TEAM_MEMBERS,
+      updated_at: now,
+    },
+  ];
+  if (local.chargerRecords && Object.keys(local.chargerRecords).length > 0) {
+    metaRows.push({
+      key: 'charger_records',
+      data: local.chargerRecords,
+      updated_at: now,
+    });
+  }
 
-  const serialRows = Object.values(INITIAL_BASELINE_SERIALS).map((item) => ({
+  await client.from('battery_metadata').upsert(metaRows, {
+    onConflict: 'key',
+    ignoreDuplicates: true,
+  });
+
+  const mergedSerials = { ...INITIAL_BASELINE_SERIALS, ...(local.serials || {}) };
+  const serialRows = Object.values(mergedSerials).map((item) => ({
     serial_no: item.serialNo,
     data: item,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   }));
 
   if (serialRows.length > 0) {
@@ -212,11 +248,29 @@ async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
   }
 }
 
+export async function ensureDbReady(): Promise<void> {
+  if (!initDbPromise) {
+    initDbPromise = initDb();
+  }
+  await initDbPromise;
+}
+
+export function getActiveStorageTarget(): 'postgresql' | 'supabase' | 'local_file' {
+  if (isPostgresConnected && pgPool) return 'postgresql';
+  if (isSupabaseReady && supabaseClient) return 'supabase';
+  return 'local_file';
+}
+
 export async function initDb(): Promise<{
   type: 'postgresql' | 'supabase_rest' | 'file_dbms';
   ready: boolean;
   error?: string;
 }> {
+  const runInit = async (): Promise<{
+    type: 'postgresql' | 'supabase_rest' | 'file_dbms';
+    ready: boolean;
+    error?: string;
+  }> => {
   // Reset transient probe flags so re-testing updates state cleanly
   isSupabaseReady = false;
   supabaseNeedsSchema = false;
@@ -325,12 +379,15 @@ export async function initDb(): Promise<{
     );
   }
 
-  // Tier 2: @supabase/server HTTPS REST Client (SUPABASE_URL + SUPABASE_SECRET_KEY / SUPABASE_PUBLISHABLE_KEY)
+  // Tier 2: @supabase/server HTTPS REST Client (SUPABASE_URL + SUPABASE_SECRET_KEY / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_PUBLISHABLE_KEY)
   const supabaseUrl = cleanEnvValue(process.env.SUPABASE_URL);
-  const rawSecretKey = cleanEnvValue(
-    process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+  const rawSecretPrimary = cleanEnvValue(process.env.SUPABASE_SECRET_KEY);
+  const rawServiceRole = cleanEnvValue(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const secretKeysToTry = Array.from(
+    new Set(
+      [rawSecretPrimary, rawServiceRole].filter((k) => k && !isPlaceholderKey(k))
+    )
   );
-  const secretKey = rawSecretKey && !isPlaceholderKey(rawSecretKey) ? rawSecretKey : '';
   const rawPublishableKey = cleanEnvValue(
     process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY
   );
@@ -339,10 +396,24 @@ export async function initDb(): Promise<{
 
   supabaseJwksConfigured = Boolean(cleanEnvValue(process.env.SUPABASE_JWKS_URL) || supabaseUrl);
 
-  const buildSupabaseClient = (mode: 'secret' | 'publishable'): SupabaseClient | null => {
+  const buildSupabaseClient = (mode: 'secret' | 'publishable', explicitKey?: string): SupabaseClient | null => {
     if (!supabaseUrl) return null;
-    const key = mode === 'secret' ? secretKey : publishableKey;
+    const key = explicitKey || (mode === 'secret' ? secretKeysToTry[0] : publishableKey);
     if (!key) return null;
+
+    const isOpaqueApiKey = key.startsWith('sb_secret_') || key.startsWith('sb_publishable_');
+    const customFetch: typeof fetch | undefined = isOpaqueApiKey
+      ? (input, init) => {
+          const headers = new Headers(init?.headers);
+          if (headers.get('Authorization') === `Bearer ${key}`) {
+            headers.delete('Authorization');
+          }
+          if (!headers.has('apikey')) {
+            headers.set('apikey', key);
+          }
+          return fetch(input, { ...init, headers });
+        }
+      : undefined;
 
     const { data: resolvedEnv } = resolveSupabaseServerEnv({
       url: supabaseUrl,
@@ -352,14 +423,21 @@ export async function initDb(): Promise<{
     if (resolvedEnv) {
       try {
         return mode === 'secret'
-          ? createSupabaseAdminClient({ env: resolvedEnv })
-          : createSupabaseContextClient({ env: resolvedEnv });
+          ? createSupabaseAdminClient({
+              env: resolvedEnv,
+              supabaseOptions: customFetch ? { global: { fetch: customFetch } } : undefined,
+            })
+          : createSupabaseContextClient({
+              env: resolvedEnv,
+              supabaseOptions: customFetch ? { global: { fetch: customFetch } } : undefined,
+            });
       } catch {
         // Fallback below for legacy JWT keys
       }
     }
 
     return createClient(supabaseUrl, key, {
+      global: customFetch ? { fetch: customFetch } : undefined,
       auth: {
         persistSession: false,
         autoRefreshToken: false,
@@ -367,17 +445,17 @@ export async function initDb(): Promise<{
     });
   };
 
-  if (supabaseUrl && (secretKey || publishableKey)) {
+  if (supabaseUrl && (secretKeysToTry.length > 0 || publishableKey)) {
     supabaseProjectRef = parseSupabaseProjectRef(supabaseUrl);
-    const candidates: Array<{ mode: 'secret' | 'publishable'; client: SupabaseClient }> = [];
+    const candidates: Array<{ mode: 'secret' | 'publishable'; key: string; client: SupabaseClient }> = [];
 
-    if (secretKey) {
-      const c = buildSupabaseClient('secret');
-      if (c) candidates.push({ mode: 'secret', client: c });
+    for (const sk of secretKeysToTry) {
+      const c = buildSupabaseClient('secret', sk);
+      if (c) candidates.push({ mode: 'secret', key: sk, client: c });
     }
     if (publishableKey) {
-      const c = buildSupabaseClient('publishable');
-      if (c) candidates.push({ mode: 'publishable', client: c });
+      const c = buildSupabaseClient('publishable', publishableKey);
+      if (c) candidates.push({ mode: 'publishable', key: publishableKey, client: c });
     }
 
     let invalidSecretHint = '';
@@ -407,8 +485,12 @@ export async function initDb(): Promise<{
             const seedCode = seedErr?.code || '';
             const seedMsg = seedErr?.message || '';
             supabaseLastError = [seedCode, seedMsg].filter(Boolean).join(' — ');
-            if (seedCode === '42501' || seedMsg.toLowerCase().includes('row-level security')) {
-              supabaseNeedsServiceKey = true;
+            if (seedCode === '42501' || seedMsg.toLowerCase().includes('row-level security') || seedMsg.toLowerCase().includes('permission denied')) {
+              if (candidate.mode === 'secret') {
+                supabaseNeedsSchema = true;
+              } else {
+                supabaseNeedsServiceKey = true;
+              }
               isSupabaseReady = false;
             } else {
               isSupabaseReady = true;
@@ -424,12 +506,17 @@ export async function initDb(): Promise<{
           .filter(Boolean)
           .join(' — ');
 
-        // If secret key itself is invalid (401 Invalid API key), try publishable key next
+        // If a secret key is invalid (401 Invalid API key), try next candidate
         if (
           candidate.mode === 'secret' &&
           (status === 401 || errMsg.toLowerCase().includes('invalid api key'))
         ) {
-          invalidSecretHint = 'SUPABASE_SECRET_KEY was rejected (401 Invalid API key)';
+          const looksValidFormat =
+            candidate.key.startsWith('sb_secret_') || candidate.key.startsWith('eyJ');
+          invalidSecretHint = looksValidFormat
+            ? 'SUPABASE_SECRET_KEY was rejected by Supabase (401 Invalid API key) — verify you copied the unmasked active secret key for project ' +
+              supabaseProjectRef
+            : 'SUPABASE_SECRET_KEY does not match a Supabase secret key format (must start with sb_secret_ or eyJ...)';
           supabaseLastError = invalidSecretHint;
           console.warn('[DBMS]', invalidSecretHint);
           continue;
@@ -465,7 +552,14 @@ export async function initDb(): Promise<{
           errMsg.toLowerCase().includes('row-level security') ||
           errMsg.toLowerCase().includes('api key')
         ) {
-          supabaseNeedsServiceKey = true;
+          if (candidate.mode === 'secret' && errCode === '42501') {
+            supabaseNeedsSchema = true;
+            supabaseNeedsServiceKey = false;
+            supabaseLastError =
+              'Secret key authenticated as service_role, but PostgreSQL table GRANT privileges are missing. Run GRANT USAGE ON SCHEMA public TO service_role and GRANT ALL ON TABLE ... TO service_role in Supabase SQL Editor.';
+          } else {
+            supabaseNeedsServiceKey = true;
+          }
           isSupabaseReady = false;
           console.warn('[DBMS] Supabase access blocked:', supabaseLastError);
           break;
@@ -483,6 +577,10 @@ export async function initDb(): Promise<{
   readLocalFile();
   console.log('[DBMS] Using persistent Local File DBMS at:', DATA_FILE);
   return { type: 'file_dbms', ready: true, error: supabaseLastError || undefined };
+  };
+
+  initDbPromise = runInit();
+  return initDbPromise;
 }
 
 export function getDbStatus() {
