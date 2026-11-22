@@ -1,30 +1,40 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   BatteryColumn,
   DEFAULT_CHARGER_COLUMNS,
-  DayRecord,
   BranchInfo,
 } from '../types/stock';
+import { apiSaveChargerRecord } from '../services/api';
 import {
   Zap,
-  Plus,
   Send,
-  Download,
-  Calendar,
-  ChevronLeft,
-  ChevronRight,
-  ShieldCheck,
   CheckCircle2,
-  Clock,
   ArrowRight,
 } from 'lucide-react';
-import { getIndianCurrentTime, getIndianTodayDate } from '../utils/date';
+import { getIndianCurrentTime } from '../utils/date';
+
+const DEFAULT_CHARGER_BASELINE: Record<string, {
+  opening: number;
+  inward: number;
+  inCause: string;
+  outward: number;
+  outCause: string;
+}> = {
+  '48v_15a_smart': { opening: 8, inward: 2, inCause: 'Direct factory receipt', outward: -1, outCause: 'Issued to e-rickshaw dealer' },
+  '60v_20a_fast': { opening: 5, inward: 0, inCause: '', outward: -2, outCause: 'Dispatched to customer' },
+  '72v_25a_heavy': { opening: 4, inward: 1, inCause: 'Vendor shipment', outward: 0, outCause: '' },
+  '48_60v_universal': { opening: 6, inward: 0, inCause: '', outward: -1, outCause: 'Replacement issued' },
+  '72v_30a_lithium': { opening: 3, inward: 0, inCause: '', outward: 0, outCause: '' },
+  'old_charger_repair': { opening: 2, inward: 1, inCause: 'Received burnt fan unit', outward: 0, outCause: '' },
+};
 
 interface ChargerStockViewProps {
   branch: BranchInfo;
   onSwitchStockCategory: (category: 'battery' | 'charger') => void;
   onOpenBranchPortal: () => void;
   activeDate: string;
+  remoteChargerRecords?: Record<string, any>;
+  onSaveChargerRecord?: (branchId: string, date: string, record: Record<string, any>) => void;
 }
 
 export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
@@ -32,8 +42,11 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
   onSwitchStockCategory,
   onOpenBranchPortal,
   activeDate,
+  remoteChargerRecords,
+  onSaveChargerRecord,
 }) => {
-  const [columns, setColumns] = useState<BatteryColumn[]>(DEFAULT_CHARGER_COLUMNS);
+  const [columns] = useState<BatteryColumn[]>(DEFAULT_CHARGER_COLUMNS);
+  const compositeKey = `${branch.id}::${activeDate}`;
   const [chargerRecord, setChargerRecord] = useState<Record<string, {
     opening: number;
     inward: number;
@@ -41,18 +54,22 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
     outward: number;
     outCause: string;
   }>>(() => {
-    // Sensible baseline stock for chargers
-    return {
-      '48v_15a_smart': { opening: 8, inward: 2, inCause: 'Direct factory receipt', outward: -1, outCause: 'Issued to e-rickshaw dealer' },
-      '60v_20a_fast': { opening: 5, inward: 0, inCause: '', outward: -2, outCause: 'Dispatched to customer' },
-      '72v_25a_heavy': { opening: 4, inward: 1, inCause: 'Vendor shipment', outward: 0, outCause: '' },
-      '48_60v_universal': { opening: 6, inward: 0, inCause: '', outward: -1, outCause: 'Replacement issued' },
-      '72v_30a_lithium': { opening: 3, inward: 0, inCause: '', outward: 0, outCause: '' },
-      'old_charger_repair': { opening: 2, inward: 1, inCause: 'Received burnt fan unit', outward: 0, outCause: '' },
-    };
+    const remote = remoteChargerRecords?.[compositeKey]?.items;
+    return remote || DEFAULT_CHARGER_BASELINE;
   });
 
   const [toast, setToast] = useState<string | null>(null);
+  const saveTimerRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (saveTimerRef.current) return;
+    const remote = remoteChargerRecords?.[compositeKey]?.items;
+    if (remote) {
+      setChargerRecord(remote);
+    } else {
+      setChargerRecord(DEFAULT_CHARGER_BASELINE);
+    }
+  }, [compositeKey, remoteChargerRecords]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -64,13 +81,26 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
     field: 'opening' | 'inward' | 'inCause' | 'outward' | 'outCause',
     val: any
   ) => {
-    setChargerRecord((prev) => ({
-      ...prev,
-      [colId]: {
-        ...(prev[colId] || { opening: 0, inward: 0, inCause: '', outward: 0, outCause: '' }),
-        [field]: val,
-      },
-    }));
+    setChargerRecord((prev) => {
+      const next = {
+        ...prev,
+        [colId]: {
+          ...(prev[colId] || { opening: 0, inward: 0, inCause: '', outward: 0, outCause: '' }),
+          [field]: val,
+        },
+      };
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        saveTimerRef.current = null;
+        if (onSaveChargerRecord) {
+          onSaveChargerRecord(branch.id, activeDate, next);
+        } else {
+          apiSaveChargerRecord(branch.id, activeDate, next).catch(() => {});
+        }
+        showToast('✓ Charger stock synced to Cloud');
+      }, 450);
+      return next;
+    });
   };
 
   // Calculations

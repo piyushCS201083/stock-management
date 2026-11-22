@@ -22,6 +22,8 @@ import {
   saveSerial,
   bulkSaveSerials,
   deleteSerial,
+  getChargerRecords,
+  saveChargerRecord,
   backupPermanentCodebase,
 } from './server/db.ts';
 
@@ -70,6 +72,16 @@ app.use(
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
+// Disable browser/proxy caching on all /api/* routes so mobile & desktop always get fresh state
+app.use('/api', (req, res, next) => {
+  if (req.path !== '/realtime') {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
 // Initialize DBMS connection (PostgreSQL or persistent file)
 initDb().catch((err) => {
   console.error('[Server] DBMS initialization error:', err);
@@ -78,8 +90,9 @@ initDb().catch((err) => {
 // Real-Time SSE Stream Endpoint
 app.get('/api/realtime', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders?.();
 
@@ -125,6 +138,20 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/db/status', (req, res) => {
   res.json(getDbStatus());
+});
+
+app.post('/api/db/test', async (req, res) => {
+  try {
+    const result = await initDb();
+    res.json({
+      success: true,
+      initResult: result,
+      db: getDbStatus(),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message, db: getDbStatus() });
+  }
 });
 
 // Verify Supabase user JWT via SUPABASE_JWKS_URL using @supabase/server
@@ -304,6 +331,30 @@ app.delete('/api/serials/:serialNo', async (req, res) => {
       broadcastRealtime('SERIAL_DELETED', { serialNo: req.params.serialNo });
     }
     res.json({ success });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Charger Stock Register Routes
+app.get('/api/chargers', async (req, res) => {
+  try {
+    const chargers = await getChargerRecords();
+    res.json({ success: true, data: chargers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/chargers', async (req, res) => {
+  try {
+    const { branchId, date, record } = req.body || {};
+    if (!branchId || !date || !record) {
+      return res.status(400).json({ success: false, error: 'branchId, date, and record are required' });
+    }
+    const saved = await saveChargerRecord(branchId, date, record);
+    broadcastRealtime('CHARGER_UPDATED', saved);
+    res.json({ success: true, data: saved });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

@@ -33,10 +33,13 @@ import {
   apiBulkSaveSerials,
   loadLocalSerials,
   saveLocalSerials,
+  apiFetchChargers,
+  apiSaveChargerRecord,
+  loadLocalChargers,
+  saveLocalChargers,
   checkBackendHealth,
   BackendStatus,
   subscribeRealtimeSync,
-  apiBackupPermanentCodebase,
 } from './services/api';
 import { exportRecordToExcel } from './utils/excelExport';
 import { Header } from './components/Header';
@@ -87,7 +90,8 @@ import {
 // Helper to guarantee today's ledger exists with carried forward closing stock
 function ensureTodayLedger(
   recordsMap: Record<string, DayRecord>,
-  cols: BatteryColumn[]
+  cols: BatteryColumn[],
+  persistToCloud = false
 ): Record<string, DayRecord> {
   const today = getIndianTodayDate();
   if (recordsMap[today]) {
@@ -106,8 +110,10 @@ function ensureTodayLedger(
   todayRecord.notes = `Auto-created for Today (${today}) carrying forward closing stock from ${baseRecord.date}`;
 
   const updated = { ...recordsMap, [today]: todayRecord };
-  saveRecords(updated);
-  apiSaveRecord(todayRecord).catch(() => {});
+  if (persistToCloud) {
+    saveRecords(updated);
+    apiSaveRecord(todayRecord).catch(() => {});
+  }
   return updated;
 }
 
@@ -116,10 +122,11 @@ export default function App() {
   const [records, setRecords] = useState<Record<string, DayRecord>>(() => {
     const loaded = loadRecords();
     const cols = loadColumns();
-    return ensureTodayLedger(loaded, cols);
+    return ensureTodayLedger(loaded, cols, false);
   });
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
   const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() => loadLocalSerials());
+  const [chargerRecords, setChargerRecords] = useState<Record<string, any>>(() => loadLocalChargers());
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
   // Current active date automatically defaults to today's date in Indian Standard Time (IST)
@@ -202,21 +209,28 @@ export default function App() {
 
   const [isRealtimeActive, setIsRealtimeActive] = useState<boolean>(true);
 
-  // Sync data from Cloud DBMS / backend on mount & subscribe to Real-Time SSE
+  const isSyncingRef = useRef(false);
+
+  // Sync data from Cloud DBMS / backend on mount & subscribe to Real-Time SSE + mobile wake/polling
   const syncWithCloudBackend = async () => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
     try {
-      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, health] = await Promise.all([
-        apiFetchRecords(),
-        apiFetchColumns(),
-        apiFetchTeam(),
-        apiFetchSerials(),
-        checkBackendHealth(),
-      ]);
+      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, health] =
+        await Promise.all([
+          apiFetchRecords(),
+          apiFetchColumns(),
+          apiFetchTeam(),
+          apiFetchSerials(),
+          apiFetchChargers(),
+          checkBackendHealth(),
+        ]);
 
       const activeCols = remoteCols && remoteCols.length > 0 ? remoteCols : columns;
 
       if (remoteRecords && Object.keys(remoteRecords).length > 0) {
-        const withToday = ensureTodayLedger(remoteRecords, activeCols);
+        const withToday = ensureTodayLedger(remoteRecords, activeCols, health.online);
+        saveRecords(withToday);
         setRecords(withToday);
       }
       if (remoteCols && remoteCols.length > 0) {
@@ -242,9 +256,14 @@ export default function App() {
       if (remoteSerials && Object.keys(remoteSerials).length > 0) {
         setSerials(remoteSerials);
       }
+      if (remoteChargers && Object.keys(remoteChargers).length > 0) {
+        setChargerRecords(remoteChargers);
+      }
       setBackendStatus(health);
     } catch (e) {
-      console.warn('Initial cloud sync error:', e);
+      console.warn('Cloud sync error:', e);
+    } finally {
+      isSyncingRef.current = false;
     }
   };
 
@@ -297,13 +316,53 @@ export default function App() {
       onTeamUpdated: (updatedTeam) => {
         setTeamMembers(updatedTeam);
       },
+      onChargerUpdated: (payload) => {
+        setChargerRecords((prev) => ({
+          ...prev,
+          [payload.key]: {
+            branchId: payload.branchId,
+            date: payload.date,
+            items: payload.record,
+            updatedAt: payload.updatedAt,
+          },
+        }));
+        showToast(`⚡ Real-Time Cloud: Updated charger stock`);
+      },
       onConnectionChange: (connected) => {
         setIsRealtimeActive(connected);
       },
+      onReconnected: () => {
+        syncWithCloudBackend();
+      },
     });
+
+    // Re-sync immediately when mobile screen wakes up, tab regains focus, or network reconnects
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        syncWithCloudBackend();
+      }
+    };
+    const handleOnline = () => {
+      syncWithCloudBackend();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('online', handleOnline);
+
+    // Lightweight 5s background sync fallback when tab is active (ensures mobile updates even if SSE is throttled)
+    const pollInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        syncWithCloudBackend();
+      }
+    }, 5000);
 
     return () => {
       unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('online', handleOnline);
+      clearInterval(pollInterval);
     };
   }, []);
 
@@ -367,7 +426,6 @@ export default function App() {
     setSerials(updated);
     saveLocalSerials(updated);
     await apiBulkSaveSerials(newItems);
-    await apiBackupPermanentCodebase(records, updated);
     showToast(`✓ Assigned & permanently registered ${newItems.length} serials in Cloud DBMS!`);
   };
 
@@ -377,7 +435,6 @@ export default function App() {
     setSerials(updated);
     saveLocalSerials(updated);
     await apiSaveSerial(updatedItem);
-    await apiBackupPermanentCodebase(records, updated);
     showToast(`✓ Permanently updated serial: ${updatedItem.serialNo} in Cloud DBMS`);
   };
 
@@ -458,11 +515,11 @@ export default function App() {
       showToast(`Saving ${updated.date} to Cloud DBMS...`);
     }
 
-    // Async save to Cloud DBMS (Render / PostgreSQL) and permanent disk backup
+    // Async save to Cloud DBMS (Supabase / PostgreSQL)
     try {
-      await apiSaveRecord(updated);
-      await apiBackupPermanentCodebase(newRecords, updatedSerials);
-      showToast(`✓ Stock change permanently backed up to Cloud DBMS & real-time broadcasted!`);
+      const saved = await apiSaveRecord(updated);
+      setRecords((prev) => ({ ...prev, [saved.date]: saved }));
+      showToast(`✓ Stock change synced to Cloud DBMS & real-time broadcasted!`);
     } catch (e) {
       showToast(`Saved locally (will sync when online)`);
     }
@@ -562,7 +619,7 @@ export default function App() {
       const liveToday = getIndianTodayDate();
       setRecords((prev) => {
         if (!prev[liveToday]) {
-          const withToday = ensureTodayLedger(prev, columns);
+          const withToday = ensureTodayLedger(prev, columns, true);
           setCurrentDate(liveToday);
           return withToday;
         }
@@ -723,6 +780,23 @@ export default function App() {
             onSwitchStockCategory={(cat) => setActiveCategory(cat)}
             onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
             activeDate={currentDate}
+            remoteChargerRecords={chargerRecords}
+            onSaveChargerRecord={async (branchId, date, record) => {
+              const saved = await apiSaveChargerRecord(branchId, date, record);
+              setChargerRecords((prev) => {
+                const next = {
+                  ...prev,
+                  [saved.key]: {
+                    branchId,
+                    date,
+                    items: record,
+                    updatedAt: saved.updatedAt,
+                  },
+                };
+                saveLocalChargers(next);
+                return next;
+              });
+            }}
           />
         </main>
       ) : (

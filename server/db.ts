@@ -27,6 +27,7 @@ interface DatabaseState {
   columns: BatteryColumn[];
   teamMembers: TeamMember[];
   serials: Record<string, BatterySerialItem>;
+  chargerRecords?: Record<string, any>;
   logs: any[];
 }
 
@@ -48,6 +49,18 @@ const DATA_FILE = path.join(DATA_DIR, 'database.json');
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function cleanEnvValue(raw?: string): string {
+  if (!raw) return '';
+  let val = raw.trim();
+  if (
+    (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+  ) {
+    val = val.slice(1, -1).trim();
+  }
+  return val;
 }
 
 function parseSupabaseProjectRef(url?: string): string {
@@ -72,7 +85,14 @@ function isPlaceholderDatabaseUrl(dbUrl?: string): boolean {
 
 function isPlaceholderKey(key?: string): boolean {
   if (!key) return true;
-  return key.includes('••••') || key.includes('...') || key.includes('YOUR_');
+  return (
+    key.includes('•') ||
+    key.includes('\u2022') ||
+    key.includes('***') ||
+    key.includes('...') ||
+    key.includes('YOUR_') ||
+    key.includes('<')
+  );
 }
 
 // Fallback local file storage with 31-10-2026 official baseline
@@ -197,7 +217,14 @@ export async function initDb(): Promise<{
   ready: boolean;
   error?: string;
 }> {
-  const dbUrl = (process.env.SUPABASE_DB_URL || process.env.DATABASE_URL)?.trim();
+  // Reset transient probe flags so re-testing updates state cleanly
+  isSupabaseReady = false;
+  supabaseNeedsSchema = false;
+  supabaseNeedsServiceKey = false;
+  supabaseUsingSecretKey = false;
+  supabaseLastError = '';
+
+  const dbUrl = cleanEnvValue(process.env.SUPABASE_DB_URL || process.env.DATABASE_URL);
   const isPostgresUrl = Boolean(
     dbUrl &&
       !isPlaceholderDatabaseUrl(dbUrl) &&
@@ -299,72 +326,121 @@ export async function initDb(): Promise<{
   }
 
   // Tier 2: @supabase/server HTTPS REST Client (SUPABASE_URL + SUPABASE_SECRET_KEY / SUPABASE_PUBLISHABLE_KEY)
-  const supabaseUrl = process.env.SUPABASE_URL?.trim();
-  const rawSecretKey =
-    process.env.SUPABASE_SECRET_KEY?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  const supabaseUrl = cleanEnvValue(process.env.SUPABASE_URL);
+  const rawSecretKey = cleanEnvValue(
+    process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+  );
   const secretKey = rawSecretKey && !isPlaceholderKey(rawSecretKey) ? rawSecretKey : '';
-  const rawPublishableKey =
-    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() || process.env.SUPABASE_ANON_KEY?.trim();
+  const rawPublishableKey = cleanEnvValue(
+    process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY
+  );
   const publishableKey =
     rawPublishableKey && !isPlaceholderKey(rawPublishableKey) ? rawPublishableKey : '';
 
-  supabaseJwksConfigured = Boolean(process.env.SUPABASE_JWKS_URL?.trim() || supabaseUrl);
+  supabaseJwksConfigured = Boolean(cleanEnvValue(process.env.SUPABASE_JWKS_URL) || supabaseUrl);
+
+  const buildSupabaseClient = (mode: 'secret' | 'publishable'): SupabaseClient | null => {
+    if (!supabaseUrl) return null;
+    const key = mode === 'secret' ? secretKey : publishableKey;
+    if (!key) return null;
+
+    const { data: resolvedEnv } = resolveSupabaseServerEnv({
+      url: supabaseUrl,
+      ...(mode === 'secret' ? { secretKeys: { default: key } } : { publishableKeys: { default: key } }),
+    });
+
+    if (resolvedEnv) {
+      try {
+        return mode === 'secret'
+          ? createSupabaseAdminClient({ env: resolvedEnv })
+          : createSupabaseContextClient({ env: resolvedEnv });
+      } catch {
+        // Fallback below for legacy JWT keys
+      }
+    }
+
+    return createClient(supabaseUrl, key, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+  };
 
   if (supabaseUrl && (secretKey || publishableKey)) {
     supabaseProjectRef = parseSupabaseProjectRef(supabaseUrl);
-    try {
-      let client: SupabaseClient | null = null;
+    const candidates: Array<{ mode: 'secret' | 'publishable'; client: SupabaseClient }> = [];
 
-      // Prefer @supabase/server's resolveEnv + createAdminClient / createContextClient
-      const { data: resolvedEnv } = resolveSupabaseServerEnv({
-        url: supabaseUrl,
-        ...(secretKey ? { secretKeys: { default: secretKey } } : {}),
-        ...(publishableKey ? { publishableKeys: { default: publishableKey } } : {}),
-      });
+    if (secretKey) {
+      const c = buildSupabaseClient('secret');
+      if (c) candidates.push({ mode: 'secret', client: c });
+    }
+    if (publishableKey) {
+      const c = buildSupabaseClient('publishable');
+      if (c) candidates.push({ mode: 'publishable', client: c });
+    }
 
-      if (resolvedEnv && secretKey) {
-        try {
-          client = createSupabaseAdminClient({ env: resolvedEnv });
-          supabaseUsingSecretKey = true;
-        } catch {
-          client = null;
+    let invalidSecretHint = '';
+
+    for (const candidate of candidates) {
+      try {
+        const { error, status } = await candidate.client
+          .from('stock_records')
+          .select('date')
+          .limit(1);
+
+        if (!error) {
+          supabaseClient = candidate.client;
+          supabaseUsingSecretKey = candidate.mode === 'secret';
+          try {
+            await seedSupabaseBaseline(candidate.client);
+            isSupabaseReady = true;
+            supabaseNeedsSchema = false;
+            supabaseNeedsServiceKey = false;
+            supabaseLastError = '';
+            console.log(
+              `[DBMS] Connected to Supabase HTTPS REST API (${candidate.mode}):`,
+              supabaseUrl
+            );
+            return { type: 'supabase_rest', ready: true };
+          } catch (seedErr: any) {
+            const seedCode = seedErr?.code || '';
+            const seedMsg = seedErr?.message || '';
+            supabaseLastError = [seedCode, seedMsg].filter(Boolean).join(' — ');
+            if (seedCode === '42501' || seedMsg.toLowerCase().includes('row-level security')) {
+              supabaseNeedsServiceKey = true;
+              isSupabaseReady = false;
+            } else {
+              isSupabaseReady = true;
+              return { type: 'supabase_rest', ready: true };
+            }
+          }
+          continue;
         }
-      }
 
-      if (!client && resolvedEnv && publishableKey) {
-        try {
-          client = createSupabaseContextClient({ env: resolvedEnv });
-          supabaseUsingSecretKey = false;
-        } catch {
-          client = null;
-        }
-      }
-
-      // Fallback for legacy service_role JWTs if @supabase/server expects sb_secret_ format
-      if (!client) {
-        const key = secretKey || publishableKey;
-        supabaseUsingSecretKey = Boolean(secretKey);
-        client = createClient(supabaseUrl, key, {
-          auth: {
-            persistSession: false,
-            autoRefreshToken: false,
-          },
-        });
-      }
-
-      supabaseClient = client;
-
-      const { error, status } = await client
-        .from('stock_records')
-        .select('date')
-        .limit(1);
-
-      if (error) {
         const errCode = error.code || '';
         const errMsg = error.message || '';
-        supabaseLastError = [errCode, errMsg, status ? `HTTP ${status}` : '']
+        const formattedErr = [errCode, errMsg, status ? `HTTP ${status}` : '']
           .filter(Boolean)
           .join(' — ');
+
+        // If secret key itself is invalid (401 Invalid API key), try publishable key next
+        if (
+          candidate.mode === 'secret' &&
+          (status === 401 || errMsg.toLowerCase().includes('invalid api key'))
+        ) {
+          invalidSecretHint = 'SUPABASE_SECRET_KEY was rejected (401 Invalid API key)';
+          supabaseLastError = invalidSecretHint;
+          console.warn('[DBMS]', invalidSecretHint);
+          continue;
+        }
+
+        supabaseClient = candidate.client;
+        supabaseUsingSecretKey = candidate.mode === 'secret';
+        supabaseLastError = invalidSecretHint
+          ? `${invalidSecretHint}; publishable fallback: ${formattedErr}`
+          : formattedErr;
+
         if (
           errCode === 'PGRST205' ||
           errCode === '42P01' ||
@@ -377,7 +453,10 @@ export async function initDb(): Promise<{
           console.warn(
             '[DBMS] Supabase project reachable, but tables are not created yet. Run supabase/migrations/20261122000000_init_stock_register.sql.'
           );
-        } else if (
+          break;
+        }
+
+        if (
           errCode === '42501' ||
           errCode === 'PGRST301' ||
           status === 401 ||
@@ -388,64 +467,41 @@ export async function initDb(): Promise<{
         ) {
           supabaseNeedsServiceKey = true;
           isSupabaseReady = false;
-          console.warn(
-            '[DBMS] Supabase RLS/auth blocked query. Set SUPABASE_SECRET_KEY in server environment.'
-          );
-        } else {
-          console.warn('[DBMS] Supabase check warning:', supabaseLastError);
+          console.warn('[DBMS] Supabase access blocked:', supabaseLastError);
+          break;
         }
-      } else {
-        supabaseLastError = '';
-        try {
-          await seedSupabaseBaseline(client);
-          isSupabaseReady = true;
-          supabaseNeedsSchema = false;
-          supabaseNeedsServiceKey = false;
-          console.log('[DBMS] Connected to Supabase HTTPS REST API:', supabaseUrl);
-          return { type: 'supabase_rest', ready: true };
-        } catch (seedErr: any) {
-          const seedCode = seedErr?.code || '';
-          const seedMsg = seedErr?.message || '';
-          supabaseLastError = [seedCode, seedMsg].filter(Boolean).join(' — ');
-          if (seedCode === '42501' || seedMsg.toLowerCase().includes('row-level security')) {
-            supabaseNeedsServiceKey = true;
-            isSupabaseReady = false;
-            console.warn(
-              '[DBMS] Supabase table write blocked by RLS. Set SUPABASE_SECRET_KEY in server environment.'
-            );
-          } else {
-            isSupabaseReady = true;
-            console.warn('[DBMS] Supabase seed warning:', seedMsg);
-            return { type: 'supabase_rest', ready: true };
-          }
-        }
+
+        console.warn('[DBMS] Supabase check warning:', supabaseLastError);
+      } catch (err: any) {
+        supabaseLastError = err?.message || 'Connection failed';
+        console.warn('[DBMS] Supabase HTTPS client init failed:', supabaseLastError);
       }
-    } catch (err: any) {
-      supabaseLastError = err?.message || 'Connection failed';
-      console.warn('[DBMS] Supabase HTTPS client init failed:', supabaseLastError);
     }
   }
 
   // Tier 3: Persistent local JSON file fallback
   readLocalFile();
   console.log('[DBMS] Using persistent Local File DBMS at:', DATA_FILE);
-  return { type: 'file_dbms', ready: true };
+  return { type: 'file_dbms', ready: true, error: supabaseLastError || undefined };
 }
 
 export function getDbStatus() {
   const isPg = Boolean(isPostgresConnected && pgPool);
-  const dbUrl = (process.env.SUPABASE_DB_URL || process.env.DATABASE_URL)?.trim();
+  const dbUrl = cleanEnvValue(process.env.SUPABASE_DB_URL || process.env.DATABASE_URL);
   const isPgUrl = Boolean(
     dbUrl &&
       !isPlaceholderDatabaseUrl(dbUrl) &&
       (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://'))
   );
-  const secretEnv =
-    process.env.SUPABASE_SECRET_KEY?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  const pubEnv =
-    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() || process.env.SUPABASE_ANON_KEY?.trim();
+  const secretEnv = cleanEnvValue(
+    process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+  );
+  const pubEnv = cleanEnvValue(
+    process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY
+  );
+  const supabaseUrl = cleanEnvValue(process.env.SUPABASE_URL);
   const supabaseConfigured = Boolean(
-    process.env.SUPABASE_URL?.trim() &&
+    supabaseUrl &&
       ((secretEnv && !isPlaceholderKey(secretEnv)) || (pubEnv && !isPlaceholderKey(pubEnv)))
   );
 
@@ -457,11 +513,13 @@ export function getDbStatus() {
     storageLocation = 'Remote PostgreSQL Database';
   } else if (isSupabaseReady && supabaseClient) {
     engine = `Supabase PostgreSQL (${supabaseProjectRef || 'Cloud REST'})`;
-    storageLocation = process.env.SUPABASE_URL?.trim() || 'Supabase Cloud';
+    storageLocation = supabaseUrl || 'Supabase Cloud';
   } else if (supabaseConfigured && supabaseNeedsSchema) {
     engine = 'Supabase Connected (Awaiting SQL Schema) · Local Fallback';
   } else if (supabaseConfigured && supabaseNeedsServiceKey) {
-    engine = 'Supabase Connected (Secret Key Needed) · Local Fallback';
+    engine = 'Supabase Connected (Key / Permissions Needed) · Local Fallback';
+  } else if (supabaseConfigured && supabaseLastError) {
+    engine = 'Supabase Key Invalid · Local Fallback';
   }
 
   return {
@@ -476,7 +534,7 @@ export function getDbStatus() {
     supabaseJwksConfigured,
     supabaseLastError: supabaseLastError || undefined,
     supabaseProjectRef:
-      supabaseProjectRef || parseSupabaseProjectRef(process.env.SUPABASE_URL?.trim()) || 'anaibpuhnxlwfeypprlb',
+      supabaseProjectRef || parseSupabaseProjectRef(supabaseUrl) || 'anaibpuhnxlwfeypprlb',
     storageLocation,
   };
 }
@@ -998,14 +1056,125 @@ export async function deleteSerial(serialNo: string): Promise<boolean> {
   return false;
 }
 
+export async function getChargerRecords(): Promise<Record<string, any>> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query("SELECT data FROM battery_metadata WHERE key = 'charger_records'");
+      if (res.rows.length > 0) {
+        return typeof res.rows[0].data === 'string' ? JSON.parse(res.rows[0].data) : res.rows[0].data;
+      }
+      return {};
+    } catch (err) {
+      console.error('[DBMS] PG getChargerRecords error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'charger_records')
+        .maybeSingle();
+      if (!error) {
+        if (!data?.data) return {};
+        return typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      }
+      console.error('[DBMS] Supabase getChargerRecords error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase getChargerRecords exception:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  return local.chargerRecords || {};
+}
+
+export async function saveChargerRecord(
+  branchId: string,
+  date: string,
+  record: Record<string, any>
+): Promise<{ key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }> {
+  if (typeof branchId !== 'string' || !branchId.trim() || typeof date !== 'string' || !date.trim()) {
+    throw new Error('Valid branchId and date are required');
+  }
+
+  const compositeKey = `${branchId}::${date}`;
+  const updatedAt = new Date().toISOString();
+  const existing = await getChargerRecords();
+  const merged = {
+    ...existing,
+    [compositeKey]: {
+      branchId,
+      date,
+      items: record,
+      updatedAt,
+    },
+  };
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO battery_metadata (key, data, updated_at)
+         VALUES ('charger_records', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
+        [JSON.stringify(merged)]
+      );
+      return { key: compositeKey, branchId, date, record, updatedAt };
+    } catch (err) {
+      console.error('[DBMS] PG saveChargerRecord error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'charger_records',
+          data: merged,
+          updated_at: updatedAt,
+        },
+        { onConflict: 'key' }
+      );
+      if (!error) {
+        return { key: compositeKey, branchId, date, record, updatedAt };
+      }
+      console.error('[DBMS] Supabase saveChargerRecord error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase saveChargerRecord exception:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  local.chargerRecords = merged;
+  writeLocalFile(local);
+  return { key: compositeKey, branchId, date, record, updatedAt };
+}
+
 export async function backupPermanentCodebase(
   records?: Record<string, DayRecord>,
   serials?: Record<string, BatterySerialItem>
 ): Promise<{ success: boolean; timestamp: string; recordCount: number; serialCount: number }> {
-  const local = readLocalFile();
+  const existingServerRecords = await getAllRecords();
+  const mergedRecords: Record<string, DayRecord> = { ...existingServerRecords };
+
   if (records && Object.keys(records).length > 0) {
-    local.records = { ...local.records, ...records };
+    for (const [date, incoming] of Object.entries(records)) {
+      const current = mergedRecords[date];
+      if (!current) {
+        mergedRecords[date] = incoming;
+      } else {
+        const currentTs = current.lastModified ? Date.parse(current.lastModified) : 0;
+        const incomingTs = incoming.lastModified ? Date.parse(incoming.lastModified) : 0;
+        if (incomingTs >= currentTs) {
+          mergedRecords[date] = incoming;
+        }
+      }
+    }
   }
+
+  const local = readLocalFile();
+  local.records = mergedRecords;
   if (serials && Object.keys(serials).length > 0) {
     local.serials = { ...local.serials, ...serials };
   }
@@ -1018,10 +1187,8 @@ export async function backupPermanentCodebase(
 
   if (isPostgresConnected && pgPool) {
     try {
-      if (records) {
-        for (const [, rec] of Object.entries(records)) {
-          await saveRecord(rec);
-        }
+      for (const rec of Object.values(mergedRecords)) {
+        await saveRecord(rec);
       }
       if (serials) {
         await bulkSaveSerials(Object.values(serials));
@@ -1031,15 +1198,15 @@ export async function backupPermanentCodebase(
     }
   } else if (isSupabaseReady && supabaseClient) {
     try {
-      if (records && Object.keys(records).length > 0) {
-        const rows = Object.values(records).map((rec) => ({
-          date: rec.date,
-          data: rec,
-          updated_at: new Date().toISOString(),
-        }));
+      const rows = Object.values(mergedRecords).map((rec) => ({
+        date: rec.date,
+        data: rec,
+        updated_at: new Date().toISOString(),
+      }));
+      if (rows.length > 0) {
         await supabaseClient.from('stock_records').upsert(rows, { onConflict: 'date' });
       }
-      if (serials && Object.keys(serials).length > 0) {
+      if (serials) {
         await bulkSaveSerials(Object.values(serials));
       }
     } catch (e) {
@@ -1050,7 +1217,7 @@ export async function backupPermanentCodebase(
   return {
     success: true,
     timestamp: new Date().toISOString(),
-    recordCount: Object.keys(local.records).length,
+    recordCount: Object.keys(mergedRecords).length,
     serialCount: Object.keys(local.serials).length,
   };
 }

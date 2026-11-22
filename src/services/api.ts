@@ -68,6 +68,7 @@ export async function checkBackendHealth(): Promise<BackendStatus> {
   try {
     const res = await fetch(`${base}/api/health`, {
       method: 'GET',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -105,15 +106,47 @@ export async function checkBackendHealth(): Promise<BackendStatus> {
   }
 }
 
+export async function retestBackendConnection(): Promise<BackendStatus> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/db/test`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        online: true,
+        engine: data.db?.engine || 'Cloud DBMS',
+        url: base || window.location.origin,
+        storageLocation: data.db?.storageLocation,
+        hasPostgresUrl: data.db?.hasPostgresUrl,
+        supabaseConfigured: data.db?.supabaseConfigured,
+        supabaseReady: data.db?.supabaseReady,
+        supabaseNeedsSchema: data.db?.supabaseNeedsSchema,
+        supabaseNeedsServiceKey: data.db?.supabaseNeedsServiceKey,
+        supabaseUsingSecretKey: data.db?.supabaseUsingSecretKey,
+        supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
+        supabaseLastError: data.db?.supabaseLastError,
+        supabaseProjectRef: data.db?.supabaseProjectRef,
+      };
+    }
+  } catch {
+    // fallback to regular health check
+  }
+  return checkBackendHealth();
+}
+
 // Fetch all records with local cache fallback
 export async function apiFetchRecords(): Promise<Record<string, DayRecord>> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/records`);
+    const res = await fetch(`${base}/api/records`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
-        saveLocalRecords(json.data); // Update local cache
+        saveLocalRecords(json.data); // Update local cache from authoritative backend
         return json.data;
       }
     }
@@ -170,7 +203,7 @@ export async function apiDeleteRecord(date: string): Promise<boolean> {
 export async function apiFetchColumns(): Promise<BatteryColumn[]> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/columns`);
+    const res = await fetch(`${base}/api/columns`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -208,7 +241,7 @@ export async function apiSaveColumns(columns: BatteryColumn[]): Promise<BatteryC
 export async function apiFetchTeam(): Promise<TeamMember[]> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/team`);
+    const res = await fetch(`${base}/api/team`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -293,7 +326,7 @@ export function saveLocalSerials(serials: Record<string, BatterySerialItem>) {
 export async function apiFetchSerials(): Promise<Record<string, BatterySerialItem>> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/serials`);
+    const res = await fetch(`${base}/api/serials`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -374,6 +407,72 @@ export async function apiBackupPermanentCodebase(
   }
 }
 
+const STORAGE_KEY_CHARGERS = 'charger_stock_records_v1';
+
+export function loadLocalChargers(): Record<string, any> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CHARGERS);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
+export function saveLocalChargers(data: Record<string, any>) {
+  try {
+    localStorage.setItem(STORAGE_KEY_CHARGERS, JSON.stringify(data));
+  } catch {}
+}
+
+export async function apiFetchChargers(): Promise<Record<string, any>> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/chargers`, { cache: 'no-store' });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocalChargers(json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Chargers fetch failed, using local cache:', err);
+  }
+  return loadLocalChargers();
+}
+
+export async function apiSaveChargerRecord(
+  branchId: string,
+  date: string,
+  record: Record<string, any>
+): Promise<any> {
+  const compositeKey = `${branchId}::${date}`;
+  const local = loadLocalChargers();
+  const payload = {
+    branchId,
+    date,
+    items: record,
+    updatedAt: new Date().toISOString(),
+  };
+  local[compositeKey] = payload;
+  saveLocalChargers(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/chargers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branchId, date, record }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) return json.data;
+    }
+  } catch (err) {
+    console.warn('[API] Cloud charger save deferred:', err);
+  }
+  return { key: compositeKey, ...payload };
+}
+
 // Real-Time Cloud Synchronization Callback Interface
 export interface RealtimeSyncCallbacks {
   onRecordUpdated?: (record: DayRecord) => void;
@@ -383,7 +482,9 @@ export interface RealtimeSyncCallbacks {
   onSerialDeleted?: (serialNo: string) => void;
   onColumnsUpdated?: (columns: BatteryColumn[]) => void;
   onTeamUpdated?: (team: TeamMember[]) => void;
+  onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
   onConnectionChange?: (connected: boolean) => void;
+  onReconnected?: () => void;
 }
 
 // Subscribe to Real-Time Cloud Synchronization (SSE + BroadcastChannel)
@@ -392,6 +493,7 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
   let eventSource: EventSource | null = null;
   let isClosed = false;
   let reconnectTimeout: any = null;
+  let hasOpenedOnce = false;
 
   // 1. Instant local cross-tab BroadcastChannel
   let channel: BroadcastChannel | null = null;
@@ -463,6 +565,19 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
           callbacks.onTeamUpdated?.(payload);
         }
         break;
+      case 'CHARGER_UPDATED':
+        if (payload?.key && payload?.record) {
+          const local = loadLocalChargers();
+          local[payload.key] = {
+            branchId: payload.branchId,
+            date: payload.date,
+            items: payload.record,
+            updatedAt: payload.updatedAt,
+          };
+          saveLocalChargers(local);
+          callbacks.onChargerUpdated?.(payload);
+        }
+        break;
       case 'PERMANENT_SYNC_COMPLETE':
         // Full sync refreshed
         break;
@@ -478,6 +593,10 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
 
       eventSource.onopen = () => {
         callbacks.onConnectionChange?.(true);
+        if (hasOpenedOnce) {
+          callbacks.onReconnected?.();
+        }
+        hasOpenedOnce = true;
       };
 
       eventSource.onmessage = (msg) => {
@@ -499,13 +618,13 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
         callbacks.onConnectionChange?.(false);
         eventSource?.close();
         if (!isClosed) {
-          reconnectTimeout = setTimeout(connectSSE, 4000);
+          reconnectTimeout = setTimeout(connectSSE, 3000);
         }
       };
     } catch (e) {
       callbacks.onConnectionChange?.(false);
       if (!isClosed) {
-        reconnectTimeout = setTimeout(connectSSE, 4000);
+        reconnectTimeout = setTimeout(connectSSE, 3000);
       }
     }
   }
