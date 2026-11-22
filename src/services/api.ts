@@ -56,6 +56,9 @@ export interface BackendStatus {
   supabaseReady?: boolean;
   supabaseNeedsSchema?: boolean;
   supabaseNeedsServiceKey?: boolean;
+  supabaseUsingSecretKey?: boolean;
+  supabaseJwksConfigured?: boolean;
+  supabaseLastError?: string;
   supabaseProjectRef?: string;
   error?: string;
 }
@@ -80,6 +83,9 @@ export async function checkBackendHealth(): Promise<BackendStatus> {
         supabaseReady: data.db?.supabaseReady,
         supabaseNeedsSchema: data.db?.supabaseNeedsSchema,
         supabaseNeedsServiceKey: data.db?.supabaseNeedsServiceKey,
+        supabaseUsingSecretKey: data.db?.supabaseUsingSecretKey,
+        supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
+        supabaseLastError: data.db?.supabaseLastError,
         supabaseProjectRef: data.db?.supabaseProjectRef,
       };
     }

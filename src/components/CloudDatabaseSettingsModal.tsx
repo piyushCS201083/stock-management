@@ -160,11 +160,17 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
             {status?.supabaseNeedsServiceKey && (
               <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-bold block">Server write key required for RLS</span>
+                <div className="space-y-1">
+                  <span className="font-bold block">Supabase table permissions or secret key required</span>
+                  {status.supabaseLastError && (
+                    <code className="block bg-amber-100/80 px-1.5 py-0.5 rounded font-mono text-[10px]">
+                      {status.supabaseLastError}
+                    </code>
+                  )}
                   <span>
-                    Configure <code className="bg-amber-100 px-1 rounded font-mono">SUPABASE_SERVICE_ROLE_KEY</code> or{' '}
-                    <code className="bg-amber-100 px-1 rounded font-mono">DATABASE_URL</code> in server environment Secrets.
+                    Ensure <code className="bg-amber-100 px-1 rounded font-mono">SUPABASE_SECRET_KEY</code> is set in Secrets and run the{' '}
+                    <code className="bg-amber-100 px-1 rounded font-mono">GRANT ALL ... TO service_role</code> statements in{' '}
+                    <code className="bg-amber-100 px-1 rounded font-mono">supabase/migrations/20261122000000_init_stock_register.sql</code>.
                   </span>
                 </div>
               </div>
@@ -190,10 +196,11 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
             </div>
 
             <p className="text-slate-600 text-[11px]">
-              Server reads <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_URL</code>,{' '}
-              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_SERVICE_ROLE_KEY</code> (or{' '}
-              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_PUBLISHABLE_KEY</code>), and{' '}
-              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">DATABASE_URL</code> from server environment secrets.
+              Server uses <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">@supabase/server</code> with{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_URL</code>,{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_SECRET_KEY</code>,{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_PUBLISHABLE_KEY</code>, and{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_JWKS_URL</code> from server environment secrets.
             </p>
 
             <div className="flex items-center justify-between bg-slate-900 text-slate-200 p-2.5 rounded font-mono text-[11px]">

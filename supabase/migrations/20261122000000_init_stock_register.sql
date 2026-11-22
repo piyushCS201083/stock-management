@@ -77,3 +77,13 @@ CREATE POLICY "service_role_all_audit_logs"
   TO service_role
   USING (true)
   WITH CHECK (true);
+
+-- Explicit PostgreSQL privileges for service_role (ensures @supabase/server admin client has full access)
+GRANT USAGE ON SCHEMA public TO service_role;
+GRANT ALL ON TABLE
+  public.stock_records,
+  public.battery_metadata,
+  public.battery_serials,
+  public.audit_logs
+TO service_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role;

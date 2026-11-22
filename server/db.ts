@@ -2,6 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import {
+  resolveEnv as resolveSupabaseServerEnv,
+  createAdminClient as createSupabaseAdminClient,
+  createContextClient as createSupabaseContextClient,
+} from '@supabase/server/core';
 import type {
   BatteryColumn,
   BatterySerialItem,
@@ -33,6 +38,9 @@ let isSupabaseReady = false;
 let supabaseNeedsSchema = false;
 let supabaseNeedsServiceKey = false;
 let supabaseProjectRef = '';
+let supabaseUsingSecretKey = false;
+let supabaseJwksConfigured = false;
+let supabaseLastError = '';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
@@ -60,6 +68,11 @@ function isPlaceholderDatabaseUrl(dbUrl?: string): boolean {
     dbUrl.includes('<YOUR-DATABASE-PASSWORD>') ||
     dbUrl.includes('YOUR_PASSWORD')
   );
+}
+
+function isPlaceholderKey(key?: string): boolean {
+  if (!key) return true;
+  return key.includes('••••') || key.includes('...') || key.includes('YOUR_');
 }
 
 // Fallback local file storage with 31-10-2026 official baseline
@@ -184,7 +197,7 @@ export async function initDb(): Promise<{
   ready: boolean;
   error?: string;
 }> {
-  const dbUrl = process.env.DATABASE_URL?.trim();
+  const dbUrl = (process.env.SUPABASE_DB_URL || process.env.DATABASE_URL)?.trim();
   const isPostgresUrl = Boolean(
     dbUrl &&
       !isPlaceholderDatabaseUrl(dbUrl) &&
@@ -270,7 +283,7 @@ export async function initDb(): Promise<{
       }
     } catch (err: any) {
       console.warn(
-        '[DBMS] Direct PostgreSQL connection unavailable, checking Supabase HTTPS API / local fallback:',
+        '[DBMS] Direct PostgreSQL connection unavailable, checking @supabase/server HTTPS API / local fallback:',
         err.message
       );
       if (pgPool) {
@@ -285,33 +298,80 @@ export async function initDb(): Promise<{
     );
   }
 
-  // Tier 2: Supabase HTTPS REST API via @supabase/supabase-js
+  // Tier 2: @supabase/server HTTPS REST Client (SUPABASE_URL + SUPABASE_SECRET_KEY / SUPABASE_PUBLISHABLE_KEY)
   const supabaseUrl = process.env.SUPABASE_URL?.trim();
-  const serviceRoleKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
-  const publishableKey =
+  const rawSecretKey =
+    process.env.SUPABASE_SECRET_KEY?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  const secretKey = rawSecretKey && !isPlaceholderKey(rawSecretKey) ? rawSecretKey : '';
+  const rawPublishableKey =
     process.env.SUPABASE_PUBLISHABLE_KEY?.trim() || process.env.SUPABASE_ANON_KEY?.trim();
-  const supabaseKey = serviceRoleKey || publishableKey;
+  const publishableKey =
+    rawPublishableKey && !isPlaceholderKey(rawPublishableKey) ? rawPublishableKey : '';
 
-  if (supabaseUrl && supabaseKey) {
+  supabaseJwksConfigured = Boolean(process.env.SUPABASE_JWKS_URL?.trim() || supabaseUrl);
+
+  if (supabaseUrl && (secretKey || publishableKey)) {
     supabaseProjectRef = parseSupabaseProjectRef(supabaseUrl);
     try {
-      const client = createClient(supabaseUrl, supabaseKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
+      let client: SupabaseClient | null = null;
+
+      // Prefer @supabase/server's resolveEnv + createAdminClient / createContextClient
+      const { data: resolvedEnv } = resolveSupabaseServerEnv({
+        url: supabaseUrl,
+        ...(secretKey ? { secretKeys: { default: secretKey } } : {}),
+        ...(publishableKey ? { publishableKeys: { default: publishableKey } } : {}),
       });
+
+      if (resolvedEnv && secretKey) {
+        try {
+          client = createSupabaseAdminClient({ env: resolvedEnv });
+          supabaseUsingSecretKey = true;
+        } catch {
+          client = null;
+        }
+      }
+
+      if (!client && resolvedEnv && publishableKey) {
+        try {
+          client = createSupabaseContextClient({ env: resolvedEnv });
+          supabaseUsingSecretKey = false;
+        } catch {
+          client = null;
+        }
+      }
+
+      // Fallback for legacy service_role JWTs if @supabase/server expects sb_secret_ format
+      if (!client) {
+        const key = secretKey || publishableKey;
+        supabaseUsingSecretKey = Boolean(secretKey);
+        client = createClient(supabaseUrl, key, {
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+          },
+        });
+      }
+
       supabaseClient = client;
 
-      const { error } = await client
+      const { error, status } = await client
         .from('stock_records')
-        .select('date', { count: 'exact', head: true });
+        .select('date')
+        .limit(1);
 
       if (error) {
         const errCode = error.code || '';
         const errMsg = error.message || '';
-        if (errCode === 'PGRST205' || errCode === '42P01' || errMsg.includes('schema cache')) {
+        supabaseLastError = [errCode, errMsg, status ? `HTTP ${status}` : '']
+          .filter(Boolean)
+          .join(' — ');
+        if (
+          errCode === 'PGRST205' ||
+          errCode === '42P01' ||
+          status === 404 ||
+          errMsg.includes('schema cache') ||
+          errMsg.includes('does not exist')
+        ) {
           supabaseNeedsSchema = true;
           isSupabaseReady = false;
           console.warn(
@@ -320,6 +380,8 @@ export async function initDb(): Promise<{
         } else if (
           errCode === '42501' ||
           errCode === 'PGRST301' ||
+          status === 401 ||
+          status === 403 ||
           errMsg.toLowerCase().includes('permission') ||
           errMsg.toLowerCase().includes('row-level security') ||
           errMsg.toLowerCase().includes('api key')
@@ -327,12 +389,13 @@ export async function initDb(): Promise<{
           supabaseNeedsServiceKey = true;
           isSupabaseReady = false;
           console.warn(
-            '[DBMS] Supabase RLS/auth blocked query. Set SUPABASE_SERVICE_ROLE_KEY in server environment.'
+            '[DBMS] Supabase RLS/auth blocked query. Set SUPABASE_SECRET_KEY in server environment.'
           );
         } else {
-          console.warn('[DBMS] Supabase check warning:', errMsg);
+          console.warn('[DBMS] Supabase check warning:', supabaseLastError);
         }
       } else {
+        supabaseLastError = '';
         try {
           await seedSupabaseBaseline(client);
           isSupabaseReady = true;
@@ -343,11 +406,12 @@ export async function initDb(): Promise<{
         } catch (seedErr: any) {
           const seedCode = seedErr?.code || '';
           const seedMsg = seedErr?.message || '';
+          supabaseLastError = [seedCode, seedMsg].filter(Boolean).join(' — ');
           if (seedCode === '42501' || seedMsg.toLowerCase().includes('row-level security')) {
             supabaseNeedsServiceKey = true;
             isSupabaseReady = false;
             console.warn(
-              '[DBMS] Supabase table write blocked by RLS. Set SUPABASE_SERVICE_ROLE_KEY in server environment.'
+              '[DBMS] Supabase table write blocked by RLS. Set SUPABASE_SECRET_KEY in server environment.'
             );
           } else {
             isSupabaseReady = true;
@@ -357,7 +421,8 @@ export async function initDb(): Promise<{
         }
       }
     } catch (err: any) {
-      console.warn('[DBMS] Supabase HTTPS client init failed:', err.message);
+      supabaseLastError = err?.message || 'Connection failed';
+      console.warn('[DBMS] Supabase HTTPS client init failed:', supabaseLastError);
     }
   }
 
@@ -369,18 +434,19 @@ export async function initDb(): Promise<{
 
 export function getDbStatus() {
   const isPg = Boolean(isPostgresConnected && pgPool);
-  const dbUrl = process.env.DATABASE_URL?.trim();
+  const dbUrl = (process.env.SUPABASE_DB_URL || process.env.DATABASE_URL)?.trim();
   const isPgUrl = Boolean(
     dbUrl &&
       !isPlaceholderDatabaseUrl(dbUrl) &&
       (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://'))
   );
+  const secretEnv =
+    process.env.SUPABASE_SECRET_KEY?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  const pubEnv =
+    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() || process.env.SUPABASE_ANON_KEY?.trim();
   const supabaseConfigured = Boolean(
     process.env.SUPABASE_URL?.trim() &&
-      (process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-        process.env.SUPABASE_SECRET_KEY?.trim() ||
-        process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
-        process.env.SUPABASE_ANON_KEY?.trim())
+      ((secretEnv && !isPlaceholderKey(secretEnv)) || (pubEnv && !isPlaceholderKey(pubEnv)))
   );
 
   let engine = 'Persistent DBMS (Local JSON Cache)';
@@ -395,7 +461,7 @@ export function getDbStatus() {
   } else if (supabaseConfigured && supabaseNeedsSchema) {
     engine = 'Supabase Connected (Awaiting SQL Schema) · Local Fallback';
   } else if (supabaseConfigured && supabaseNeedsServiceKey) {
-    engine = 'Supabase Connected (Service Role Key Needed) · Local Fallback';
+    engine = 'Supabase Connected (Secret Key Needed) · Local Fallback';
   }
 
   return {
@@ -406,6 +472,9 @@ export function getDbStatus() {
     supabaseReady: isSupabaseReady,
     supabaseNeedsSchema,
     supabaseNeedsServiceKey,
+    supabaseUsingSecretKey,
+    supabaseJwksConfigured,
+    supabaseLastError: supabaseLastError || undefined,
     supabaseProjectRef:
       supabaseProjectRef || parseSupabaseProjectRef(process.env.SUPABASE_URL?.trim()) || 'anaibpuhnxlwfeypprlb',
     storageLocation,

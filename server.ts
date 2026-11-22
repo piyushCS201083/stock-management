@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { verifyAuth } from '@supabase/server/core';
 import {
   initDb,
   getDbStatus,
@@ -124,6 +125,30 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/db/status', (req, res) => {
   res.json(getDbStatus());
+});
+
+// Verify Supabase user JWT via SUPABASE_JWKS_URL using @supabase/server
+app.get('/api/auth/verify', async (req, res) => {
+  try {
+    const headers = new Headers();
+    if (req.headers.authorization) {
+      headers.set('authorization', req.headers.authorization);
+    }
+    if (typeof req.headers.apikey === 'string') {
+      headers.set('apikey', req.headers.apikey);
+    }
+    const webRequest = new Request(`http://localhost:${PORT}${req.originalUrl}`, {
+      method: req.method,
+      headers,
+    });
+    const { data, error } = await verifyAuth(webRequest, { auth: 'user' });
+    if (error) {
+      return res.status(error.status).json(error.toJSON());
+    }
+    res.json({ success: true, user: data.userClaims, authMode: data.authMode });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Stock Records CRUD
