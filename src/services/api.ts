@@ -19,11 +19,29 @@ export const DEFAULT_RENDER_BACKEND_URL = 'https://stock-management-hbuv.onrende
 // Get base URL from environment or custom runtime override (e.g. from user settings)
 export function getApiBaseUrl(): string {
   if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const isFullStackHost =
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.endsWith('.run.app') ||
+      host.endsWith('.onrender.com');
+
     const custom = localStorage.getItem('battery_custom_backend_url');
     if (custom && custom.trim()) {
-      return custom.trim().replace(/\/+$/, '');
+      const cleaned = custom.trim().replace(/\/+$/, '');
+      if (isFullStackHost && cleaned === DEFAULT_RENDER_BACKEND_URL && !host.endsWith('.onrender.com')) {
+        localStorage.removeItem('battery_custom_backend_url');
+      } else {
+        return cleaned;
+      }
+    }
+
+    // Full-stack hosts (AI Studio Dev/Shared URL, localhost, Render) already serve /api/* on the same origin
+    if (isFullStackHost) {
+      return '';
     }
   }
+
   const envUrl = import.meta.env.VITE_API_BASE_URL;
   if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
     return envUrl.trim().replace(/\/+$/, '');

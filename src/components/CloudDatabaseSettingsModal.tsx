@@ -260,23 +260,37 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
 
           {/* Backend URL Configuration for Render & Vercel */}
           <form onSubmit={handleSaveUrl} className="space-y-2 p-4 bg-white border border-slate-200 rounded-lg">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <label className="font-bold text-slate-800">
-                Render Backend URL:
+                External Backend URL (Optional):
               </label>
               <span className="text-[11px] text-slate-400">
-                Set when deploying frontend separately on Vercel
+                Leave blank on AI Studio / same-origin hosting
               </span>
             </div>
 
             <div className="flex gap-2">
               <input
                 type="url"
-                placeholder="https://stock-management-hbuv.onrender.com"
+                placeholder="Leave blank for built-in server (or enter Render URL)"
                 value={backendUrl}
                 onChange={(e) => setBackendUrl(e.target.value)}
                 className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
               />
+              {backendUrl && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBackendUrl('');
+                    setCustomBackendUrl('');
+                    handleCheck();
+                    onDataReload();
+                  }}
+                  className="px-3 py-1.5 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition-colors cursor-pointer"
+                >
+                  Use Built-in
+                </button>
+              )}
               <button
                 type="submit"
                 className="px-3 py-1.5 font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"

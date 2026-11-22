@@ -248,11 +248,21 @@ async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
   }
 }
 
+let lastInitAttemptAt = 0;
+
 export async function ensureDbReady(): Promise<void> {
   if (!initDbPromise) {
+    lastInitAttemptAt = Date.now();
     initDbPromise = initDb();
+    await initDbPromise;
+    return;
   }
   await initDbPromise;
+  if (!isPostgresConnected && !isSupabaseReady && Date.now() - lastInitAttemptAt > 15000) {
+    lastInitAttemptAt = Date.now();
+    initDbPromise = initDb();
+    await initDbPromise;
+  }
 }
 
 export function getActiveStorageTarget(): 'postgresql' | 'supabase' | 'local_file' {
@@ -266,6 +276,7 @@ export async function initDb(): Promise<{
   ready: boolean;
   error?: string;
 }> {
+  lastInitAttemptAt = Date.now();
   const runInit = async (): Promise<{
     type: 'postgresql' | 'supabase_rest' | 'file_dbms';
     ready: boolean;
