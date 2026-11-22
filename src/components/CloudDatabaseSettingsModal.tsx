@@ -140,8 +140,82 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
             <div className="flex items-center gap-2 text-slate-600 text-[11px] pt-1">
               <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
               <span>
-                <strong>Zero Data Loss Guarantee:</strong> All changes are saved to persistent DBMS storage and locally cached so dates/records never refresh or get lost.
+                <strong>Zero Data Loss Guarantee:</strong> All changes sync to Supabase PostgreSQL when configured and are cached locally so records never get lost.
               </span>
+            </div>
+
+            {status?.supabaseNeedsSchema && (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold block">Supabase tables not initialized yet</span>
+                  <span>
+                    Run <code className="bg-amber-100 px-1 rounded font-mono">supabase db push</code> or execute{' '}
+                    <code className="bg-amber-100 px-1 rounded font-mono">supabase/migrations/20261122000000_init_stock_register.sql</code> in the Supabase SQL Editor.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {status?.supabaseNeedsServiceKey && (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold block">Server write key required for RLS</span>
+                  <span>
+                    Configure <code className="bg-amber-100 px-1 rounded font-mono">SUPABASE_SERVICE_ROLE_KEY</code> or{' '}
+                    <code className="bg-amber-100 px-1 rounded font-mono">DATABASE_URL</code> in server environment Secrets.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Supabase CLI & Schema Setup */}
+          <div className="p-4 rounded-lg border border-emerald-200 bg-emerald-50/50 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                <Database className="w-4 h-4 text-emerald-600" />
+                Supabase PostgreSQL Setup ({status?.supabaseProjectRef || 'anaibpuhnxlwfeypprlb'})
+              </span>
+              <span
+                className={`font-mono text-[10px] font-bold px-2 py-0.5 rounded ${
+                  status?.supabaseReady || status?.hasPostgresUrl
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-slate-200 text-slate-700'
+                }`}
+              >
+                {status?.supabaseReady || status?.hasPostgresUrl ? 'ACTIVE' : 'ENV SETUP READY'}
+              </span>
+            </div>
+
+            <p className="text-slate-600 text-[11px]">
+              Server reads <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_URL</code>,{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_SERVICE_ROLE_KEY</code> (or{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">SUPABASE_PUBLISHABLE_KEY</code>), and{' '}
+              <code className="bg-white px-1 py-0.5 rounded border border-slate-200 font-mono">DATABASE_URL</code> from server environment secrets.
+            </p>
+
+            <div className="flex items-center justify-between bg-slate-900 text-slate-200 p-2.5 rounded font-mono text-[11px]">
+              <span className="whitespace-pre-wrap">
+                {`supabase login && supabase link --project-ref ${status?.supabaseProjectRef || 'anaibpuhnxlwfeypprlb'} && supabase db push`}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  handleCopy(
+                    `supabase login\nsupabase link --project-ref ${status?.supabaseProjectRef || 'anaibpuhnxlwfeypprlb'}\nsupabase db push`,
+                    'supabase_cli'
+                  )
+                }
+                className="text-slate-400 hover:text-white cursor-pointer ml-2 shrink-0"
+              >
+                {copiedKey === 'supabase_cli' ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+              </button>
             </div>
           </div>
 
@@ -215,6 +289,7 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
               <div className="flex items-center justify-between bg-slate-900 text-slate-200 p-2 rounded font-mono text-[11px]">
                 <span>VITE_API_BASE_URL = https://stock-management-hbuv.onrender.com</span>
                 <button
+                  type="button"
                   onClick={() => handleCopy('https://stock-management-hbuv.onrender.com', 'env_var')}
                   className="text-slate-400 hover:text-white cursor-pointer"
                 >

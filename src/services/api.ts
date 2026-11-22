@@ -52,6 +52,11 @@ export interface BackendStatus {
   url: string;
   storageLocation?: string;
   hasPostgresUrl?: boolean;
+  supabaseConfigured?: boolean;
+  supabaseReady?: boolean;
+  supabaseNeedsSchema?: boolean;
+  supabaseNeedsServiceKey?: boolean;
+  supabaseProjectRef?: string;
   error?: string;
 }
 
@@ -71,6 +76,11 @@ export async function checkBackendHealth(): Promise<BackendStatus> {
         url: base || window.location.origin,
         storageLocation: data.db?.storageLocation,
         hasPostgresUrl: data.db?.hasPostgresUrl,
+        supabaseConfigured: data.db?.supabaseConfigured,
+        supabaseReady: data.db?.supabaseReady,
+        supabaseNeedsSchema: data.db?.supabaseNeedsSchema,
+        supabaseNeedsServiceKey: data.db?.supabaseNeedsServiceKey,
+        supabaseProjectRef: data.db?.supabaseProjectRef,
       };
     }
     return {

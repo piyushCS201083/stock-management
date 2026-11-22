@@ -1,10 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type {
   BatteryColumn,
   BatterySerialItem,
-  BatteryMovementEvent,
   DayRecord,
   TeamMember,
 } from '../src/types/stock.ts';
@@ -28,6 +28,12 @@ interface DatabaseState {
 let pgPool: pg.Pool | null = null;
 let isPostgresConnected = false;
 
+let supabaseClient: SupabaseClient | null = null;
+let isSupabaseReady = false;
+let supabaseNeedsSchema = false;
+let supabaseNeedsServiceKey = false;
+let supabaseProjectRef = '';
+
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 
@@ -36,7 +42,27 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Fallback in-memory/file storage with 31-10-2026 official baseline
+function parseSupabaseProjectRef(url?: string): string {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    const hostParts = parsed.hostname.split('.');
+    return hostParts[0] || '';
+  } catch {
+    return '';
+  }
+}
+
+function isPlaceholderDatabaseUrl(dbUrl?: string): boolean {
+  if (!dbUrl) return true;
+  return (
+    dbUrl.includes('[YOUR-DATABASE-PASSWORD]') ||
+    dbUrl.includes('<YOUR-DATABASE-PASSWORD>') ||
+    dbUrl.includes('YOUR_PASSWORD')
+  );
+}
+
+// Fallback local file storage with 31-10-2026 official baseline
 function readLocalFile(): DatabaseState {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -48,12 +74,10 @@ function readLocalFile(): DatabaseState {
           parsed.serials = { ...INITIAL_BASELINE_SERIALS };
           writeLocalFile(parsed);
         }
-        // Ensure 31-10-2026 baseline is present
         if (parsed.records && !parsed.records[INITIAL_RECORD_31_10_2026.date]) {
           parsed.records[INITIAL_RECORD_31_10_2026.date] = INITIAL_RECORD_31_10_2026;
           writeLocalFile(parsed);
         }
-        // Ensure team members only contain Piyush Shivhare (Owner & Admin) with 9009156696
         const removedIds = ['luvkush', 'sonu_bhaiya', 'nikhil', 'reena_ent', 'store_staff'];
         if (Array.isArray(parsed.teamMembers)) {
           parsed.teamMembers = parsed.teamMembers
@@ -82,7 +106,6 @@ function readLocalFile(): DatabaseState {
     console.error('[DBMS] Error reading local database file:', err);
   }
 
-  // Initial fresh seed for 31-10-2026
   const initialState: DatabaseState = {
     records: {
       [INITIAL_RECORD_31_10_2026.date]: INITIAL_RECORD_31_10_2026,
@@ -111,54 +134,105 @@ function writeLocalFile(state: DatabaseState) {
   }
 }
 
-export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; ready: boolean; error?: string }> {
-  const dbUrl = process.env.DATABASE_URL;
-  const isPostgresUrl = Boolean(
-    dbUrl && (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://'))
+async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
+  const { error: recErr } = await client
+    .from('stock_records')
+    .upsert(
+      {
+        date: INITIAL_RECORD_31_10_2026.date,
+        data: INITIAL_RECORD_31_10_2026,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'date', ignoreDuplicates: true }
+    );
+
+  if (recErr) {
+    throw recErr;
+  }
+
+  await client.from('battery_metadata').upsert(
+    [
+      {
+        key: 'columns',
+        data: DEFAULT_BATTERY_COLUMNS,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        key: 'team_members',
+        data: DEFAULT_TEAM_MEMBERS,
+        updated_at: new Date().toISOString(),
+      },
+    ],
+    { onConflict: 'key', ignoreDuplicates: true }
   );
 
+  const serialRows = Object.values(INITIAL_BASELINE_SERIALS).map((item) => ({
+    serial_no: item.serialNo,
+    data: item,
+    updated_at: new Date().toISOString(),
+  }));
+
+  if (serialRows.length > 0) {
+    await client
+      .from('battery_serials')
+      .upsert(serialRows, { onConflict: 'serial_no', ignoreDuplicates: true });
+  }
+}
+
+export async function initDb(): Promise<{
+  type: 'postgresql' | 'supabase_rest' | 'file_dbms';
+  ready: boolean;
+  error?: string;
+}> {
+  const dbUrl = process.env.DATABASE_URL?.trim();
+  const isPostgresUrl = Boolean(
+    dbUrl &&
+      !isPlaceholderDatabaseUrl(dbUrl) &&
+      (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://'))
+  );
+
+  // Tier 1: Direct PostgreSQL connection (Supabase direct / pooler or Cloud Postgres)
   if (isPostgresUrl && dbUrl) {
     try {
-      console.log('[DBMS] Connecting to PostgreSQL on Render / Cloud...');
+      console.log('[DBMS] Connecting to PostgreSQL (Supabase / Cloud)...');
       const pool = new Pool({
         connectionString: dbUrl,
-        ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false },
-        connectionTimeoutMillis: 3000,
+        ssl: dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1')
+          ? false
+          : { rejectUnauthorized: false },
+        connectionTimeoutMillis: 4000,
       });
 
       pool.on('error', (err) => {
         console.warn('[DBMS] PostgreSQL pool error:', err.message);
       });
 
-      // Verify connection
       const client = await pool.connect();
       try {
         await client.query(`
           CREATE TABLE IF NOT EXISTS stock_records (
             date VARCHAR(50) PRIMARY KEY,
             data JSONB NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
           );
           CREATE TABLE IF NOT EXISTS battery_metadata (
             key VARCHAR(50) PRIMARY KEY,
             data JSONB NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
           );
           CREATE TABLE IF NOT EXISTS battery_serials (
             serial_no VARCHAR(100) PRIMARY KEY,
             data JSONB NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
           );
           CREATE TABLE IF NOT EXISTS audit_logs (
-            id SERIAL PRIMARY KEY,
+            id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
             action VARCHAR(100) NOT NULL,
             details JSONB,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
           );
         `);
 
-        // Upsert 31-10-2026 official baseline record
-        console.log('[DBMS] Inserting verified 31-10-2026 stock baseline into PostgreSQL...');
         await client.query(
           `INSERT INTO stock_records (date, data, updated_at)
            VALUES ($1, $2, NOW())
@@ -174,9 +248,18 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
         await client.query(
           `INSERT INTO battery_metadata (key, data, updated_at)
            VALUES ('team_members', $1, NOW())
-           ON CONFLICT (key) DO UPDATE SET data = $1`,
+           ON CONFLICT (key) DO NOTHING`,
           [JSON.stringify(DEFAULT_TEAM_MEMBERS)]
         );
+
+        for (const item of Object.values(INITIAL_BASELINE_SERIALS)) {
+          await client.query(
+            `INSERT INTO battery_serials (serial_no, data, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (serial_no) DO NOTHING`,
+            [item.serialNo, JSON.stringify(item)]
+          );
+        }
 
         pgPool = pool;
         isPostgresConnected = true;
@@ -186,32 +269,146 @@ export async function initDb(): Promise<{ type: 'postgresql' | 'file_dbms'; read
         client.release();
       }
     } catch (err: any) {
-      console.warn('[DBMS] PostgreSQL connection unavailable, falling back to persistent file DBMS:', err.message);
+      console.warn(
+        '[DBMS] Direct PostgreSQL connection unavailable, checking Supabase HTTPS API / local fallback:',
+        err.message
+      );
       if (pgPool) {
         await pgPool.end().catch(() => {});
       }
       isPostgresConnected = false;
       pgPool = null;
     }
-  } else if (dbUrl && (dbUrl.startsWith('http://') || dbUrl.startsWith('https://'))) {
-    console.log('[DBMS] DATABASE_URL is configured as a remote web API URL. Using persistent local file DBMS for server storage.');
+  } else if (dbUrl && isPlaceholderDatabaseUrl(dbUrl)) {
+    console.warn(
+      '[DBMS] DATABASE_URL still contains the placeholder password; skipping direct TCP Postgres.'
+    );
   }
 
-  // Fallback to local persistent JSON file
+  // Tier 2: Supabase HTTPS REST API via @supabase/supabase-js
+  const supabaseUrl = process.env.SUPABASE_URL?.trim();
+  const serviceRoleKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
+  const publishableKey =
+    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() || process.env.SUPABASE_ANON_KEY?.trim();
+  const supabaseKey = serviceRoleKey || publishableKey;
+
+  if (supabaseUrl && supabaseKey) {
+    supabaseProjectRef = parseSupabaseProjectRef(supabaseUrl);
+    try {
+      const client = createClient(supabaseUrl, supabaseKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      });
+      supabaseClient = client;
+
+      const { error } = await client
+        .from('stock_records')
+        .select('date', { count: 'exact', head: true });
+
+      if (error) {
+        const errCode = error.code || '';
+        const errMsg = error.message || '';
+        if (errCode === 'PGRST205' || errCode === '42P01' || errMsg.includes('schema cache')) {
+          supabaseNeedsSchema = true;
+          isSupabaseReady = false;
+          console.warn(
+            '[DBMS] Supabase project reachable, but tables are not created yet. Run supabase/migrations/20261122000000_init_stock_register.sql.'
+          );
+        } else if (
+          errCode === '42501' ||
+          errCode === 'PGRST301' ||
+          errMsg.toLowerCase().includes('permission') ||
+          errMsg.toLowerCase().includes('row-level security') ||
+          errMsg.toLowerCase().includes('api key')
+        ) {
+          supabaseNeedsServiceKey = true;
+          isSupabaseReady = false;
+          console.warn(
+            '[DBMS] Supabase RLS/auth blocked query. Set SUPABASE_SERVICE_ROLE_KEY in server environment.'
+          );
+        } else {
+          console.warn('[DBMS] Supabase check warning:', errMsg);
+        }
+      } else {
+        try {
+          await seedSupabaseBaseline(client);
+          isSupabaseReady = true;
+          supabaseNeedsSchema = false;
+          supabaseNeedsServiceKey = false;
+          console.log('[DBMS] Connected to Supabase HTTPS REST API:', supabaseUrl);
+          return { type: 'supabase_rest', ready: true };
+        } catch (seedErr: any) {
+          const seedCode = seedErr?.code || '';
+          const seedMsg = seedErr?.message || '';
+          if (seedCode === '42501' || seedMsg.toLowerCase().includes('row-level security')) {
+            supabaseNeedsServiceKey = true;
+            isSupabaseReady = false;
+            console.warn(
+              '[DBMS] Supabase table write blocked by RLS. Set SUPABASE_SERVICE_ROLE_KEY in server environment.'
+            );
+          } else {
+            isSupabaseReady = true;
+            console.warn('[DBMS] Supabase seed warning:', seedMsg);
+            return { type: 'supabase_rest', ready: true };
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('[DBMS] Supabase HTTPS client init failed:', err.message);
+    }
+  }
+
+  // Tier 3: Persistent local JSON file fallback
   readLocalFile();
-  console.log('[DBMS] Using persistent Cloud/Local File DBMS at:', DATA_FILE);
+  console.log('[DBMS] Using persistent Local File DBMS at:', DATA_FILE);
   return { type: 'file_dbms', ready: true };
 }
 
 export function getDbStatus() {
   const isPg = Boolean(isPostgresConnected && pgPool);
-  const dbUrl = process.env.DATABASE_URL;
-  const isPgUrl = Boolean(dbUrl && (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://')));
+  const dbUrl = process.env.DATABASE_URL?.trim();
+  const isPgUrl = Boolean(
+    dbUrl &&
+      !isPlaceholderDatabaseUrl(dbUrl) &&
+      (dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://'))
+  );
+  const supabaseConfigured = Boolean(
+    process.env.SUPABASE_URL?.trim() &&
+      (process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+        process.env.SUPABASE_SECRET_KEY?.trim() ||
+        process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
+        process.env.SUPABASE_ANON_KEY?.trim())
+  );
+
+  let engine = 'Persistent DBMS (Local JSON Cache)';
+  let storageLocation = DATA_FILE;
+
+  if (isPg) {
+    engine = 'PostgreSQL (Supabase / Cloud Direct)';
+    storageLocation = 'Remote PostgreSQL Database';
+  } else if (isSupabaseReady && supabaseClient) {
+    engine = `Supabase PostgreSQL (${supabaseProjectRef || 'Cloud REST'})`;
+    storageLocation = process.env.SUPABASE_URL?.trim() || 'Supabase Cloud';
+  } else if (supabaseConfigured && supabaseNeedsSchema) {
+    engine = 'Supabase Connected (Awaiting SQL Schema) · Local Fallback';
+  } else if (supabaseConfigured && supabaseNeedsServiceKey) {
+    engine = 'Supabase Connected (Service Role Key Needed) · Local Fallback';
+  }
+
   return {
-    engine: isPg ? 'PostgreSQL (Cloud / Render)' : 'Persistent DBMS (Render Disk / JSON)',
+    engine,
     status: 'connected',
     hasPostgresUrl: isPgUrl,
-    storageLocation: isPg ? 'Remote Cloud Database' : DATA_FILE,
+    supabaseConfigured,
+    supabaseReady: isSupabaseReady,
+    supabaseNeedsSchema,
+    supabaseNeedsServiceKey,
+    supabaseProjectRef:
+      supabaseProjectRef || parseSupabaseProjectRef(process.env.SUPABASE_URL?.trim()) || 'anaibpuhnxlwfeypprlb',
+    storageLocation,
   };
 }
 
@@ -229,11 +426,32 @@ export async function getAllRecords(): Promise<Record<string, DayRecord>> {
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('stock_records')
+        .select('date, data')
+        .order('updated_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        const recordsMap: Record<string, DayRecord> = {};
+        data.forEach((row: any) => {
+          recordsMap[row.date] = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+        });
+        return recordsMap;
+      }
+      if (error) console.error('[DBMS] Supabase getAllRecords error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase getAllRecords exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   return local.records;
 }
 
 export async function getRecord(date: string): Promise<DayRecord | null> {
+  if (typeof date !== 'string' || !date.trim()) return null;
+
   if (isPostgresConnected && pgPool) {
     try {
       const res = await pgPool.query('SELECT data FROM stock_records WHERE date = $1', [date]);
@@ -246,11 +464,32 @@ export async function getRecord(date: string): Promise<DayRecord | null> {
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('stock_records')
+        .select('data')
+        .eq('date', date)
+        .maybeSingle();
+      if (!error) {
+        if (!data) return null;
+        return typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      }
+      console.error('[DBMS] Supabase getRecord error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase getRecord exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   return local.records[date] || null;
 }
 
 export async function saveRecord(record: DayRecord): Promise<DayRecord> {
+  if (!record || typeof record.date !== 'string' || !record.date.trim()) {
+    throw new Error('Valid record date is required');
+  }
+
   const updatedRecord: DayRecord = {
     ...record,
     lastModified: new Date().toISOString(),
@@ -265,14 +504,37 @@ export async function saveRecord(record: DayRecord): Promise<DayRecord> {
         [record.date, JSON.stringify(updatedRecord)]
       );
 
-      await pgPool.query(
-        'INSERT INTO audit_logs (action, details) VALUES ($1, $2)',
-        ['SAVE_RECORD', JSON.stringify({ date: record.date })]
-      );
+      await pgPool.query('INSERT INTO audit_logs (action, details) VALUES ($1, $2)', [
+        'SAVE_RECORD',
+        JSON.stringify({ date: record.date }),
+      ]);
 
       return updatedRecord;
     } catch (err) {
       console.error('[DBMS] PG saveRecord error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('stock_records').upsert(
+        {
+          date: record.date,
+          data: updatedRecord,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'date' }
+      );
+      if (!error) {
+        await supabaseClient.from('audit_logs').insert({
+          action: 'SAVE_RECORD',
+          details: { date: record.date },
+        });
+        return updatedRecord;
+      }
+      console.error('[DBMS] Supabase saveRecord error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase saveRecord exception:', err);
     }
   }
 
@@ -288,12 +550,24 @@ export async function saveRecord(record: DayRecord): Promise<DayRecord> {
 }
 
 export async function deleteRecord(date: string): Promise<boolean> {
+  if (typeof date !== 'string' || !date.trim()) return false;
+
   if (isPostgresConnected && pgPool) {
     try {
       await pgPool.query('DELETE FROM stock_records WHERE date = $1', [date]);
       return true;
     } catch (err) {
       console.error('[DBMS] PG deleteRecord error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('stock_records').delete().eq('date', date);
+      if (!error) return true;
+      console.error('[DBMS] Supabase deleteRecord error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase deleteRecord exception:', err);
     }
   }
 
@@ -318,6 +592,21 @@ export async function getColumns(): Promise<BatteryColumn[]> {
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'columns')
+        .maybeSingle();
+      if (!error && data?.data) {
+        return typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      }
+    } catch (err) {
+      console.error('[DBMS] Supabase getColumns error:', err);
+    }
+  }
+
   const local = readLocalFile();
   return local.columns || DEFAULT_BATTERY_COLUMNS;
 }
@@ -337,6 +626,23 @@ export async function saveColumns(columns: BatteryColumn[]): Promise<BatteryColu
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'columns',
+          data: columns,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+      if (!error) return columns;
+      console.error('[DBMS] Supabase saveColumns error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase saveColumns exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   local.columns = columns;
   writeLocalFile(local);
@@ -352,6 +658,21 @@ export async function getTeamMembers(): Promise<TeamMember[]> {
       }
     } catch (err) {
       console.error('[DBMS] PG getTeamMembers error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'team_members')
+        .maybeSingle();
+      if (!error && data?.data) {
+        return typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      }
+    } catch (err) {
+      console.error('[DBMS] Supabase getTeamMembers error:', err);
     }
   }
 
@@ -374,6 +695,23 @@ export async function saveTeamMembers(team: TeamMember[]): Promise<TeamMember[]>
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'team_members',
+          data: team,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+      if (!error) return team;
+      console.error('[DBMS] Supabase saveTeamMembers error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase saveTeamMembers exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   local.teamMembers = team;
   writeLocalFile(local);
@@ -387,15 +725,28 @@ export async function logAudit(action: string, details: any) {
         action,
         JSON.stringify(details),
       ]);
-    } catch (e) {
-      // ignore
+      return;
+    } catch {
+      // fallback below
     }
-  } else {
-    const local = readLocalFile();
-    local.logs.unshift({ action, details, timestamp: new Date().toISOString() });
-    if (local.logs.length > 100) local.logs = local.logs.slice(0, 100);
-    writeLocalFile(local);
   }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('audit_logs').insert({
+        action,
+        details,
+      });
+      if (!error) return;
+    } catch {
+      // fallback below
+    }
+  }
+
+  const local = readLocalFile();
+  local.logs.unshift({ action, details, timestamp: new Date().toISOString() });
+  if (local.logs.length > 100) local.logs = local.logs.slice(0, 100);
+  writeLocalFile(local);
 }
 
 // Battery Serial & Batch Tracker DBMS Functions
@@ -413,11 +764,32 @@ export async function getAllSerials(): Promise<Record<string, BatterySerialItem>
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_serials')
+        .select('serial_no, data')
+        .order('updated_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        const map: Record<string, BatterySerialItem> = {};
+        data.forEach((r: any) => {
+          map[r.serial_no] = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+        });
+        return map;
+      }
+      if (error) console.error('[DBMS] Supabase getAllSerials error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase getAllSerials exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   return local.serials || {};
 }
 
 export async function getSerial(serialNo: string): Promise<BatterySerialItem | null> {
+  if (typeof serialNo !== 'string' || !serialNo.trim()) return null;
+
   if (isPostgresConnected && pgPool) {
     try {
       const res = await pgPool.query('SELECT data FROM battery_serials WHERE serial_no = $1', [serialNo]);
@@ -430,11 +802,32 @@ export async function getSerial(serialNo: string): Promise<BatterySerialItem | n
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_serials')
+        .select('data')
+        .eq('serial_no', serialNo)
+        .maybeSingle();
+      if (!error) {
+        if (!data) return null;
+        return typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      }
+      console.error('[DBMS] Supabase getSerial error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase getSerial exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   return local.serials?.[serialNo] || null;
 }
 
 export async function saveSerial(item: BatterySerialItem): Promise<BatterySerialItem> {
+  if (!item || typeof item.serialNo !== 'string' || !item.serialNo.trim()) {
+    throw new Error('Valid serialNo is required');
+  }
+
   if (isPostgresConnected && pgPool) {
     try {
       await pgPool.query(
@@ -449,6 +842,23 @@ export async function saveSerial(item: BatterySerialItem): Promise<BatterySerial
     }
   }
 
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('battery_serials').upsert(
+        {
+          serial_no: item.serialNo,
+          data: item,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'serial_no' }
+      );
+      if (!error) return item;
+      console.error('[DBMS] Supabase saveSerial error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase saveSerial exception:', err);
+    }
+  }
+
   const local = readLocalFile();
   local.serials = local.serials || {};
   local.serials[item.serialNo] = item;
@@ -457,19 +867,56 @@ export async function saveSerial(item: BatterySerialItem): Promise<BatterySerial
 }
 
 export async function bulkSaveSerials(items: BatterySerialItem[]): Promise<BatterySerialItem[]> {
-  for (const item of items) {
+  const validItems = items.filter(
+    (item) => item && typeof item.serialNo === 'string' && item.serialNo.trim()
+  );
+  if (validItems.length === 0) return [];
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const rows = validItems.map((item) => ({
+        serial_no: item.serialNo,
+        data: item,
+        updated_at: new Date().toISOString(),
+      }));
+      const { error } = await supabaseClient
+        .from('battery_serials')
+        .upsert(rows, { onConflict: 'serial_no' });
+      if (!error) return validItems;
+      console.error('[DBMS] Supabase bulkSaveSerials error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase bulkSaveSerials exception:', err);
+    }
+  }
+
+  for (const item of validItems) {
     await saveSerial(item);
   }
-  return items;
+  return validItems;
 }
 
 export async function deleteSerial(serialNo: string): Promise<boolean> {
+  if (typeof serialNo !== 'string' || !serialNo.trim()) return false;
+
   if (isPostgresConnected && pgPool) {
     try {
       await pgPool.query('DELETE FROM battery_serials WHERE serial_no = $1', [serialNo]);
       return true;
     } catch (err) {
       console.error('[DBMS] PG deleteSerial error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient
+        .from('battery_serials')
+        .delete()
+        .eq('serial_no', serialNo);
+      if (!error) return true;
+      console.error('[DBMS] Supabase deleteSerial error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase deleteSerial exception:', err);
     }
   }
 
@@ -500,11 +947,10 @@ export async function backupPermanentCodebase(
   });
   writeLocalFile(local);
 
-  // If Postgres is connected, ensure all records and serials are synced
   if (isPostgresConnected && pgPool) {
     try {
       if (records) {
-        for (const [date, rec] of Object.entries(records)) {
+        for (const [, rec] of Object.entries(records)) {
           await saveRecord(rec);
         }
       }
@@ -513,6 +959,22 @@ export async function backupPermanentCodebase(
       }
     } catch (e) {
       console.warn('[DBMS] PG backup warning:', e);
+    }
+  } else if (isSupabaseReady && supabaseClient) {
+    try {
+      if (records && Object.keys(records).length > 0) {
+        const rows = Object.values(records).map((rec) => ({
+          date: rec.date,
+          data: rec,
+          updated_at: new Date().toISOString(),
+        }));
+        await supabaseClient.from('stock_records').upsert(rows, { onConflict: 'date' });
+      }
+      if (serials && Object.keys(serials).length > 0) {
+        await bulkSaveSerials(Object.values(serials));
+      }
+    } catch (e) {
+      console.warn('[DBMS] Supabase backup warning:', e);
     }
   }
 
