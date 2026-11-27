@@ -733,10 +733,22 @@ export async function apiGetCloudinaryStatus(): Promise<CloudinaryStatusInfo | n
   return null;
 }
 
+function buildAdminHeaders(adminToken?: string | null, includeJson = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+  return headers;
+}
+
 export async function apiTriggerCloudinaryBackup(
   records?: Record<string, DayRecord>,
   serials?: Record<string, BatterySerialItem>,
-  reason = 'manual_ui'
+  reason = 'manual_ui',
+  adminToken?: string | null
 ): Promise<{
   success: boolean;
   cloudinaryConfigured: boolean;
@@ -754,15 +766,25 @@ export async function apiTriggerCloudinaryBackup(
   serialCount?: number;
   timestamp?: string;
   error?: string;
+  unauthorized?: boolean;
 }> {
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/cloud/cloudinary/backup`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildAdminHeaders(adminToken, true),
       body: JSON.stringify({ records, serials, reason }),
     });
     const json = await res.json();
+    if (res.status === 401) {
+      return {
+        success: false,
+        cloudinaryConfigured: false,
+        uploadedToCloudinary: false,
+        unauthorized: true,
+        error: json?.error || 'Admin authentication required',
+      };
+    }
     return json;
   } catch (err: any) {
     return {
@@ -774,15 +796,30 @@ export async function apiTriggerCloudinaryBackup(
   }
 }
 
-export async function apiListCloudinaryBackups(): Promise<{
+export async function apiListCloudinaryBackups(adminToken?: string | null): Promise<{
   cloudinaryConfigured: boolean;
   cloudName?: string;
   backups: CloudBackupSnapshotMeta[];
   error?: string;
+  unauthorized?: boolean;
 }> {
   const base = getApiBaseUrl();
+  if (!adminToken) {
+    return {
+      cloudinaryConfigured: false,
+      backups: [],
+      unauthorized: true,
+      error: 'Admin login required to view backups',
+    };
+  }
   try {
-    const res = await fetch(`${base}/api/cloud/cloudinary/backups`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/cloud/cloudinary/backups`, {
+      cache: 'no-store',
+      headers: buildAdminHeaders(adminToken),
+    });
+    if (res.status === 401) {
+      return { cloudinaryConfigured: false, backups: [], unauthorized: true, error: 'Admin authentication required' };
+    }
     if (res.ok) {
       return await res.json();
     }
@@ -792,44 +829,368 @@ export async function apiListCloudinaryBackups(): Promise<{
   return { cloudinaryConfigured: false, backups: [] };
 }
 
-export async function apiRestoreCloudinaryBackup(payload: {
-  source: 'cloudinary' | 'local_disk';
-  secureUrl?: string;
-  fileName?: string;
-}): Promise<{ success: boolean; restoredRecords?: number; restoredSerials?: number; error?: string }> {
+export async function apiRestoreCloudinaryBackup(
+  payload: {
+    source: 'cloudinary' | 'local_disk';
+    secureUrl?: string;
+    fileName?: string;
+  },
+  adminToken?: string | null
+): Promise<{
+  success: boolean;
+  restoredRecords?: number;
+  restoredSerials?: number;
+  error?: string;
+  unauthorized?: boolean;
+}> {
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/cloud/cloudinary/restore`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildAdminHeaders(adminToken, true),
       body: JSON.stringify(payload),
     });
-    return await res.json();
+    const json = await res.json();
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: json?.error || 'Admin authentication required' };
+    }
+    return json;
   } catch (err: any) {
     return { success: false, error: err?.message || 'Restore failed' };
   }
 }
 
-export async function apiFactoryReset(): Promise<{
+export async function apiFactoryReset(adminToken?: string | null): Promise<{
   success: boolean;
   resetEpoch?: string;
   todayIST?: string;
   branchesInitialized?: number;
   error?: string;
+  unauthorized?: boolean;
 }> {
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/system/factory-reset`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildAdminHeaders(adminToken, true),
     });
     const json = await res.json();
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: json?.error || 'Admin authentication required' };
+    }
     if (res.ok && json.success) {
-      clearAllLocalStockStorage();
+      clearAllLocalStockStorage(json.resetEpoch);
     }
     return json;
   } catch (err: any) {
     return { success: false, error: err?.message || 'Factory reset failed' };
+  }
+}
+
+// =========================================================================
+// Admin Authentication, Analytics & Privileged Downloads
+// =========================================================================
+
+export interface AdminSessionInfo {
+  label: string;
+  role: string;
+  mode: 'env' | 'claimed';
+  expiresAt?: string;
+}
+
+export interface AdminStatusResponse {
+  success: boolean;
+  configuredViaEnv: boolean;
+  claimed: boolean;
+  authenticated: boolean;
+  admin: AdminSessionInfo | null;
+  adminLabel: string;
+}
+
+export interface AdminAuthResult {
+  success: boolean;
+  token?: string;
+  expiresAt?: string;
+  admin?: AdminSessionInfo;
+  needsClaim?: boolean;
+  error?: string;
+}
+
+export interface BackendBranchAnalytic {
+  branchId: string;
+  branchNumber: number;
+  branchName: string;
+  shortName: string;
+  code: string;
+  ledgerDaysCount: number;
+  firstDate: string | null;
+  latestDate: string | null;
+  lastModified: string | null;
+  latestOpening: number;
+  latestIn: number;
+  latestOut: number;
+  latestClosing: number;
+  latestRepairClosing: number;
+  latestServiceClosing: number;
+  cumulativeIn: number;
+  cumulativeOut: number;
+  serialsInStock: number;
+  serialsDispatched: number;
+  serialsInRepair: number;
+  serialsServiceStandby: number;
+  serialsTotal: number;
+  unserializedGap: number;
+  incomingPendingTransfers: number;
+  incomingPendingUnits: number;
+  outgoingTransfersCount: number;
+  chargerClosingTotal: number;
+  vehicleClosingTotal: number;
+}
+
+export interface BackendModelAnalytic {
+  modelId: string;
+  modelName: string;
+  isSpecial: boolean;
+  currentClosingQty: number;
+  cumulativeInQty: number;
+  cumulativeOutQty: number;
+  branchStockBreakdown: Record<string, number>;
+  inStockSerials: number;
+  dispatchedSerials: number;
+  inRepairSerials: number;
+  serviceStandbySerials: number;
+  totalSerials: number;
+  unserializedGap: number;
+  stockStatus: 'healthy' | 'low' | 'empty';
+}
+
+export interface BackendAnalyticsSnapshot {
+  generatedAt: string;
+  todayIST: string;
+  dbStatus: any;
+  overview: {
+    totalLedgers: number;
+    activeBranchesWithData: number;
+    totalStandardClosing: number;
+    totalRepairClosing: number;
+    totalServiceClosing: number;
+    totalGrandBatteryClosing: number;
+    cumulativeInward: number;
+    cumulativeOutward: number;
+    totalTrackedSerials: number;
+    serialStatusCounts: {
+      in_stock: number;
+      dispatched: number;
+      in_repair: number;
+      service_standby: number;
+    };
+    totalUnserializedGap: number;
+    totalChargerModelsLatest: number;
+    totalVehicleModelsLatest: number;
+    transfersSummary: {
+      total: number;
+      pending: number;
+      partial: number;
+      received: number;
+      pendingUnits: number;
+    };
+    teamCount: number;
+    auditLogCount: number;
+  };
+  branchAnalytics: BackendBranchAnalytic[];
+  modelAnalytics: BackendModelAnalytic[];
+  dailyTrend: Array<{
+    date: string;
+    isoDate: string;
+    totalIn: number;
+    totalOut: number;
+    closingBalance: number;
+    activeBranchesCount: number;
+  }>;
+  topPartners: Array<{
+    name: string;
+    inCount: number;
+    outCount: number;
+    totalMovements: number;
+  }>;
+  recentMovements: Array<{
+    serialNo: string;
+    modelName: string;
+    type: string;
+    date: string;
+    branchId: string;
+    branchName: string;
+    partner?: string;
+    cause?: string;
+    timestamp: string;
+  }>;
+  recentTransfers: BranchTransfer[];
+  auditLogs: Array<{
+    id?: number | string;
+    action: string;
+    details?: any;
+    timestamp: string;
+  }>;
+  rawBackendSummary: {
+    recordsCount: number;
+    serialsCount: number;
+    chargersCount: number;
+    vehiclesCount: number;
+    transfersCount: number;
+    columnsCount: number;
+    teamMembersCount: number;
+    localDbBytes: number;
+    cloudinaryBackupsCount: number;
+    columns: BatteryColumn[];
+    teamMembers: TeamMember[];
+  };
+}
+
+export async function apiGetAdminStatus(adminToken?: string | null): Promise<AdminStatusResponse> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/status`, {
+      cache: 'no-store',
+      headers: buildAdminHeaders(adminToken),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return {
+    success: false,
+    configuredViaEnv: false,
+    claimed: false,
+    authenticated: false,
+    admin: null,
+    adminLabel: 'Owner & Admin',
+  };
+}
+
+export async function apiClaimAdminPassword(
+  password: string,
+  adminLabel?: string
+): Promise<AdminAuthResult> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, adminLabel }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Admin setup request failed' };
+  }
+}
+
+export async function apiAdminLogin(password: string): Promise<AdminAuthResult> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Admin login request failed' };
+  }
+}
+
+export async function apiAdminLogout(adminToken: string): Promise<void> {
+  const base = getApiBaseUrl();
+  try {
+    await fetch(`${base}/api/admin/logout`, {
+      method: 'POST',
+      headers: buildAdminHeaders(adminToken),
+    });
+  } catch {}
+}
+
+export async function apiChangeAdminPassword(
+  currentPassword: string,
+  newPassword: string,
+  adminToken: string
+): Promise<{ success: boolean; error?: string }> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/change-password`, {
+      method: 'POST',
+      headers: buildAdminHeaders(adminToken, true),
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Password update failed' };
+  }
+}
+
+export async function apiFetchAdminAnalytics(adminToken: string): Promise<{
+  success: boolean;
+  data?: BackendAnalyticsSnapshot;
+  error?: string;
+  unauthorized?: boolean;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/analytics`, {
+      cache: 'no-store',
+      headers: buildAdminHeaders(adminToken),
+    });
+    const json = await res.json();
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: json?.error || 'Session expired' };
+    }
+    return json;
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to load backend analytics' };
+  }
+}
+
+export async function apiDownloadAdminFile(
+  kind: 'quantity' | 'serials' | 'snapshot',
+  adminToken: string
+): Promise<{ success: boolean; fileName?: string; error?: string; unauthorized?: boolean }> {
+  const base = getApiBaseUrl();
+  const endpointMap = {
+    quantity: '/api/cloud/excel/export',
+    serials: '/api/cloud/excel/serials/export',
+    snapshot: '/api/cloud/snapshot/export',
+  };
+  const fallbackNameMap = {
+    quantity: `Battery_Quantity_Stock_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    serials: `Battery_Serials_And_History_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    snapshot: `battery-stock-backup-${new Date().toISOString().slice(0, 10)}.json`,
+  };
+
+  try {
+    const res = await fetch(`${base}${endpointMap[kind]}`, {
+      method: 'GET',
+      headers: buildAdminHeaders(adminToken),
+    });
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: 'Admin authentication required' };
+    }
+    if (!res.ok) {
+      return { success: false, error: `Download failed (HTTP ${res.status})` };
+    }
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const fileName = match?.[1] || fallbackNameMap[kind];
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    return { success: true, fileName };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Download failed' };
   }
 }
 

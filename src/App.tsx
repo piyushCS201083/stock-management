@@ -70,6 +70,7 @@ import {
   saveLocalTransfers,
   checkBackendHealth,
   BackendStatus,
+  AdminSessionInfo,
   subscribeRealtimeSync,
 } from './services/api';
 import {
@@ -87,6 +88,7 @@ import {
 import { WhatsAppDispatchModal } from './components/WhatsAppDispatchModal';
 import { TeamManagementModal } from './components/TeamManagementModal';
 import { CloudDatabaseSettingsModal } from './components/CloudDatabaseSettingsModal';
+import { AdminPortalModal, AdminTabId } from './components/AdminPortalModal';
 import { SerialTrackerModal } from './components/SerialTrackerModal';
 import { ReferenceImageViewer } from './components/ReferenceImageViewer';
 import { BatchStockOverview } from './components/BatchStockOverview';
@@ -119,6 +121,7 @@ import {
   PackageCheck,
   Truck,
   Car,
+  Lock,
 } from 'lucide-react';
 
 import {
@@ -362,6 +365,37 @@ export default function App() {
   });
   const [selectedSerialHistory, setSelectedSerialHistory] = useState<BatterySerialItem | null>(null);
   const [notificationToast, setNotificationToast] = useState<string | null>(null);
+
+  // Admin Session & Portal state (token kept strictly in React memory)
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminSession, setAdminSession] = useState<AdminSessionInfo | null>(null);
+  const [isAdminPortalOpen, setIsAdminPortalOpen] = useState(false);
+  const [adminPromptReason, setAdminPromptReason] = useState<string | null>(null);
+  const [adminInitialTab, setAdminInitialTab] = useState<AdminTabId>('analytics');
+  const pendingAdminCallbackRef = useRef<((token: string) => void) | null>(null);
+
+  const openAdminPortal = (
+    reason: string | null = null,
+    tab: AdminTabId = 'analytics',
+    onAuthorized?: (token: string) => void
+  ) => {
+    setAdminPromptReason(reason);
+    setAdminInitialTab(tab);
+    pendingAdminCallbackRef.current = onAuthorized || null;
+    setIsAdminPortalOpen(true);
+  };
+
+  const requireAdminAction = (
+    reason: string,
+    tab: AdminTabId,
+    onAuthorized: (token: string) => void
+  ) => {
+    if (adminToken) {
+      onAuthorized(adminToken);
+      return;
+    }
+    openAdminPortal(reason, tab, onAuthorized);
+  };
 
   const handleBarcodeScanComplete = (scannedSerial: string, detectedBatch?: string) => {
     const trimmed = scannedSerial.trim();
@@ -1126,37 +1160,92 @@ export default function App() {
   };
 
   // Manual Save & Cloudinary Cloud Space Backup action from Top Toolbar
-  const handleManualSaveAndBackup = async () => {
+  const handleManualSaveAndBackup = async (requireCloudSpaceAdmin = false) => {
     setIsCloudSpaceBackingUp(true);
     setSaveState('saving');
     try {
       await flushPendingRecordsToServer(recordsRef.current);
       await flushPendingSerialsToServer(serialsRef.current);
-      const res = await apiTriggerCloudinaryBackup(
-        recordsRef.current,
-        serialsRef.current,
-        'toolbar_manual_save'
-      );
       const remaining = getPendingSyncKeys().length;
       setPendingSyncCount(remaining);
       setSaveState(remaining > 0 ? 'pending' : 'saved');
       const refreshedHealth = await checkBackendHealth();
       setBackendStatus(refreshedHealth);
 
-      if (res.uploadedToCloudinary) {
+      if (!adminToken) {
+        if (requireCloudSpaceAdmin) {
+          openAdminPortal(
+            'Sign in as Admin to sync Excel (.xlsx) snapshots to Cloud Space.',
+            'backups',
+            (token) => {
+              void handleAdminCloudSpaceSync(token);
+            }
+          );
+          return;
+        }
         showToast(
-          `✓ Excel (.xlsx) & DB backed up to Supabase + Cloudinary (${res.cloudName}) [${res.recordCount || 0} ledgers]`
+          isCloudDbConnected
+            ? '✓ Saved to Supabase & Cloud DBMS (Sign in as Admin to sync Cloud Space Excels)'
+            : '✓ Saved to Cloud DBMS (Sign in as Admin to sync Cloud Space Excels)'
         );
-      } else if (res.success && !res.cloudinaryConfigured) {
-        showToast(
-          `✓ Saved to Supabase & Server Disk (${res.recordCount || 0} ledgers). Add Cloudinary Secrets for Cloud Space upload.`
-        );
-      } else {
-        showToast(`⚠ Saved locally/DB; Cloud Space note: ${res.error || 'retry shortly'}`);
+        return;
       }
+
+      await handleAdminCloudSpaceSync(adminToken);
     } finally {
       setIsCloudSpaceBackingUp(false);
     }
+  };
+
+  const handleAdminCloudSpaceSync = async (token: string) => {
+    const res = await apiTriggerCloudinaryBackup(
+      recordsRef.current,
+      serialsRef.current,
+      'toolbar_manual_save',
+      token
+    );
+    if (res.unauthorized) {
+      setAdminToken(null);
+      setAdminSession(null);
+      openAdminPortal(
+        'Admin session expired. Please sign in again to upload Cloud Space Excels.',
+        'backups'
+      );
+      return;
+    }
+    if (res.uploadedToCloudinary) {
+      showToast(
+        `✓ Excel (.xlsx) & DB backed up to Supabase + Cloudinary (${res.cloudName}) [${res.recordCount || 0} ledgers]`
+      );
+    } else if (res.success && !res.cloudinaryConfigured) {
+      showToast(
+        `✓ Saved to Supabase & Server Disk (${res.recordCount || 0} ledgers). Add Cloudinary Secrets for Cloud Space upload.`
+      );
+    } else {
+      showToast(`⚠ Saved locally/DB; Cloud Space note: ${res.error || 'retry shortly'}`);
+    }
+  };
+
+  const handleDownloadQuantityExcelGated = () => {
+    requireAdminAction(
+      'Sign in as Admin to download Quantity Stock Excel (.xlsx).',
+      'exports',
+      () => {
+        exportRecordToExcel(currentRecord, columns);
+        showToast(`Downloaded Quantity Stock Excel (${currentRecord.date})`);
+      }
+    );
+  };
+
+  const handleDownloadSerialHistoryExcelGated = () => {
+    requireAdminAction(
+      'Sign in as Admin to download Serials & Movement History Excel (.xlsx).',
+      'exports',
+      () => {
+        exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
+        showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
+      }
+    );
   };
 
   // Create Inter-Branch Stock Transfer from QuickEntryModal
@@ -1524,7 +1613,7 @@ export default function App() {
         onOpenTeamModal={() => setIsTeamModalOpen(true)}
         onOpenCloudSettings={() => setIsCloudModalOpen(true)}
         onOpenSerialTracker={() => setIsSerialModalOpen(true)}
-        onExportExcel={() => exportRecordToExcel(currentRecord, columns)}
+        onExportExcel={handleDownloadQuantityExcelGated}
         currentDate={currentDate}
         activeBranch={activeBranch}
         activeCategory={activeCategory}
@@ -1533,6 +1622,8 @@ export default function App() {
         isRealtimeActive={isRealtimeActive}
         isCloudDbConnected={isCloudDbConnected}
         pendingReceiveCount={pendingTransfersByBranch[activeBranchId] || 0}
+        isAdminAuthenticated={Boolean(adminToken)}
+        onOpenAdminPortal={() => openAdminPortal(null, 'analytics')}
       />
 
       {/* Branch & Category Navigation Bar */}
@@ -1855,7 +1946,7 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={handleManualSaveAndBackup}
+                  onClick={() => handleManualSaveAndBackup(false)}
                   disabled={isCloudSpaceBackingUp}
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
                     backendStatus?.cloudinary?.configured
@@ -1966,24 +2057,28 @@ export default function App() {
 
                 <div className="inline-flex items-center rounded-lg border border-slate-300 bg-white p-0.5 gap-0.5 shadow-2xs">
                   <button
-                    onClick={() => {
-                      exportRecordToExcel(currentRecord, columns);
-                      showToast(`Downloaded Quantity Stock Excel (${currentRecord.date})`);
-                    }}
+                    onClick={handleDownloadQuantityExcelGated}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors cursor-pointer"
-                    title="Excel 1: Download Quantity Stock Excel (.xlsx)"
+                    title={
+                      adminToken
+                        ? 'Excel 1: Download Quantity Stock Excel (.xlsx)'
+                        : 'Admin login required to download Quantity Excel (.xlsx)'
+                    }
                   >
+                    {!adminToken && <Lock className="w-3 h-3 text-emerald-700" />}
                     <Download className="w-3.5 h-3.5 text-emerald-700" />
                     <span>Quantity Excel</span>
                   </button>
                   <button
-                    onClick={() => {
-                      exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
-                      showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
-                    }}
+                    onClick={handleDownloadSerialHistoryExcelGated}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md transition-colors cursor-pointer"
-                    title="Excel 2: Download All Battery Serial Numbers + Past/Dispatched History (.xlsx)"
+                    title={
+                      adminToken
+                        ? 'Excel 2: Download All Battery Serial Numbers + Past/Dispatched History (.xlsx)'
+                        : 'Admin login required to download Serials & History Excel (.xlsx)'
+                    }
                   >
+                    {!adminToken && <Lock className="w-3 h-3 text-blue-700" />}
                     <FileSpreadsheet className="w-3.5 h-3.5 text-blue-700" />
                     <span>Serials & History Excel</span>
                   </button>
@@ -2081,10 +2176,8 @@ export default function App() {
               setSerialModalInitialFilter(initialFilter || 'all');
               setIsSerialModalOpen(true);
             }}
-            onDownloadSerialExcel={() => {
-              exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
-              showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
-            }}
+            onDownloadSerialExcel={handleDownloadSerialHistoryExcelGated}
+            isAdminAuthenticated={Boolean(adminToken)}
             onUpdateSerial={handleUpdateSingleSerial}
             onSelectSerialHistory={(item) => setSelectedSerialHistory(item)}
           />
@@ -2111,35 +2204,44 @@ export default function App() {
             <div className="flex items-center gap-2.5 flex-wrap">
               <button
                 type="button"
-                onClick={() => {
-                  exportRecordToExcel(currentRecord, columns);
-                  showToast(`Downloaded Quantity Stock Excel (${currentRecord.date})`);
-                }}
+                onClick={handleDownloadQuantityExcelGated}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer"
-                title="Download Excel 1: Quantity Stock Sheet (.xlsx)"
+                title={
+                  adminToken
+                    ? 'Download Excel 1: Quantity Stock Sheet (.xlsx)'
+                    : 'Admin login required to download Quantity Stock Sheet (.xlsx)'
+                }
               >
+                {!adminToken && <Lock className="w-3 h-3" />}
                 <Download className="w-3.5 h-3.5" />
                 <span>Quantity .xlsx</span>
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
-                  showToast('Downloaded Complete Serials & History Excel (.xlsx)');
-                }}
+                onClick={handleDownloadSerialHistoryExcelGated}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md cursor-pointer"
-                title="Download Excel 2: All Battery Serials & Past Outward History (.xlsx)"
+                title={
+                  adminToken
+                    ? 'Download Excel 2: All Battery Serials & Past Outward History (.xlsx)'
+                    : 'Admin login required to download Serials & History Excel (.xlsx)'
+                }
               >
+                {!adminToken && <Lock className="w-3 h-3" />}
                 <FileSpreadsheet className="w-3.5 h-3.5" />
                 <span>Serials & History .xlsx</span>
               </button>
               <button
                 type="button"
-                onClick={handleManualSaveAndBackup}
+                onClick={() => handleManualSaveAndBackup(true)}
                 disabled={isCloudSpaceBackingUp}
                 className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 hover:text-indigo-900 cursor-pointer"
-                title="Sync & back up both Quantity and Serial History Excels (.xlsx) to Cloudinary now"
+                title={
+                  adminToken
+                    ? 'Sync & back up both Quantity and Serial History Excels (.xlsx) to Cloudinary now'
+                    : 'Admin login required to sync Excels to Cloud Space'
+                }
               >
+                {!adminToken && <Lock className="w-3 h-3" />}
                 <Cloud className="w-3.5 h-3.5" />
                 <span>{isCloudSpaceBackingUp ? 'Syncing...' : 'Sync Excels to Cloud'}</span>
               </button>
@@ -2351,6 +2453,50 @@ export default function App() {
         isOpen={isCloudModalOpen}
         onClose={() => setIsCloudModalOpen(false)}
         onDataReload={syncWithCloudBackend}
+        adminToken={adminToken}
+        onOpenAdminLogin={(reason, tab) => {
+          setIsCloudModalOpen(false);
+          openAdminPortal(reason, tab || 'backups');
+        }}
+      />
+
+      <AdminPortalModal
+        isOpen={isAdminPortalOpen}
+        onClose={() => {
+          setIsAdminPortalOpen(false);
+          setAdminPromptReason(null);
+          pendingAdminCallbackRef.current = null;
+        }}
+        adminToken={adminToken}
+        adminSession={adminSession}
+        onAuthenticated={(token, session) => {
+          setAdminToken(token);
+          setAdminSession(session);
+          setAdminPromptReason(null);
+          if (pendingAdminCallbackRef.current) {
+            const cb = pendingAdminCallbackRef.current;
+            pendingAdminCallbackRef.current = null;
+            setIsAdminPortalOpen(false);
+            cb(token);
+          }
+        }}
+        onSignedOut={() => {
+          setAdminToken(null);
+          setAdminSession(null);
+          setAdminPromptReason(null);
+          pendingAdminCallbackRef.current = null;
+          showToast('Signed out from Admin Console');
+        }}
+        promptReason={adminPromptReason}
+        initialTab={adminInitialTab}
+        onDataReload={syncWithCloudBackend}
+        currentRecord={currentRecord}
+        columns={columns}
+        serials={serials}
+        records={records}
+        transfers={transfers}
+        activeBranchId={activeBranchId}
+        onShowToast={showToast}
       />
 
       <SerialTrackerModal
@@ -2360,10 +2506,8 @@ export default function App() {
         columns={columns}
         activeBranchId={activeBranchId}
         initialStatusFilter={serialModalInitialFilter}
-        onDownloadSerialExcel={() => {
-          exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
-          showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
-        }}
+        onDownloadSerialExcel={handleDownloadSerialHistoryExcelGated}
+        isAdminAuthenticated={Boolean(adminToken)}
         onSaveSerial={async (item) => {
           const stamped: BatterySerialItem = {
             ...item,

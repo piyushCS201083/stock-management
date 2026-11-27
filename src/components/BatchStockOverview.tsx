@@ -23,6 +23,7 @@ import {
   List,
   LayoutGrid,
   FileSpreadsheet,
+  Lock,
 } from 'lucide-react';
 
 interface BatchStockOverviewProps {
@@ -41,6 +42,7 @@ interface BatchStockOverviewProps {
     initialFilter?: 'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'
   ) => void;
   onDownloadSerialExcel?: () => void;
+  isAdminAuthenticated?: boolean;
   onUpdateSerial: (item: BatterySerialItem) => void;
   onSelectSerialHistory: (item: BatterySerialItem) => void;
 }
@@ -54,6 +56,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
   onOpenAssignModal,
   onOpenSerialTrackerModal,
   onDownloadSerialExcel,
+  isAdminAuthenticated = false,
   onUpdateSerial,
   onSelectSerialHistory,
 }) => {
@@ -286,8 +289,13 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                 type="button"
                 onClick={onDownloadSerialExcel}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 transition-colors cursor-pointer"
-                title="Download Excel 2: All Battery Serial Numbers + Past/Dispatched Movement History (.xlsx)"
+                title={
+                  isAdminAuthenticated
+                    ? 'Download Excel 2: All Battery Serial Numbers + Past/Dispatched Movement History (.xlsx)'
+                    : 'Admin login required to download Serials & History Excel (.xlsx)'
+                }
               >
+                {!isAdminAuthenticated && <Lock className="w-3 h-3 text-amber-300" />}
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
                 <span>Download Serials & History Excel (.xlsx)</span>
               </button>

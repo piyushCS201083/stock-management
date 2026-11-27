@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -41,6 +42,11 @@ import {
   restoreFullDatabaseSnapshot,
   getResetEpoch,
   factoryResetAllData,
+  getAdminConfigStatus,
+  claimFirstRunAdminPassword,
+  verifyAdminPassword,
+  changeClaimedAdminPassword,
+  getBackendAnalyticsSnapshot,
 } from './server/db.ts';
 import {
   getCloudinaryStatus,
@@ -56,6 +62,97 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
+
+// Admin Session Signing Secret (ephemeral fallback if ADMIN_SESSION_SECRET is unset)
+const ADMIN_SIGNING_SECRET =
+  (process.env.ADMIN_SESSION_SECRET || '').trim() || crypto.randomBytes(32).toString('hex');
+const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const revokedTokenJtis = new Set<string>();
+
+interface AdminTokenClaims {
+  jti: string;
+  sub: string;
+  role: 'admin';
+  mode: 'env' | 'claimed';
+  iat: number;
+  exp: number;
+}
+
+function createAdminToken(sub: string, mode: 'env' | 'claimed'): { token: string; exp: number } {
+  const iat = Date.now();
+  const exp = iat + ADMIN_TOKEN_TTL_MS;
+  const payload: AdminTokenClaims = {
+    jti: crypto.randomBytes(16).toString('hex'),
+    sub,
+    role: 'admin',
+    mode,
+    iat,
+    exp,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', ADMIN_SIGNING_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+  return { token: `${payloadB64}.${sig}`, exp };
+}
+
+function verifyAdminToken(token?: string): AdminTokenClaims | null {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payloadB64, sigB64] = parts;
+  if (!payloadB64 || !sigB64) return null;
+
+  const expectedSig = crypto
+    .createHmac('sha256', ADMIN_SIGNING_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+
+  const bufA = Buffer.from(sigB64, 'utf-8');
+  const bufB = Buffer.from(expectedSig, 'utf-8');
+  if (bufA.length !== bufB.length || !crypto.timingSafeEqual(bufA, bufB)) {
+    return null;
+  }
+
+  try {
+    const claims = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as AdminTokenClaims;
+    if (!claims || claims.role !== 'admin' || !claims.exp || claims.exp < Date.now()) {
+      return null;
+    }
+    if (claims.jti && revokedTokenJtis.has(claims.jti)) {
+      return null;
+    }
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+function extractBearerToken(req: express.Request): string | undefined {
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return undefined;
+}
+
+function requireAdmin(
+  req: express.Request & { admin?: AdminTokenClaims },
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const token = extractBearerToken(req);
+  const claims = verifyAdminToken(token);
+  if (!claims) {
+    return res.status(401).json({
+      success: false,
+      error: 'Admin authentication required',
+    });
+  }
+  req.admin = claims;
+  next();
+}
 
 // Real-Time Server-Sent Events (SSE) Hub
 interface RealtimeClient {
@@ -202,6 +299,149 @@ app.get('/api/auth/verify', async (req, res) => {
       return res.status(error.status).json(error.toJSON());
     }
     res.json({ success: true, user: data.userClaims, authMode: data.authMode });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// Admin Authentication & Backend Data Analysis Routes
+// =========================================================================
+
+app.get('/api/admin/status', async (req, res) => {
+  try {
+    const configStatus = await getAdminConfigStatus();
+    const token = extractBearerToken(req);
+    const claims = verifyAdminToken(token);
+    res.json({
+      success: true,
+      configuredViaEnv: configStatus.configuredViaEnv,
+      claimed: configStatus.claimed,
+      authenticated: Boolean(claims),
+      admin: claims
+        ? {
+            label: claims.sub,
+            role: 'Admin',
+            mode: claims.mode,
+            expiresAt: new Date(claims.exp).toISOString(),
+          }
+        : null,
+      adminLabel: configStatus.adminLabel,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/claim', async (req, res) => {
+  try {
+    const { password, adminLabel } = req.body || {};
+    const status = await getAdminConfigStatus();
+    if (status.configuredViaEnv || status.claimed) {
+      return res.status(403).json({
+        success: false,
+        error: 'Admin password is already configured. Please sign in instead.',
+      });
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: 'Admin password must be at least 8 characters long.',
+      });
+    }
+
+    const claimed = await claimFirstRunAdminPassword(password, adminLabel);
+    const { token, exp } = createAdminToken(claimed.adminLabel, 'claimed');
+    res.json({
+      success: true,
+      token,
+      expiresAt: new Date(exp).toISOString(),
+      admin: {
+        label: claimed.adminLabel,
+        role: 'Admin',
+        mode: 'claimed',
+      },
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message || 'Claim failed' });
+  }
+});
+
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    const status = await getAdminConfigStatus();
+    if (!status.configuredViaEnv && !status.claimed) {
+      return res.status(409).json({
+        success: false,
+        needsClaim: true,
+        error: 'Admin password has not been set up yet. Complete first-run Admin setup first.',
+      });
+    }
+
+    const verification = await verifyAdminPassword(typeof password === 'string' ? password : '');
+    if (!verification.valid) {
+      await logAudit('ADMIN_LOGIN_FAILED', {
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid admin password.',
+      });
+    }
+
+    const mode: 'env' | 'claimed' = verification.mode === 'env' ? 'env' : 'claimed';
+    const { token, exp } = createAdminToken(verification.adminLabel, mode);
+    await logAudit('ADMIN_LOGIN_SUCCESS', {
+      mode,
+      adminLabel: verification.adminLabel,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({
+      success: true,
+      token,
+      expiresAt: new Date(exp).toISOString(),
+      admin: {
+        label: verification.adminLabel,
+        role: 'Admin',
+        mode,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/logout', requireAdmin, async (req: express.Request & { admin?: AdminTokenClaims }, res) => {
+  if (req.admin?.jti) {
+    revokedTokenJtis.add(req.admin.jti);
+    if (revokedTokenJtis.size > 1000) {
+      const oldest = revokedTokenJtis.values().next().value;
+      if (oldest) revokedTokenJtis.delete(oldest);
+    }
+  }
+  await logAudit('ADMIN_LOGOUT', { timestamp: new Date().toISOString() });
+  res.json({ success: true });
+});
+
+app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    await changeClaimedAdminPassword(currentPassword, newPassword);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
+  try {
+    const snapshot = await getBackendAnalyticsSnapshot();
+    res.json({
+      success: true,
+      data: snapshot,
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -521,8 +761,8 @@ app.delete('/api/transfers/:id', async (req, res) => {
   }
 });
 
-// Permanent Codebase & Disk + Cloud Space Backup Sync
-app.post('/api/backup-permanent', async (req, res) => {
+// Permanent Codebase & Disk + Cloud Space Backup Sync (Admin Only)
+app.post('/api/backup-permanent', requireAdmin, async (req, res) => {
   try {
     const { records, serials } = req.body || {};
     const result = await backupPermanentCodebase(records, serials);
@@ -553,7 +793,7 @@ app.get('/api/cloud/cloudinary/status', (req, res) => {
   });
 });
 
-app.get('/api/cloud/cloudinary/backups', async (req, res) => {
+app.get('/api/cloud/cloudinary/backups', requireAdmin, async (req, res) => {
   try {
     const list = await listCloudSpaceBackups();
     res.json({
@@ -565,7 +805,7 @@ app.get('/api/cloud/cloudinary/backups', async (req, res) => {
   }
 });
 
-app.post('/api/cloud/cloudinary/backup', async (req, res) => {
+app.post('/api/cloud/cloudinary/backup', requireAdmin, async (req, res) => {
   try {
     const { records, serials, reason } = req.body || {};
     const result = await triggerCloudSpaceBackupNow(
@@ -574,6 +814,11 @@ app.post('/api/cloud/cloudinary/backup', async (req, res) => {
       typeof reason === 'string' && reason.trim() ? reason.trim() : 'manual_ui',
       { archiveVersioned: true }
     );
+    await logAudit('ADMIN_CLOUD_BACKUP', {
+      reason: typeof reason === 'string' ? reason : 'manual_ui',
+      uploadedToCloudinary: result.uploadedToCloudinary,
+      timestamp: new Date().toISOString(),
+    });
     const storage = getActiveStorageTarget();
     res.json({
       ...result,
@@ -586,7 +831,7 @@ app.post('/api/cloud/cloudinary/backup', async (req, res) => {
   }
 });
 
-app.post('/api/cloud/cloudinary/restore', async (req, res) => {
+app.post('/api/cloud/cloudinary/restore', requireAdmin, async (req, res) => {
   try {
     const { source, secureUrl, fileName } = req.body || {};
     if (source !== 'cloudinary' && source !== 'local_disk') {
@@ -594,6 +839,13 @@ app.post('/api/cloud/cloudinary/restore', async (req, res) => {
     }
     const snapshot = await readCloudSpaceSnapshot({ source, secureUrl, fileName });
     const restored = await restoreFullDatabaseSnapshot(snapshot);
+    await logAudit('ADMIN_SNAPSHOT_RESTORE', {
+      source,
+      fileName: fileName || 'snapshot',
+      restoredRecords: restored.restoredRecords,
+      restoredSerials: restored.restoredSerials,
+      timestamp: new Date().toISOString(),
+    });
     broadcastRealtime('PERMANENT_SYNC_COMPLETE', restored);
     res.json({
       ...restored,
@@ -604,8 +856,8 @@ app.post('/api/cloud/cloudinary/restore', async (req, res) => {
   }
 });
 
-// Factory Reset All Stock Data, Serials, Transfers, History & Cloud Space
-app.post('/api/system/factory-reset', async (req, res) => {
+// Factory Reset All Stock Data, Serials, Transfers, History & Cloud Space (Admin Only)
+app.post('/api/system/factory-reset', requireAdmin, async (req, res) => {
   try {
     const result = await factoryResetAllData();
     broadcastRealtime('FACTORY_RESET', {
@@ -618,9 +870,10 @@ app.post('/api/system/factory-reset', async (req, res) => {
   }
 });
 
-app.get('/api/cloud/snapshot/export', async (req, res) => {
+app.get('/api/cloud/snapshot/export', requireAdmin, async (req, res) => {
   try {
     const snapshot = await exportFullDatabaseSnapshot('download');
+    await logAudit('ADMIN_SNAPSHOT_EXPORT', { timestamp: new Date().toISOString() });
     res.setHeader('Content-Type', 'application/json');
     res.setHeader(
       'Content-Disposition',
@@ -632,9 +885,10 @@ app.get('/api/cloud/snapshot/export', async (req, res) => {
   }
 });
 
-app.get('/api/cloud/excel/export', async (req, res) => {
+app.get('/api/cloud/excel/export', requireAdmin, async (req, res) => {
   try {
     const excelBuffer = await exportFullDatabaseExcelBuffer();
+    await logAudit('ADMIN_EXCEL_QUANTITY_EXPORT', { timestamp: new Date().toISOString() });
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -649,9 +903,10 @@ app.get('/api/cloud/excel/export', async (req, res) => {
   }
 });
 
-app.get('/api/cloud/excel/serials/export', async (req, res) => {
+app.get('/api/cloud/excel/serials/export', requireAdmin, async (req, res) => {
   try {
     const excelBuffer = await exportFullSerialHistoryExcelBuffer();
+    await logAudit('ADMIN_EXCEL_SERIALS_EXPORT', { timestamp: new Date().toISOString() });
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'

@@ -2,12 +2,12 @@ import React, { useState, useEffect } from 'react';
 import {
   getApiBaseUrl,
   setCustomBackendUrl,
-  checkBackendHealth,
   retestBackendConnection,
   apiListCloudinaryBackups,
   apiTriggerCloudinaryBackup,
   apiRestoreCloudinaryBackup,
   apiFactoryReset,
+  apiDownloadAdminFile,
   CloudBackupSnapshotMeta,
   BackendStatus,
 } from '../services/api';
@@ -26,18 +26,27 @@ import {
   RotateCcw,
   HardDrive,
   FileSpreadsheet,
+  Lock,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface CloudDatabaseSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onDataReload: () => void;
+  adminToken?: string | null;
+  onOpenAdminLogin?: (
+    reason: string,
+    tab?: 'analytics' | 'exports' | 'backend' | 'backups' | 'security'
+  ) => void;
 }
 
 export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProps> = ({
   isOpen,
   onClose,
   onDataReload,
+  adminToken,
+  onOpenAdminLogin,
 }) => {
   const [backendUrl, setBackendUrl] = useState('');
   const [status, setStatus] = useState<BackendStatus | null>(null);
@@ -49,19 +58,39 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
   const [backups, setBackups] = useState<CloudBackupSnapshotMeta[]>([]);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoringId, setIsRestoringId] = useState<string | null>(null);
+  const [confirmRestoreId, setConfirmRestoreId] = useState<string | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetConfirmInput, setResetConfirmInput] = useState('');
   const [isResettingAll, setIsResettingAll] = useState(false);
+  const [downloadingKind, setDownloadingKind] = useState<string | null>(null);
   const [cloudSpaceMessage, setCloudSpaceMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setBackendUrl(getApiBaseUrl());
       handleCheck();
-      loadBackups();
+      if (adminToken) {
+        loadBackups();
+      } else {
+        setBackups([]);
+      }
+      setConfirmRestoreId(null);
+      setShowResetConfirm(false);
+      setResetConfirmInput('');
     }
-  }, [isOpen]);
+  }, [isOpen, adminToken]);
 
   const loadBackups = async () => {
-    const res = await apiListCloudinaryBackups();
+    if (!adminToken) {
+      setBackups([]);
+      return;
+    }
+    const res = await apiListCloudinaryBackups(adminToken);
+    if (res.unauthorized) {
+      setBackups([]);
+      onOpenAdminLogin?.('Admin session expired. Please sign in again to manage backups.', 'backups');
+      return;
+    }
     setBackups(res.backups || []);
   };
 
@@ -77,9 +106,18 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
   };
 
   const handleTriggerCloudSpaceBackup = async () => {
+    if (!adminToken) {
+      onOpenAdminLogin?.('Sign in as Admin to upload backups to Cloud Space.', 'backups');
+      return;
+    }
     setIsBackingUp(true);
     setCloudSpaceMessage(null);
-    const res = await apiTriggerCloudinaryBackup(undefined, undefined, 'settings_modal');
+    const res = await apiTriggerCloudinaryBackup(undefined, undefined, 'settings_modal', adminToken);
+    if (res.unauthorized) {
+      onOpenAdminLogin?.('Admin session expired. Sign in again to upload backups.', 'backups');
+      setIsBackingUp(false);
+      return;
+    }
     if (res.uploadedToCloudinary) {
       setCloudSpaceMessage(
         `✓ Backed up both Quantity & Serial History Excels (.xlsx) + DB snapshot (${res.recordCount || 0} ledgers, ${res.serialCount || 0} serials) to Cloudinary (${res.cloudName})`
@@ -96,20 +134,44 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
     setIsBackingUp(false);
   };
 
+  const handleAdminDownload = async (kind: 'quantity' | 'serials' | 'snapshot', keyTag?: string) => {
+    if (!adminToken) {
+      onOpenAdminLogin?.('Sign in as Admin to download Excel workbooks and database snapshots.', 'exports');
+      return;
+    }
+    setDownloadingKind(keyTag || kind);
+    setCloudSpaceMessage(null);
+    const res = await apiDownloadAdminFile(kind, adminToken);
+    if (res.unauthorized) {
+      onOpenAdminLogin?.('Admin session expired. Sign in again to download files.', 'exports');
+    } else if (res.success) {
+      setCloudSpaceMessage(`✓ Downloaded ${res.fileName}`);
+    } else {
+      setCloudSpaceMessage(`⚠ Download failed: ${res.error || 'Unknown error'}`);
+    }
+    setDownloadingKind(null);
+  };
+
   const handleRestoreSnapshot = async (snap: CloudBackupSnapshotMeta) => {
-    if (
-      !window.confirm(
-        `Restore snapshot "${snap.fileName}" (${snap.source === 'cloudinary' ? 'Cloudinary Cloud Space' : 'Local Server Disk'})? Newer existing records will be preserved while missing/older dates will be restored.`
-      )
-    ) {
+    if (!adminToken) {
+      onOpenAdminLogin?.('Sign in as Admin to restore a database snapshot.', 'backups');
       return;
     }
     setIsRestoringId(snap.id);
-    const res = await apiRestoreCloudinaryBackup({
-      source: snap.source,
-      secureUrl: snap.secureUrl,
-      fileName: snap.fileName,
-    });
+    setConfirmRestoreId(null);
+    const res = await apiRestoreCloudinaryBackup(
+      {
+        source: snap.source,
+        secureUrl: snap.secureUrl,
+        fileName: snap.fileName,
+      },
+      adminToken
+    );
+    if (res.unauthorized) {
+      onOpenAdminLogin?.('Admin session expired. Sign in again to restore snapshots.', 'backups');
+      setIsRestoringId(null);
+      return;
+    }
     if (res.success) {
       setCloudSpaceMessage(
         `✓ Restored ${res.restoredRecords || 0} records & ${res.restoredSerials || 0} serials!`
@@ -122,17 +184,25 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
   };
 
   const handleFactoryResetAll = async () => {
-    if (
-      !window.confirm(
-        'Factory reset ALL stock records, serial numbers, chargers, vehicles, transfers, audit logs, and Cloudinary/disk backup history? Everything will restart cleanly from today with 0 stock.'
-      )
-    ) {
+    if (!adminToken) {
+      onOpenAdminLogin?.('Sign in as Admin to perform a Factory Reset.', 'security');
+      return;
+    }
+    if (resetConfirmInput.trim().toUpperCase() !== 'RESET') {
+      setCloudSpaceMessage('Type RESET to confirm Factory Reset.');
       return;
     }
     setIsResettingAll(true);
     setCloudSpaceMessage(null);
-    const res = await apiFactoryReset();
+    const res = await apiFactoryReset(adminToken);
+    if (res.unauthorized) {
+      onOpenAdminLogin?.('Admin session expired. Sign in again to run Factory Reset.', 'security');
+      setIsResettingAll(false);
+      return;
+    }
     if (res.success) {
+      setShowResetConfirm(false);
+      setResetConfirmInput('');
       setCloudSpaceMessage(
         `✓ Factory reset complete! All history cleared — starting fresh from ${res.todayIST}.`
       );
@@ -392,6 +462,27 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
               </div>
             )}
 
+            {!adminToken && (
+              <div className="p-3 rounded-lg bg-white border border-indigo-300 flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2 text-slate-700 text-[11px]">
+                  <Lock className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <span>
+                    <strong className="text-slate-900">Admin Login Required:</strong> Excel downloads, Cloudinary Cloud Space backups, and snapshot restore are restricted to Admin.
+                  </span>
+                </div>
+                {onOpenAdminLogin && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenAdminLogin('Sign in as Admin to access Excel exports and Cloud Space backups.', 'backups')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-md cursor-pointer shrink-0"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Sign in as Admin</span>
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
@@ -399,33 +490,43 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                 disabled={isBackingUp}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer shadow-2xs"
               >
+                {!adminToken && <Lock className="w-3 h-3" />}
                 <Upload className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-bounce' : ''}`} />
                 <span>{isBackingUp ? 'Backing up Excel + DB...' : 'Backup Excel + DB to Cloudinary'}</span>
               </button>
 
-              <a
-                href={`${getApiBaseUrl()}/api/cloud/excel/export`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors cursor-pointer"
+              <button
+                type="button"
+                onClick={() => handleAdminDownload('quantity')}
+                disabled={downloadingKind === 'quantity'}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
               >
+                {!adminToken && <Lock className="w-3 h-3 text-emerald-700" />}
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Quantity Excel (.xlsx)</span>
-              </a>
+                <span>{downloadingKind === 'quantity' ? 'Downloading...' : 'Quantity Excel (.xlsx)'}</span>
+              </button>
 
-              <a
-                href={`${getApiBaseUrl()}/api/cloud/excel/serials/export`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-300 rounded-lg transition-colors cursor-pointer"
+              <button
+                type="button"
+                onClick={() => handleAdminDownload('serials')}
+                disabled={downloadingKind === 'serials'}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-300 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
               >
+                {!adminToken && <Lock className="w-3 h-3 text-blue-700" />}
                 <FileSpreadsheet className="w-3.5 h-3.5 text-blue-700" />
-                <span>Serials & History Excel (.xlsx)</span>
-              </a>
+                <span>{downloadingKind === 'serials' ? 'Downloading...' : 'Serials & History Excel (.xlsx)'}</span>
+              </button>
 
-              <a
-                href={`${getApiBaseUrl()}/api/cloud/snapshot/export`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors cursor-pointer"
+              <button
+                type="button"
+                onClick={() => handleAdminDownload('snapshot')}
+                disabled={downloadingKind === 'snapshot'}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
               >
+                {!adminToken && <Lock className="w-3 h-3 text-slate-600" />}
                 <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>Download JSON (.json)</span>
-              </a>
+                <span>{downloadingKind === 'snapshot' ? 'Downloading...' : 'Download JSON (.json)'}</span>
+              </button>
             </div>
 
             {cloudSpaceMessage && (
@@ -434,14 +535,15 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
               </div>
             )}
 
-            {backups.length > 0 && (
+            {adminToken && backups.length > 0 && (
               <div className="space-y-1.5 pt-1">
                 <span className="text-[11px] font-bold text-slate-700 block">
                   Recent Cloudinary & Disk Backups ({backups.length}):
                 </span>
-                <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
                   {backups.slice(0, 12).map((snap) => {
                     const isExcel = snap.format === 'xlsx' || snap.fileName.endsWith('.xlsx');
+                    const isConfirming = confirmRestoreId === snap.id;
                     return (
                       <div
                         key={snap.id}
@@ -472,25 +574,41 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                           </div>
                         </div>
                         {isExcel ? (
-                          <a
-                            href={
-                              snap.source === 'cloudinary' && snap.secureUrl
-                                ? snap.secureUrl
-                                : snap.fileName.includes('serial')
-                                ? `${getApiBaseUrl()}/api/cloud/excel/serials/export`
-                                : `${getApiBaseUrl()}/api/cloud/excel/export`
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleAdminDownload(
+                                snap.fileName.includes('serial') ? 'serials' : 'quantity',
+                                snap.id
+                              )
                             }
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded cursor-pointer shrink-0"
+                            disabled={downloadingKind === snap.id}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded cursor-pointer shrink-0 disabled:opacity-60"
                           >
                             <Download className="w-3 h-3" />
-                            <span>Download .xlsx</span>
-                          </a>
+                            <span>{downloadingKind === snap.id ? 'Fetching...' : 'Download .xlsx'}</span>
+                          </button>
+                        ) : isConfirming ? (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleRestoreSnapshot(snap)}
+                              className="px-2 py-0.5 text-[10px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded cursor-pointer"
+                            >
+                              Confirm Restore
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmRestoreId(null)}
+                              className="px-2 py-0.5 text-[10px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleRestoreSnapshot(snap)}
+                            onClick={() => setConfirmRestoreId(snap.id)}
                             disabled={isRestoringId === snap.id}
                             className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded cursor-pointer shrink-0"
                           >
@@ -514,19 +632,67 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                   Factory Reset All Data & History
                 </span>
                 <span className="text-[11px] text-rose-800 block">
-                  Wipes all prior battery/charger/vehicle records, serial history, transfers, and old backups so you can feed fresh data from today onwards.
+                  Wipes all prior battery/charger/vehicle records, serial history, transfers, and old backups so you can feed fresh data from today onwards. Admin login only.
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={handleFactoryResetAll}
-                disabled={isResettingAll}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer shrink-0 shadow-2xs"
-              >
-                <RotateCcw className={`w-3.5 h-3.5 ${isResettingAll ? 'animate-spin' : ''}`} />
-                <span>{isResettingAll ? 'Resetting...' : 'Factory Reset Everything'}</span>
-              </button>
+              {!adminToken ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenAdminLogin?.('Sign in as Admin to access Factory Reset controls.', 'security')
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-900 bg-white hover:bg-rose-100 border border-rose-300 rounded-lg transition-colors cursor-pointer shrink-0"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Admin Sign-In Required</span>
+                </button>
+              ) : !showResetConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(true)}
+                  disabled={isResettingAll}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer shrink-0 shadow-2xs"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${isResettingAll ? 'animate-spin' : ''}`} />
+                  <span>{isResettingAll ? 'Resetting...' : 'Factory Reset Everything'}</span>
+                </button>
+              ) : null}
             </div>
+
+            {adminToken && showResetConfirm && (
+              <div className="p-3 bg-white border border-rose-300 rounded-lg space-y-2">
+                <p className="text-[11px] font-semibold text-rose-950">
+                  Type <code className="px-1.5 py-0.5 rounded bg-rose-100 font-mono">RESET</code> to permanently wipe all stock records, serials, transfers, and backup history:
+                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    type="text"
+                    value={resetConfirmInput}
+                    onChange={(e) => setResetConfirmInput(e.target.value)}
+                    placeholder="Type RESET"
+                    className="px-2.5 py-1.5 border border-rose-300 rounded-md font-mono text-xs uppercase bg-rose-50/40 focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleFactoryResetAll}
+                    disabled={isResettingAll || resetConfirmInput.trim().toUpperCase() !== 'RESET'}
+                    className="px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 rounded-md cursor-pointer"
+                  >
+                    {isResettingAll ? 'Resetting...' : 'Confirm Wipe'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowResetConfirm(false);
+                      setResetConfirmInput('');
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Backend URL Configuration for Render & Vercel */}

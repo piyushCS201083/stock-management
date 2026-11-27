@@ -19,6 +19,7 @@ import {
   X,
   FileSpreadsheet,
   Camera,
+  Lock,
 } from 'lucide-react';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
 
@@ -31,6 +32,7 @@ interface SerialTrackerModalProps {
   onSaveSerial: (item: BatterySerialItem) => void;
   initialStatusFilter?: 'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby';
   onDownloadSerialExcel?: () => void;
+  isAdminAuthenticated?: boolean;
 }
 
 export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
@@ -42,6 +44,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   onSaveSerial,
   initialStatusFilter = 'all',
   onDownloadSerialExcel,
+  isAdminAuthenticated = false,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'>(initialStatusFilter);
@@ -245,8 +248,13 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                 type="button"
                 onClick={onDownloadSerialExcel}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors cursor-pointer shadow-xs"
-                title="Download Excel 2 containing all serial numbers in stock and past outward history"
+                title={
+                  isAdminAuthenticated
+                    ? 'Download Excel 2 containing all serial numbers in stock and past outward history'
+                    : 'Admin login required to download Serials & History Excel (.xlsx)'
+                }
               >
+                {!isAdminAuthenticated && <Lock className="w-3 h-3" />}
                 <FileSpreadsheet className="w-3.5 h-3.5" />
                 <span>Download Serials & History Excel (.xlsx)</span>
               </button>

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import pg from 'pg';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -21,12 +22,14 @@ import {
   DEFAULT_BRANCH_ID,
   DEFAULT_TEAM_MEMBERS,
   getBatteryRecordKey,
+  parseBatteryRecordKey,
 } from '../src/types/stock.ts';
 import {
   uploadSnapshotToCloudSpace,
   purgeAndResetCloudSpace,
   getCloudinaryConfig,
   getCloudinaryStatus,
+  listCloudSpaceBackups,
   type CloudinaryBackupResult,
 } from './cloudinary.ts';
 import {
@@ -35,6 +38,14 @@ import {
 } from './excelBuilder.ts';
 
 const { Pool } = pg;
+
+export interface AdminCredentialsRecord {
+  passwordHash: string;
+  salt: string;
+  adminLabel: string;
+  claimedAt: string;
+  updatedAt?: string;
+}
 
 interface DatabaseState {
   records: Record<string, DayRecord>;
@@ -45,6 +56,7 @@ interface DatabaseState {
   vehicleRecords?: Record<string, any>;
   branchTransfers?: BranchTransfer[];
   resetEpoch?: string;
+  adminCredentials?: AdminCredentialsRecord;
   logs: any[];
 }
 
@@ -2244,6 +2256,8 @@ export async function factoryResetAllData(): Promise<{
     freshRecords[getBatteryRecordKey(branch.id, todayIST)] = rec;
   }
 
+  const prevLocal = readLocalFile();
+
   const freshState: DatabaseState = {
     records: freshRecords,
     columns: DEFAULT_BATTERY_COLUMNS,
@@ -2253,6 +2267,7 @@ export async function factoryResetAllData(): Promise<{
     vehicleRecords: {},
     branchTransfers: [],
     resetEpoch,
+    adminCredentials: prevLocal.adminCredentials,
     logs: [
       {
         action: 'FACTORY_RESET',
@@ -2397,3 +2412,770 @@ export async function factoryResetAllData(): Promise<{
     cloudSpace,
   };
 }
+
+// =========================================================================
+// Admin Authentication Credentials (scrypt + env ADMIN_PASSCODE override)
+// =========================================================================
+
+function hashPasswordWithScrypt(password: string, saltHex: string): string {
+  return crypto.scryptSync(password, saltHex, 64).toString('hex');
+}
+
+function constantTimeCompareStrings(a: string, b: string): boolean {
+  const hashA = crypto.createHash('sha256').update(a).digest();
+  const hashB = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+async function getStoredAdminCredentials(): Promise<AdminCredentialsRecord | null> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query(
+        "SELECT data FROM battery_metadata WHERE key = 'admin_credentials'"
+      );
+      if (res.rows.length > 0 && res.rows[0].data) {
+        const parsed =
+          typeof res.rows[0].data === 'string'
+            ? JSON.parse(res.rows[0].data)
+            : res.rows[0].data;
+        if (parsed?.passwordHash && parsed?.salt) return parsed as AdminCredentialsRecord;
+      }
+    } catch (err) {
+      console.error('[DBMS] PG getStoredAdminCredentials error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'admin_credentials')
+        .maybeSingle();
+      if (!error && data?.data) {
+        const parsed = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+        if (parsed?.passwordHash && parsed?.salt) return parsed as AdminCredentialsRecord;
+      }
+    } catch (err) {
+      console.error('[DBMS] Supabase getStoredAdminCredentials error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  if (local.adminCredentials?.passwordHash && local.adminCredentials?.salt) {
+    return local.adminCredentials;
+  }
+  return null;
+}
+
+async function persistAdminCredentials(creds: AdminCredentialsRecord): Promise<void> {
+  mirrorToLocalFile((local) => {
+    local.adminCredentials = creds;
+  });
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO battery_metadata (key, data, updated_at)
+         VALUES ('admin_credentials', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
+        [JSON.stringify(creds)]
+      );
+    } catch (err) {
+      console.error('[DBMS] PG persistAdminCredentials error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'admin_credentials',
+          data: creds,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+    } catch (err) {
+      console.error('[DBMS] Supabase persistAdminCredentials error:', err);
+    }
+  }
+}
+
+export async function getAdminConfigStatus(): Promise<{
+  configuredViaEnv: boolean;
+  claimed: boolean;
+  adminLabel: string;
+}> {
+  const envPasscode = cleanEnvValue(process.env.ADMIN_PASSCODE);
+  if (envPasscode) {
+    return {
+      configuredViaEnv: true,
+      claimed: true,
+      adminLabel: 'Owner & Admin (Environment Secret)',
+    };
+  }
+  const stored = await getStoredAdminCredentials();
+  return {
+    configuredViaEnv: false,
+    claimed: Boolean(stored?.passwordHash),
+    adminLabel: stored?.adminLabel || 'Piyush Shivhare (Owner & Admin)',
+  };
+}
+
+export async function claimFirstRunAdminPassword(
+  password: string,
+  adminLabel?: string
+): Promise<{ success: boolean; adminLabel: string }> {
+  const envPasscode = cleanEnvValue(process.env.ADMIN_PASSCODE);
+  if (envPasscode) {
+    throw new Error('Admin password is already managed via ADMIN_PASSCODE environment secret');
+  }
+  const existing = await getStoredAdminCredentials();
+  if (existing?.passwordHash) {
+    throw new Error('Admin password has already been claimed');
+  }
+  if (typeof password !== 'string' || password.length < 8) {
+    throw new Error('Admin password must be at least 8 characters long');
+  }
+
+  const salt = crypto.randomBytes(16).toString('hex');
+  const passwordHash = hashPasswordWithScrypt(password, salt);
+  const label =
+    typeof adminLabel === 'string' && adminLabel.trim()
+      ? adminLabel.trim().slice(0, 80)
+      : 'Piyush Shivhare (Owner & Admin)';
+
+  const creds: AdminCredentialsRecord = {
+    passwordHash,
+    salt,
+    adminLabel: label,
+    claimedAt: new Date().toISOString(),
+  };
+
+  await persistAdminCredentials(creds);
+  await logAudit('ADMIN_PASSWORD_CLAIMED', {
+    adminLabel: label,
+    claimedAt: creds.claimedAt,
+  });
+
+  return { success: true, adminLabel: label };
+}
+
+export async function verifyAdminPassword(password: string): Promise<{
+  valid: boolean;
+  mode: 'env' | 'claimed' | 'unclaimed';
+  adminLabel: string;
+}> {
+  if (typeof password !== 'string' || !password) {
+    return { valid: false, mode: 'unclaimed', adminLabel: 'Owner & Admin' };
+  }
+
+  const envPasscode = cleanEnvValue(process.env.ADMIN_PASSCODE);
+  if (envPasscode) {
+    const valid = constantTimeCompareStrings(password, envPasscode);
+    return {
+      valid,
+      mode: 'env',
+      adminLabel: 'Owner & Admin (Secret)',
+    };
+  }
+
+  const stored = await getStoredAdminCredentials();
+  if (!stored?.passwordHash || !stored?.salt) {
+    return { valid: false, mode: 'unclaimed', adminLabel: 'Owner & Admin' };
+  }
+
+  const computedHash = hashPasswordWithScrypt(password, stored.salt);
+  const hashBufA = Buffer.from(computedHash, 'hex');
+  const hashBufB = Buffer.from(stored.passwordHash, 'hex');
+  const valid =
+    hashBufA.length === hashBufB.length && crypto.timingSafeEqual(hashBufA, hashBufB);
+
+  return {
+    valid,
+    mode: 'claimed',
+    adminLabel: stored.adminLabel || 'Owner & Admin',
+  };
+}
+
+export async function changeClaimedAdminPassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<{ success: boolean }> {
+  const envPasscode = cleanEnvValue(process.env.ADMIN_PASSCODE);
+  if (envPasscode) {
+    throw new Error('Cannot change password here while ADMIN_PASSCODE environment secret is active');
+  }
+  const check = await verifyAdminPassword(currentPassword);
+  if (!check.valid) {
+    throw new Error('Current admin password is incorrect');
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < 8) {
+    throw new Error('New admin password must be at least 8 characters long');
+  }
+  const existing = await getStoredAdminCredentials();
+  const salt = crypto.randomBytes(16).toString('hex');
+  const passwordHash = hashPasswordWithScrypt(newPassword, salt);
+  await persistAdminCredentials({
+    passwordHash,
+    salt,
+    adminLabel: existing?.adminLabel || 'Piyush Shivhare (Owner & Admin)',
+    claimedAt: existing?.claimedAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  await logAudit('ADMIN_PASSWORD_CHANGED', { timestamp: new Date().toISOString() });
+  return { success: true };
+}
+
+// =========================================================================
+// Audit Logs & Full Backend Data Analysis Engine
+// =========================================================================
+
+export async function getAuditLogs(limit = 50): Promise<
+  Array<{ id?: number | string; action: string; details?: any; timestamp: string }>
+> {
+  const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query(
+        'SELECT id, action, details, created_at FROM audit_logs ORDER BY created_at DESC LIMIT $1',
+        [safeLimit]
+      );
+      return res.rows.map((r) => ({
+        id: r.id,
+        action: r.action,
+        details: typeof r.details === 'string' ? JSON.parse(r.details) : r.details,
+        timestamp:
+          r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      }));
+    } catch (err) {
+      console.error('[DBMS] PG getAuditLogs error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('audit_logs')
+        .select('id, action, details, created_at')
+        .order('created_at', { ascending: false })
+        .limit(safeLimit);
+      if (!error && Array.isArray(data)) {
+        return data.map((r: any) => ({
+          id: r.id,
+          action: r.action,
+          details: typeof r.details === 'string' ? JSON.parse(r.details) : r.details,
+          timestamp: r.created_at,
+        }));
+      }
+    } catch (err) {
+      console.error('[DBMS] Supabase getAuditLogs error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  return (local.logs || []).slice(0, safeLimit).map((l: any, idx: number) => ({
+    id: `local_${idx}`,
+    action: l.action || 'LOG',
+    details: l.details || l.date || undefined,
+    timestamp: l.timestamp || new Date().toISOString(),
+  }));
+}
+
+function toIsoDateServer(ddmmyyyy?: string): string {
+  if (!ddmmyyyy) return '';
+  const parts = String(ddmmyyyy).split('-');
+  if (parts.length !== 3) return String(ddmmyyyy);
+  return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+}
+
+export async function getBackendAnalyticsSnapshot() {
+  const [
+    records,
+    columns,
+    teamMembers,
+    serialsMap,
+    chargerRecords,
+    vehicleRecords,
+    branchTransfers,
+    auditLogs,
+    cloudBackups,
+  ] = await Promise.all([
+    getAllRecords(),
+    getColumns(),
+    getTeamMembers(),
+    getAllSerials(),
+    getChargerRecords(),
+    getVehicleRecords(),
+    getBranchTransfers(),
+    getAuditLogs(50),
+    listCloudSpaceBackups().catch(() => ({
+      cloudinaryConfigured: false,
+      backups: [],
+    })),
+  ]);
+
+  const dbStatus = getDbStatus();
+  const serialList = Object.values(serialsMap);
+  const allCols = columns.length > 0 ? columns : DEFAULT_BATTERY_COLUMNS;
+
+  let localDbBytes = 0;
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      localDbBytes = fs.statSync(DATA_FILE).size;
+    }
+  } catch {}
+
+  const serialStatusCounts = {
+    in_stock: 0,
+    dispatched: 0,
+    in_repair: 0,
+    service_standby: 0,
+  };
+  serialList.forEach((s) => {
+    if (s.status === 'in_stock') serialStatusCounts.in_stock += 1;
+    else if (s.status === 'dispatched') serialStatusCounts.dispatched += 1;
+    else if (s.status === 'in_repair') serialStatusCounts.in_repair += 1;
+    else if (s.status === 'service_standby') serialStatusCounts.service_standby += 1;
+  });
+
+  // Group records by branch
+  const recordsByBranch = new Map<string, DayRecord[]>();
+  BRANCHES.forEach((b) => recordsByBranch.set(b.id, []));
+
+  Object.entries(records).forEach(([key, rec]) => {
+    if (!rec || !rec.date) return;
+    const parsed = parseBatteryRecordKey(key);
+    const branchId = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    const list = recordsByBranch.get(branchId) || [];
+    list.push({ ...rec, branchId });
+    recordsByBranch.set(branchId, list);
+  });
+
+  // Helper to compute totals for one record (mirrors calculateRecordTotals)
+  const computeTotals = (rec: DayRecord) => {
+    let open = 0;
+    let inQty = 0;
+    let outQty = 0;
+    let close = 0;
+    const closingByCol: Record<string, number> = {};
+    allCols.forEach((col) => {
+      const o = Number(rec.stock?.[col.id] || 0);
+      const i = Number(rec.inStock?.[col.id] || 0);
+      const ou = Number(rec.outStock?.[col.id] || 0);
+      const c = o + i + ou;
+      closingByCol[col.id] = c;
+      open += o;
+      inQty += i;
+      outQty += ou;
+      close += c;
+    });
+    const rOpen = Number(rec.stock?.['repair'] || 0);
+    const rIn = Number(rec.inStock?.['repair'] || 0);
+    const rOut = Number(rec.outStock?.['repair'] || 0);
+    const rClose = rOpen + rIn + rOut;
+    closingByCol['repair'] = rClose;
+
+    const sOpen = Number(rec.stock?.['service'] || 0);
+    const sIn = Number(rec.inStock?.['service'] || 0);
+    const sOut = Number(rec.outStock?.['service'] || 0);
+    const sClose = sOpen + sIn + sOut;
+    closingByCol['service'] = sClose;
+
+    return {
+      open,
+      inQty,
+      outQty,
+      close,
+      repairIn: rIn,
+      repairOut: rOut,
+      repairClose: rClose,
+      serviceIn: sIn,
+      serviceOut: sOut,
+      serviceClose: sClose,
+      closingByCol,
+    };
+  };
+
+  // Compute Charger & Vehicle closing totals per branch (from latest composite key per branch)
+  const computeSecondaryLatest = (mapObj: Record<string, any>) => {
+    const latestByBranch = new Map<string, { iso: string; totalClosing: number; entries: number }>();
+    Object.values(mapObj || {}).forEach((entry: any) => {
+      if (!entry || !entry.branchId) return;
+      const iso = toIsoDateServer(entry.date);
+      const items = entry.items || {};
+      let sum = 0;
+      Object.values(items).forEach((row: any) => {
+        if (row && typeof row === 'object') {
+          const closing =
+            Number(row.opening || 0) + Number(row.in || 0) + Number(row.out || 0);
+          sum += Math.max(0, closing);
+        } else if (typeof row === 'number') {
+          sum += Math.max(0, row);
+        }
+      });
+      const prev = latestByBranch.get(entry.branchId);
+      if (!prev || iso >= prev.iso) {
+        latestByBranch.set(entry.branchId, {
+          iso,
+          totalClosing: sum,
+          entries: (prev?.entries || 0) + 1,
+        });
+      } else {
+        prev.entries += 1;
+      }
+    });
+    return latestByBranch;
+  };
+
+  const chargerLatestByBranch = computeSecondaryLatest(chargerRecords);
+  const vehicleLatestByBranch = computeSecondaryLatest(vehicleRecords);
+
+  // Per-branch analytics + overview totals
+  let totalStandardClosing = 0;
+  let totalRepairClosing = 0;
+  let totalServiceClosing = 0;
+  let cumulativeInward = 0;
+  let cumulativeOutward = 0;
+  let totalUnserializedGap = 0;
+  let activeBranchesWithData = 0;
+
+  const latestRecordByBranch = new Map<string, { rec: DayRecord; totals: ReturnType<typeof computeTotals> }>();
+
+  const branchAnalytics = BRANCHES.map((branch) => {
+    const recs = (recordsByBranch.get(branch.id) || []).sort((a, b) =>
+      toIsoDateServer(a.date).localeCompare(toIsoDateServer(b.date))
+    );
+    if (recs.length > 0) activeBranchesWithData += 1;
+
+    let branchCumIn = 0;
+    let branchCumOut = 0;
+    recs.forEach((r) => {
+      const t = computeTotals(r);
+      branchCumIn += t.inQty + t.repairIn + t.serviceIn;
+      branchCumOut += Math.abs(t.outQty) + Math.abs(t.repairOut) + Math.abs(t.serviceOut);
+    });
+
+    cumulativeInward += branchCumIn;
+    cumulativeOutward += branchCumOut;
+
+    const latestRec = recs.length > 0 ? recs[recs.length - 1] : null;
+    const latestTotals = latestRec ? computeTotals(latestRec) : null;
+
+    if (latestRec && latestTotals) {
+      latestRecordByBranch.set(branch.id, { rec: latestRec, totals: latestTotals });
+      totalStandardClosing += latestTotals.close;
+      totalRepairClosing += latestTotals.repairClose;
+      totalServiceClosing += latestTotals.serviceClose;
+    }
+
+    const branchSerials = serialList.filter(
+      (s) => (s.branchId || DEFAULT_BRANCH_ID) === branch.id
+    );
+    const sInStock = branchSerials.filter((s) => s.status === 'in_stock').length;
+    const sDispatched = branchSerials.filter((s) => s.status === 'dispatched').length;
+    const sInRepair = branchSerials.filter((s) => s.status === 'in_repair').length;
+    const sStandby = branchSerials.filter((s) => s.status === 'service_standby').length;
+
+    const branchPhysicalTotal =
+      (latestTotals?.close || 0) +
+      (latestTotals?.repairClose || 0) +
+      (latestTotals?.serviceClose || 0);
+    const branchTrackedAvailable = sInStock + sInRepair + sStandby;
+    const unserializedGap = Math.max(0, branchPhysicalTotal - branchTrackedAvailable);
+    totalUnserializedGap += unserializedGap;
+
+    const incomingPending = branchTransfers.filter(
+      (t) => t.toBranchId === branch.id && t.status !== 'received'
+    );
+    const incomingPendingUnits = incomingPending.reduce(
+      (sum, t) =>
+        sum +
+        (t.items || [])
+          .filter((it) => !it.received)
+          .reduce((s2, it) => s2 + (it.quantity || 0), 0),
+      0
+    );
+    const outgoingTransfersCount = branchTransfers.filter(
+      (t) => t.fromBranchId === branch.id
+    ).length;
+
+    return {
+      branchId: branch.id,
+      branchNumber: branch.number,
+      branchName: branch.name,
+      shortName: branch.shortName,
+      code: branch.code,
+      ledgerDaysCount: recs.length,
+      firstDate: recs[0]?.date || null,
+      latestDate: latestRec?.date || null,
+      lastModified: latestRec?.lastModified || null,
+      latestOpening: latestTotals?.open || 0,
+      latestIn: latestTotals?.inQty || 0,
+      latestOut: latestTotals?.outQty || 0,
+      latestClosing: latestTotals?.close || 0,
+      latestRepairClosing: latestTotals?.repairClose || 0,
+      latestServiceClosing: latestTotals?.serviceClose || 0,
+      cumulativeIn: branchCumIn,
+      cumulativeOut: branchCumOut,
+      serialsInStock: sInStock,
+      serialsDispatched: sDispatched,
+      serialsInRepair: sInRepair,
+      serialsServiceStandby: sStandby,
+      serialsTotal: branchSerials.length,
+      unserializedGap,
+      incomingPendingTransfers: incomingPending.length,
+      incomingPendingUnits,
+      outgoingTransfersCount,
+      chargerClosingTotal: chargerLatestByBranch.get(branch.id)?.totalClosing || 0,
+      vehicleClosingTotal: vehicleLatestByBranch.get(branch.id)?.totalClosing || 0,
+    };
+  });
+
+  // Model-wise analytics across all 5 branches
+  const modelCatalog: Array<{ id: string; name: string; isSpecial: boolean }> = [
+    ...allCols.map((c) => ({ id: c.id, name: c.name, isSpecial: false })),
+    { id: 'repair', name: 'OLD BATTERY FOR REPAIR', isSpecial: true },
+    { id: 'service', name: 'SERVICE BATTERY', isSpecial: true },
+  ];
+
+  const modelAnalytics = modelCatalog.map((model) => {
+    let currentClosingQty = 0;
+    const branchStockBreakdown: Record<string, number> = {};
+
+    BRANCHES.forEach((b) => {
+      const latest = latestRecordByBranch.get(b.id);
+      const qty = latest ? Number(latest.totals.closingByCol[model.id] || 0) : 0;
+      branchStockBreakdown[b.id] = qty;
+      currentClosingQty += qty;
+    });
+
+    let cumulativeInQty = 0;
+    let cumulativeOutQty = 0;
+    Object.values(records).forEach((rec) => {
+      if (!rec) return;
+      cumulativeInQty += Number(rec.inStock?.[model.id] || 0);
+      cumulativeOutQty += Math.abs(Number(rec.outStock?.[model.id] || 0));
+    });
+
+    const matchingSerials = serialList.filter(
+      (s) =>
+        s.modelId === model.id ||
+        s.modelName === model.name ||
+        s.batchNo === model.name ||
+        (model.id === 'service' && s.modelName.toUpperCase().includes('SERVICE'))
+    );
+    const inStockSerials = matchingSerials.filter((s) => s.status === 'in_stock').length;
+    const dispatchedSerials = matchingSerials.filter((s) => s.status === 'dispatched').length;
+    const inRepairSerials = matchingSerials.filter((s) => s.status === 'in_repair').length;
+    const serviceStandbySerials = matchingSerials.filter(
+      (s) => s.status === 'service_standby'
+    ).length;
+
+    const trackedAvailable =
+      model.id === 'repair'
+        ? inStockSerials + inRepairSerials
+        : model.id === 'service'
+        ? inStockSerials + serviceStandbySerials
+        : inStockSerials;
+
+    const unserializedGap = Math.max(0, currentClosingQty - trackedAvailable);
+    const stockStatus: 'healthy' | 'low' | 'empty' =
+      currentClosingQty <= 0 ? 'empty' : currentClosingQty <= 2 ? 'low' : 'healthy';
+
+    return {
+      modelId: model.id,
+      modelName: model.name,
+      isSpecial: model.isSpecial,
+      currentClosingQty,
+      cumulativeInQty,
+      cumulativeOutQty,
+      branchStockBreakdown,
+      inStockSerials,
+      dispatchedSerials,
+      inRepairSerials,
+      serviceStandbySerials,
+      totalSerials: matchingSerials.length,
+      unserializedGap,
+      stockStatus,
+    };
+  });
+
+  // Daily activity trend across all branches (chronological, last 30 active days)
+  const dailyMap = new Map<
+    string,
+    {
+      date: string;
+      isoDate: string;
+      totalIn: number;
+      totalOut: number;
+      closingBalance: number;
+      branches: Set<string>;
+    }
+  >();
+
+  Object.entries(records).forEach(([key, rec]) => {
+    if (!rec || !rec.date) return;
+    const parsed = parseBatteryRecordKey(key);
+    const branchId = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    const isoDate = toIsoDateServer(rec.date);
+    const t = computeTotals(rec);
+    const existing = dailyMap.get(rec.date) || {
+      date: rec.date,
+      isoDate,
+      totalIn: 0,
+      totalOut: 0,
+      closingBalance: 0,
+      branches: new Set<string>(),
+    };
+    existing.totalIn += t.inQty + t.repairIn + t.serviceIn;
+    existing.totalOut += Math.abs(t.outQty) + Math.abs(t.repairOut) + Math.abs(t.serviceOut);
+    existing.closingBalance += t.close + t.repairClose + t.serviceClose;
+    existing.branches.add(branchId);
+    dailyMap.set(rec.date, existing);
+  });
+
+  const dailyTrend = Array.from(dailyMap.values())
+    .sort((a, b) => a.isoDate.localeCompare(b.isoDate))
+    .slice(-30)
+    .map((d) => ({
+      date: d.date,
+      isoDate: d.isoDate,
+      totalIn: d.totalIn,
+      totalOut: d.totalOut,
+      closingBalance: d.closingBalance,
+      activeBranchesCount: d.branches.size,
+    }));
+
+  // Partner / Customer / Dealer analysis + Recent Serial Movements
+  const partnerMap = new Map<
+    string,
+    { name: string; inCount: number; outCount: number; totalMovements: number }
+  >();
+  const recentMovements: Array<{
+    serialNo: string;
+    modelName: string;
+    type: string;
+    date: string;
+    branchId: string;
+    branchName: string;
+    partner?: string;
+    cause?: string;
+    timestamp: string;
+  }> = [];
+
+  serialList.forEach((s) => {
+    const bId = s.branchId || DEFAULT_BRANCH_ID;
+    const branchName = BRANCHES.find((b) => b.id === bId)?.shortName || bId;
+    (s.history || []).forEach((evt) => {
+      const evtBranchId = evt.branchId || bId;
+      const evtBranchName =
+        BRANCHES.find((b) => b.id === evtBranchId)?.shortName || branchName;
+      recentMovements.push({
+        serialNo: s.serialNo,
+        modelName: s.modelName,
+        type: evt.type,
+        date: evt.date,
+        branchId: evtBranchId,
+        branchName: evtBranchName,
+        partner: evt.partner || evt.vehicleOrLocation,
+        cause: evt.cause,
+        timestamp: evt.timestamp,
+      });
+
+      const partnerKey = (evt.partner || evt.vehicleOrLocation || '').trim();
+      if (partnerKey) {
+        const cur = partnerMap.get(partnerKey.toLowerCase()) || {
+          name: partnerKey,
+          inCount: 0,
+          outCount: 0,
+          totalMovements: 0,
+        };
+        if (evt.type === 'out' || evt.type === 'repair_out') cur.outCount += 1;
+        else cur.inCount += 1;
+        cur.totalMovements += 1;
+        partnerMap.set(partnerKey.toLowerCase(), cur);
+      }
+    });
+  });
+
+  recentMovements.sort((a, b) => parseTs(b.timestamp) - parseTs(a.timestamp));
+
+  const topPartners = Array.from(partnerMap.values())
+    .sort((a, b) => b.totalMovements - a.totalMovements)
+    .slice(0, 15);
+
+  const transfersSummary = {
+    total: branchTransfers.length,
+    pending: branchTransfers.filter((t) => t.status === 'pending').length,
+    partial: branchTransfers.filter((t) => t.status === 'partial').length,
+    received: branchTransfers.filter((t) => t.status === 'received').length,
+    pendingUnits: branchTransfers
+      .filter((t) => t.status !== 'received')
+      .reduce(
+        (sum, t) =>
+          sum +
+          (t.items || [])
+            .filter((it) => !it.received)
+            .reduce((s2, it) => s2 + (it.quantity || 0), 0),
+        0
+      ),
+  };
+
+  let totalChargerModelsLatest = 0;
+  chargerLatestByBranch.forEach((v) => {
+    totalChargerModelsLatest += v.totalClosing;
+  });
+  let totalVehicleModelsLatest = 0;
+  vehicleLatestByBranch.forEach((v) => {
+    totalVehicleModelsLatest += v.totalClosing;
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    todayIST: getIndianTodayDateServer(),
+    dbStatus,
+    overview: {
+      totalLedgers: Object.keys(records).length,
+      activeBranchesWithData,
+      totalStandardClosing,
+      totalRepairClosing,
+      totalServiceClosing,
+      totalGrandBatteryClosing:
+        totalStandardClosing + totalRepairClosing + totalServiceClosing,
+      cumulativeInward,
+      cumulativeOutward,
+      totalTrackedSerials: serialList.length,
+      serialStatusCounts,
+      totalUnserializedGap,
+      totalChargerModelsLatest,
+      totalVehicleModelsLatest,
+      transfersSummary,
+      teamCount: teamMembers.length,
+      auditLogCount: auditLogs.length,
+    },
+    branchAnalytics,
+    modelAnalytics,
+    dailyTrend,
+    topPartners,
+    recentMovements: recentMovements.slice(0, 60),
+    recentTransfers: branchTransfers.slice(0, 30),
+    auditLogs,
+    rawBackendSummary: {
+      recordsCount: Object.keys(records).length,
+      serialsCount: serialList.length,
+      chargersCount: Object.keys(chargerRecords).length,
+      vehiclesCount: Object.keys(vehicleRecords).length,
+      transfersCount: branchTransfers.length,
+      columnsCount: allCols.length,
+      teamMembersCount: teamMembers.length,
+      localDbBytes,
+      cloudinaryBackupsCount: cloudBackups.backups?.length || 0,
+      columns: allCols,
+      teamMembers,
+    },
+  };
+}
+
