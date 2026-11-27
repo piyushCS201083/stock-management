@@ -15,6 +15,7 @@ import {
   loadTeamMembers as loadLocalTeamMembers,
   saveTeamMembers as saveLocalTeamMembers,
   mergeRecordsByTimestamp,
+  mergeSerialsByHistory,
   getLocalResetEpoch,
   clearAllLocalStockStorage,
 } from '../utils/storage';
@@ -469,8 +470,43 @@ export async function apiLogWhatsAppDispatch(payload: {
   }
 }
 
-// Local storage helpers for Serials
+// Local storage & pending-sync helpers for Serials
 const STORAGE_KEY_SERIALS = 'battery_stock_serials_v3';
+const STORAGE_KEY_PENDING_SERIAL_SYNC = 'battery_pending_serial_sync_keys_v1';
+
+export function getPendingSerialSyncKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PENDING_SERIAL_SYNC);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {}
+  return [];
+}
+
+function setPendingSerialSyncKeys(keys: string[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY_PENDING_SERIAL_SYNC, JSON.stringify(Array.from(new Set(keys))));
+  } catch {}
+}
+
+export function addPendingSerialSyncKey(serialNo: string) {
+  const clean = serialNo.trim().toUpperCase();
+  if (!clean) return;
+  const current = getPendingSerialSyncKeys();
+  if (!current.includes(clean)) {
+    setPendingSerialSyncKeys([...current, clean]);
+  }
+}
+
+export function removePendingSerialSyncKey(serialNo: string) {
+  const clean = serialNo.trim().toUpperCase();
+  const current = getPendingSerialSyncKeys();
+  if (current.includes(clean)) {
+    setPendingSerialSyncKeys(current.filter((k) => k !== clean));
+  }
+}
 
 export function loadLocalSerials(): Record<string, BatterySerialItem> {
   try {
@@ -495,54 +531,106 @@ export function saveLocalSerials(serials: Record<string, BatterySerialItem>) {
   }
 }
 
-// Fetch all serials
-export async function apiFetchSerials(): Promise<Record<string, BatterySerialItem>> {
+// Fetch all serials safely merged with pending local edits
+export async function apiFetchSerials(
+  protectedKeys?: Set<string>
+): Promise<Record<string, BatterySerialItem>> {
   const base = getApiBaseUrl();
+  const local = loadLocalSerials();
   try {
     const res = await fetch(`${base}/api/serials`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
-        saveLocalSerials(json.data);
-        return json.data;
+        const combinedProtected = new Set([
+          ...getPendingSerialSyncKeys(),
+          ...(protectedKeys ? Array.from(protectedKeys) : []),
+        ]);
+        const { merged } = mergeSerialsByHistory(local, json.data, combinedProtected);
+        saveLocalSerials(merged);
+        return merged;
       }
     }
   } catch (err) {
     console.warn('[API] Serials fetch failed, using local cache:', err);
   }
-  return loadLocalSerials();
+  return local;
 }
 
-// Save single serial
+// Save single serial with pending-sync tracking
 export async function apiSaveSerial(item: BatterySerialItem): Promise<BatterySerialItem> {
+  const normalized: BatterySerialItem = {
+    ...item,
+    serialNo: item.serialNo.trim().toUpperCase(),
+  };
   const local = loadLocalSerials();
-  local[item.serialNo] = item;
+  local[normalized.serialNo] = normalized;
   saveLocalSerials(local);
+  addPendingSerialSyncKey(normalized.serialNo);
 
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/serials`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(item),
+      body: JSON.stringify(normalized),
     });
     if (res.ok) {
       const json = await res.json();
-      if (json.success && json.data) return json.data;
+      if (json.success && json.data) {
+        removePendingSerialSyncKey(normalized.serialNo);
+        return json.data;
+      }
     }
   } catch (err) {
     console.warn('[API] Cloud save serial deferred:', err);
   }
-  return item;
+  return normalized;
 }
 
-// Bulk save serials
+// Bulk save serials with pending-sync tracking
 export async function apiBulkSaveSerials(items: BatterySerialItem[]): Promise<BatterySerialItem[]> {
+  const normalizedItems = items.map((item) => ({
+    ...item,
+    serialNo: item.serialNo.trim().toUpperCase(),
+  }));
   const local = loadLocalSerials();
-  items.forEach((item) => {
+  normalizedItems.forEach((item) => {
     local[item.serialNo] = item;
+    addPendingSerialSyncKey(item.serialNo);
   });
   saveLocalSerials(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/serials/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizedItems),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        normalizedItems.forEach((it) => removePendingSerialSyncKey(it.serialNo));
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Cloud bulk save serials deferred:', err);
+  }
+  return normalizedItems;
+}
+
+export async function flushPendingSerialsToServer(
+  serialsMap: Record<string, BatterySerialItem>,
+  explicitKeys?: string[]
+): Promise<number> {
+  const keysToFlush = Array.from(new Set([...(explicitKeys || []), ...getPendingSerialSyncKeys()]));
+  const items = keysToFlush
+    .map((k) => serialsMap[k])
+    .filter((item): item is BatterySerialItem => Boolean(item && item.serialNo));
+
+  if (items.length === 0) return 0;
 
   const base = getApiBaseUrl();
   try {
@@ -553,12 +641,42 @@ export async function apiBulkSaveSerials(items: BatterySerialItem[]): Promise<Ba
     });
     if (res.ok) {
       const json = await res.json();
-      if (json.success && json.data) return json.data;
+      if (json.success) {
+        items.forEach((it) => removePendingSerialSyncKey(it.serialNo));
+        return items.length;
+      }
     }
   } catch (err) {
-    console.warn('[API] Cloud bulk save serials deferred:', err);
+    console.warn('[API] Pending serial flush deferred:', err);
   }
-  return items;
+  return 0;
+}
+
+export async function apiDeleteSerial(serialNo: string): Promise<boolean> {
+  const clean = serialNo.trim().toUpperCase();
+  if (!clean) return false;
+
+  const local = loadLocalSerials();
+  if (local[clean] || local[serialNo]) {
+    delete local[clean];
+    delete local[serialNo];
+    saveLocalSerials(local);
+  }
+  removePendingSerialSyncKey(clean);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/serials/${encodeURIComponent(clean)}`, {
+      method: 'DELETE',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      return Boolean(json.success);
+    }
+  } catch (err) {
+    console.warn('[API] Cloud delete serial failed:', err);
+  }
+  return false;
 }
 
 // Backup current state permanently to disk, Supabase, & Cloudinary Cloud Space

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { BatteryColumn, BatterySerialItem, BatteryMovementEvent } from '../types/stock';
+import { BatteryColumn, BatterySerialItem, BatteryMovementEvent, DEFAULT_BRANCH_ID } from '../types/stock';
+import { getIndianTodayDate } from '../utils/date';
 import {
   Search,
   Filter,
@@ -26,6 +27,7 @@ interface SerialTrackerModalProps {
   onClose: () => void;
   serials: Record<string, BatterySerialItem>;
   columns: BatteryColumn[];
+  activeBranchId?: string;
   onSaveSerial: (item: BatterySerialItem) => void;
   initialStatusFilter?: 'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby';
   onDownloadSerialExcel?: () => void;
@@ -36,6 +38,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   onClose,
   serials,
   columns,
+  activeBranchId = DEFAULT_BRANCH_ID,
   onSaveSerial,
   initialStatusFilter = 'all',
   onDownloadSerialExcel,
@@ -156,30 +159,48 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
     e.preventDefault();
     if (!newSerialNo.trim()) return;
 
-    const col = columns.find((c) => c.id === newModelId) || { id: newModelId, name: newModelId };
+    const col =
+      newModelId === 'repair'
+        ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
+        : newModelId === 'service'
+        ? { id: 'service', name: 'SERVICE BATTERY' }
+        : columns.find((c) => c.id === newModelId) || { id: newModelId, name: newModelId };
     const nowIso = new Date().toISOString();
-    const today = new Date().toLocaleDateString('en-GB').replace(/\//g, '-');
+    const today = getIndianTodayDate();
+    const branchId = activeBranchId || DEFAULT_BRANCH_ID;
+
+    const eventType: BatteryMovementEvent['type'] =
+      newStatus === 'dispatched'
+        ? 'out'
+        : newStatus === 'in_repair'
+        ? 'repair_in'
+        : newStatus === 'service_standby'
+        ? 'service'
+        : 'in';
 
     const event: BatteryMovementEvent = {
       id: `evt_${Date.now()}`,
       timestamp: nowIso,
       date: today,
-      type: newStatus === 'dispatched' ? 'out' : newStatus === 'in_repair' ? 'repair_in' : 'in',
+      type: eventType,
       cause: newCause.trim() || 'Direct manual registration',
       partner: newPartner.trim() || undefined,
+      branchId,
     };
 
     const newItem: BatterySerialItem = {
       serialNo: newSerialNo.trim().toUpperCase(),
-      batchNo: newBatchNo.trim() || undefined,
+      batchNo: newBatchNo.trim() || col.name,
       modelId: col.id,
       modelName: col.name,
+      branchId,
       status: newStatus,
       inwardDate: today,
       inwardCause: newCause.trim() || undefined,
       inwardPartner: newPartner.trim() || undefined,
       outwardDate: newStatus === 'dispatched' ? today : undefined,
-      outwardPartner: newStatus === 'dispatched' ? newPartner.trim() : undefined,
+      outwardPartner: newStatus === 'dispatched' ? (newPartner.trim() || undefined) : undefined,
+      outwardCause: newStatus === 'dispatched' ? (newCause.trim() || undefined) : undefined,
       history: [event],
     };
 
@@ -752,6 +773,8 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                         {c.name}
                       </option>
                     ))}
+                    <option value="repair">OLD BATTERY FOR REPAIR</option>
+                    <option value="service">SERVICE BATTERY</option>
                   </select>
                 </div>
 

@@ -31,6 +31,7 @@ import {
   createNextDayRecord,
   createEmptyDayRecord,
   mergeRecordsByTimestamp,
+  mergeSerialsByHistory,
   cascadeBranchOpeningStock,
   syncTodayOpeningFromLastEntry,
   getLocalResetEpoch,
@@ -49,6 +50,9 @@ import {
   apiFetchSerials,
   apiSaveSerial,
   apiBulkSaveSerials,
+  apiDeleteSerial,
+  flushPendingSerialsToServer,
+  getPendingSerialSyncKeys,
   loadLocalSerials,
   saveLocalSerials,
   apiFetchChargers,
@@ -389,6 +393,7 @@ export default function App() {
 
   const isSyncingRef = useRef(false);
   const inFlightRecordKeysRef = useRef<Set<string>>(new Set());
+  const inFlightSerialKeysRef = useRef<Set<string>>(new Set());
   const recordsRef = useRef(records);
   const columnsRef = useRef(columns);
   const serialsRef = useRef(serials);
@@ -420,9 +425,15 @@ export default function App() {
       if (epochChanged && health.resetEpoch) {
         clearAllLocalStockStorage(health.resetEpoch);
         inFlightRecordKeysRef.current.clear();
-      } else if (!epochChanged && getPendingSyncKeys().length > 0) {
-        // Push any queued offline/failed local edits up to the server first
-        await flushPendingRecordsToServer(recordsRef.current);
+        inFlightSerialKeysRef.current.clear();
+      } else if (!epochChanged) {
+        if (getPendingSyncKeys().length > 0) {
+          // Push any queued offline/failed local record edits up to the server first
+          await flushPendingRecordsToServer(recordsRef.current);
+        }
+        if (getPendingSerialSyncKeys().length > 0) {
+          await flushPendingSerialsToServer(serialsRef.current);
+        }
       }
 
       const protectedKeys = epochChanged
@@ -432,12 +443,19 @@ export default function App() {
             ...Array.from(inFlightRecordKeysRef.current),
           ]);
 
+      const protectedSerialKeys = epochChanged
+        ? new Set<string>()
+        : new Set<string>([
+            ...getPendingSerialSyncKeys(),
+            ...Array.from(inFlightSerialKeysRef.current),
+          ]);
+
       const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteVehicles, remoteTransfers] =
         await Promise.all([
           apiFetchRecords(protectedKeys),
           apiFetchColumns(),
           apiFetchTeam(),
-          apiFetchSerials(),
+          apiFetchSerials(protectedSerialKeys),
           apiFetchChargers(),
           apiFetchVehicles(),
           apiFetchTransfers(),
@@ -511,10 +529,24 @@ export default function App() {
           );
         setTeamMembers(sanitized.length > 0 ? sanitized : loadTeamMembers());
       }
-      if (health.online && remoteSerials) {
-        setSerials(remoteSerials);
-      } else if (remoteSerials && Object.keys(remoteSerials).length > 0) {
-        setSerials((prev) => ({ ...remoteSerials, ...prev }));
+      if (remoteSerials && (Object.keys(remoteSerials).length > 0 || Object.keys(serialsRef.current).length > 0)) {
+        const latestProtectedSerials = new Set<string>([
+          ...getPendingSerialSyncKeys(),
+          ...Array.from(inFlightSerialKeysRef.current),
+        ]);
+        const { merged: mergedSerials, localNewerSerials } = mergeSerialsByHistory(
+          serialsRef.current,
+          remoteSerials,
+          latestProtectedSerials
+        );
+        saveLocalSerials(mergedSerials);
+        setSerials(mergedSerials);
+        if (localNewerSerials.length > 0 && health.online) {
+          flushPendingSerialsToServer(
+            mergedSerials,
+            localNewerSerials.map((s) => s.serialNo)
+          ).catch(() => {});
+        }
       }
       if (health.online && remoteChargers) {
         setChargerRecords(remoteChargers);
@@ -575,26 +607,46 @@ export default function App() {
         });
       },
       onSerialUpdated: (updatedSerial) => {
-        setSerials((prev) => ({
-          ...prev,
-          [updatedSerial.serialNo]: updatedSerial,
-        }));
+        const cleanKey = updatedSerial.serialNo.trim().toUpperCase();
+        if (inFlightSerialKeysRef.current.has(cleanKey) || getPendingSerialSyncKeys().includes(cleanKey)) {
+          return;
+        }
+        setSerials((prev) => {
+          const { merged } = mergeSerialsByHistory(prev, { [cleanKey]: updatedSerial });
+          saveLocalSerials(merged);
+          return merged;
+        });
         showToast(`⚡ Real-Time Cloud: Updated serial ${updatedSerial.serialNo}`);
       },
       onSerialsBulkUpdated: (updatedList) => {
+        const protectedSet = new Set([
+          ...getPendingSerialSyncKeys(),
+          ...Array.from(inFlightSerialKeysRef.current),
+        ]);
+        const remoteMap: Record<string, BatterySerialItem> = {};
+        updatedList.forEach((s) => {
+          const cleanKey = s.serialNo.trim().toUpperCase();
+          if (!protectedSet.has(cleanKey)) {
+            remoteMap[cleanKey] = s;
+          }
+        });
         setSerials((prev) => {
-          const copy = { ...prev };
-          updatedList.forEach((s) => {
-            copy[s.serialNo] = s;
-          });
-          return copy;
+          const { merged } = mergeSerialsByHistory(prev, remoteMap, protectedSet);
+          saveLocalSerials(merged);
+          return merged;
         });
         showToast(`⚡ Real-Time Cloud: ${updatedList.length} battery serials synchronized`);
       },
       onSerialDeleted: (deletedSerialNo) => {
+        const cleanKey = deletedSerialNo.trim().toUpperCase();
+        if (inFlightSerialKeysRef.current.has(cleanKey) || getPendingSerialSyncKeys().includes(cleanKey)) {
+          return;
+        }
         setSerials((prev) => {
           const copy = { ...prev };
           delete copy[deletedSerialNo];
+          delete copy[cleanKey];
+          saveLocalSerials(copy);
           return copy;
         });
       },
@@ -640,6 +692,7 @@ export default function App() {
       },
       onFactoryReset: () => {
         inFlightRecordKeysRef.current.clear();
+        inFlightSerialKeysRef.current.clear();
         setPendingSyncCount(0);
         setSaveState('saved');
         syncWithCloudBackend(true);
@@ -744,14 +797,23 @@ export default function App() {
 
   // Bulk save serials from AssignSerialModal
   const handleBulkSaveSerials = async (newItems: BatterySerialItem[]) => {
-    const stamped = newItems.map((it) => ({ ...it, branchId: it.branchId || activeBranchId }));
-    const updated = { ...serials };
+    const stamped = newItems.map((it) => ({
+      ...it,
+      serialNo: it.serialNo.trim().toUpperCase(),
+      branchId: it.branchId || activeBranchId,
+    }));
+    const updated = { ...serialsRef.current };
     stamped.forEach((item) => {
+      inFlightSerialKeysRef.current.add(item.serialNo);
       updated[item.serialNo] = item;
     });
     setSerials(updated);
     saveLocalSerials(updated);
-    await apiBulkSaveSerials(stamped);
+    try {
+      await apiBulkSaveSerials(stamped);
+    } finally {
+      stamped.forEach((item) => inFlightSerialKeysRef.current.delete(item.serialNo));
+    }
     showToast(
       isCloudDbConnected
         ? `✓ Assigned & saved ${stamped.length} serials to Supabase`
@@ -759,13 +821,33 @@ export default function App() {
     );
   };
 
-  // Update single serial from edit form
-  const handleUpdateSingleSerial = async (updatedItem: BatterySerialItem) => {
-    const stamped = { ...updatedItem, branchId: updatedItem.branchId || activeBranchId };
-    const updated = { ...serials, [stamped.serialNo]: stamped };
+  // Update single serial from edit form (supports rename cleanly without leaving orphan keys)
+  const handleUpdateSingleSerial = async (
+    updatedItem: BatterySerialItem,
+    previousSerialNo?: string
+  ) => {
+    const stamped: BatterySerialItem = {
+      ...updatedItem,
+      serialNo: updatedItem.serialNo.trim().toUpperCase(),
+      branchId: updatedItem.branchId || activeBranchId,
+    };
+    const updated = { ...serialsRef.current };
+    if (previousSerialNo && previousSerialNo.trim().toUpperCase() !== stamped.serialNo) {
+      delete updated[previousSerialNo];
+      delete updated[previousSerialNo.trim().toUpperCase()];
+    }
+    inFlightSerialKeysRef.current.add(stamped.serialNo);
+    updated[stamped.serialNo] = stamped;
     setSerials(updated);
     saveLocalSerials(updated);
-    await apiSaveSerial(stamped);
+    try {
+      if (previousSerialNo && previousSerialNo.trim().toUpperCase() !== stamped.serialNo) {
+        await apiDeleteSerial(previousSerialNo);
+      }
+      await apiSaveSerial(stamped);
+    } finally {
+      inFlightSerialKeysRef.current.delete(stamped.serialNo);
+    }
     showToast(
       isCloudDbConnected
         ? `✓ Updated serial ${stamped.serialNo} in Supabase`
@@ -788,6 +870,7 @@ export default function App() {
       lastModified: timestamp,
     };
     const recordKey = getBatteryRecordKey(targetBranch, updated.date);
+    const prevRecordSnapshot = recordsRef.current[recordKey];
 
     inFlightRecordKeysRef.current.add(recordKey);
     setSaveState('saving');
@@ -808,19 +891,124 @@ export default function App() {
 
     let updatedSerials = { ...serialsRef.current };
     const savedList: BatterySerialItem[] = [];
+    let effectiveSerialEntries: SerialEntryPayload[] = serialEntries ? [...serialEntries] : [];
 
-    if (serialEntries && serialEntries.length > 0) {
-      serialEntries.forEach((entry) => {
-        const existing: BatterySerialItem = updatedSerials[entry.serialNo] || {
-          serialNo: entry.serialNo,
+    // When user edits cells directly in the ExcelGrid without serialEntries, derive tracked serial movements from quantity deltas
+    if (effectiveSerialEntries.length === 0) {
+      const trackedModels: Array<{ id: string; name: string }> = [
+        ...columnsRef.current.map((c) => ({ id: c.id, name: c.name })),
+        { id: 'repair', name: 'OLD BATTERY FOR REPAIR' },
+        { id: 'service', name: 'SERVICE BATTERY' },
+      ];
+      const allocatedNow = new Set<string>();
+      const makeUniqueSerial = (prefixName: string, tag: string) => {
+        const cleanPrefix =
+          prefixName
+            .replace(/[×x\s]/g, '')
+            .replace(/[^A-Za-z0-9]/g, '')
+            .toUpperCase()
+            .slice(0, 6) || 'BAT';
+        let n = Math.floor(1000 + Math.random() * 9000);
+        while (allocatedNow.has(`BAT-${cleanPrefix}-${tag}${n}`) || updatedSerials[`BAT-${cleanPrefix}-${tag}${n}`]) {
+          n += 1;
+        }
+        const sn = `BAT-${cleanPrefix}-${tag}${n}`;
+        allocatedNow.add(sn);
+        return sn;
+      };
+
+      trackedModels.forEach((col) => {
+        const prevIn = Number(prevRecordSnapshot?.inStock?.[col.id] || 0);
+        const nextIn = Number(updated.inStock?.[col.id] || 0);
+        const inDelta = nextIn - prevIn;
+        if (inDelta > 0) {
+          const inCause =
+            (col.id === 'repair' ? updated.repairInCause : updated.inCause?.[col.id]) ||
+            updated.totalInCause ||
+            `Direct spreadsheet IN (+${inDelta})`;
+          const moveType: SerialEntryPayload['type'] =
+            col.id === 'repair' ? 'repair_in' : col.id === 'service' ? 'service' : 'in';
+          const tag = col.id === 'repair' ? 'REP-' : col.id === 'service' ? 'SVC-' : '';
+          for (let i = 0; i < inDelta; i++) {
+            effectiveSerialEntries.push({
+              serialNo: makeUniqueSerial(col.name, tag),
+              batchNo: col.name,
+              modelId: col.id,
+              modelName: col.name,
+              type: moveType,
+              cause: inCause,
+            });
+          }
+        }
+
+        const prevOutMag = Math.abs(Number(prevRecordSnapshot?.outStock?.[col.id] || 0));
+        const nextOutMag = Math.abs(Number(updated.outStock?.[col.id] || 0));
+        const outDelta = nextOutMag - prevOutMag;
+        if (outDelta > 0) {
+          const outCause =
+            (col.id === 'repair' ? updated.repairOutCause : updated.outCause?.[col.id]) ||
+            updated.totalOutCause ||
+            `Direct spreadsheet OUT (-${outDelta})`;
+          const moveType: SerialEntryPayload['type'] = col.id === 'repair' ? 'repair_out' : 'out';
+
+          const fifoCandidates = Object.values(updatedSerials)
+            .filter((s) => {
+              if (allocatedNow.has(s.serialNo)) return false;
+              if ((s.branchId || DEFAULT_BRANCH_ID) !== targetBranch) return false;
+              const modelMatch =
+                s.modelId === col.id || s.modelName === col.name || s.batchNo === col.name;
+              if (!modelMatch) return false;
+              if (col.id === 'repair') return s.status === 'in_repair' || s.status === 'in_stock';
+              if (col.id === 'service') return s.status === 'service_standby' || s.status === 'in_stock';
+              return s.status === 'in_stock';
+            })
+            .sort((a, b) =>
+              toISODateString(a.inwardDate || '').localeCompare(toISODateString(b.inwardDate || ''))
+            );
+
+          let assigned = 0;
+          for (const candidate of fifoCandidates) {
+            if (assigned >= outDelta) break;
+            allocatedNow.add(candidate.serialNo);
+            effectiveSerialEntries.push({
+              serialNo: candidate.serialNo,
+              batchNo: col.name,
+              modelId: col.id,
+              modelName: col.name,
+              type: moveType,
+              cause: outCause,
+            });
+            assigned += 1;
+          }
+          while (assigned < outDelta) {
+            effectiveSerialEntries.push({
+              serialNo: makeUniqueSerial(col.name, 'OUT-'),
+              batchNo: col.name,
+              modelId: col.id,
+              modelName: col.name,
+              type: moveType,
+              cause: outCause,
+            });
+            assigned += 1;
+          }
+        }
+      });
+    }
+
+    if (effectiveSerialEntries.length > 0) {
+      effectiveSerialEntries.forEach((entry, idx) => {
+        const cleanSerial = entry.serialNo.trim().toUpperCase();
+        if (!cleanSerial) return;
+        const existing: BatterySerialItem = updatedSerials[cleanSerial] || {
+          serialNo: cleanSerial,
           batchNo: entry.batchNo,
           modelId: entry.modelId,
           modelName: entry.modelName,
           branchId: targetBranch,
           status:
-            entry.type === 'out'
+            entry.type === 'out' || entry.type === 'repair_out'
               ? 'dispatched'
-              : entry.type === 'repair_in' || entry.type === 'repair_out'
+              : entry.type === 'repair_in'
               ? 'in_repair'
               : entry.type === 'service'
               ? 'service_standby'
@@ -832,7 +1020,7 @@ export default function App() {
         };
 
         const movement = {
-          id: `evt_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          id: `evt_${Date.now()}_${idx}_${Math.random().toString(36).substr(2, 4)}`,
           timestamp: new Date().toISOString(),
           date: updated.date,
           type: entry.type,
@@ -850,26 +1038,37 @@ export default function App() {
           existing.inwardDate = updated.date;
           existing.inwardCause = entry.cause;
           existing.inwardPartner = entry.partner;
-        } else if (entry.type === 'out') {
+        } else if (entry.type === 'out' || entry.type === 'repair_out') {
           existing.status = 'dispatched';
           existing.outwardDate = updated.date;
           existing.outwardCause = entry.cause;
-          existing.outwardPartner = entry.partner;
-        } else if (entry.type === 'repair_in' || entry.type === 'repair_out') {
+          existing.outwardPartner = entry.partner || entry.vehicle;
+        } else if (entry.type === 'repair_in') {
           existing.status = 'in_repair';
+          existing.inwardDate = existing.inwardDate || updated.date;
+          existing.inwardCause = existing.inwardCause || entry.cause;
+          existing.inwardPartner = existing.inwardPartner || entry.partner;
         } else if (entry.type === 'service') {
           existing.status = 'service_standby';
+          existing.inwardDate = existing.inwardDate || updated.date;
+          existing.inwardCause = existing.inwardCause || entry.cause;
+          existing.inwardPartner = existing.inwardPartner || entry.partner;
         }
 
         if (entry.batchNo) existing.batchNo = entry.batchNo;
 
-        updatedSerials[entry.serialNo] = existing;
+        inFlightSerialKeysRef.current.add(cleanSerial);
+        updatedSerials[cleanSerial] = existing;
         savedList.push(existing);
       });
 
       setSerials(updatedSerials);
       saveLocalSerials(updatedSerials);
-      await apiBulkSaveSerials(savedList);
+      try {
+        await apiBulkSaveSerials(savedList);
+      } finally {
+        savedList.forEach((s) => inFlightSerialKeysRef.current.delete(s.serialNo));
+      }
     }
 
     try {
@@ -932,6 +1131,7 @@ export default function App() {
     setSaveState('saving');
     try {
       await flushPendingRecordsToServer(recordsRef.current);
+      await flushPendingSerialsToServer(serialsRef.current);
       const res = await apiTriggerCloudinaryBackup(
         recordsRef.current,
         serialsRef.current,
@@ -1077,12 +1277,32 @@ export default function App() {
               batchNo: item.batchNo || item.modelName,
               modelId: item.modelId,
               modelName: item.modelName,
-              type: 'in',
+              type: item.modelId === 'repair' ? 'repair_in' : item.modelId === 'service' ? 'service' : 'in',
               cause: causeStr,
               partner: payload.partner || item.fromBranchName,
               vehicle: activeBranch.name,
             });
           });
+        } else {
+          const cleanPrefix =
+            item.modelName
+              .replace(/[×x\s]/g, '')
+              .replace(/[^A-Za-z0-9]/g, '')
+              .toUpperCase()
+              .slice(0, 6) || 'BAT';
+          const randBase = Math.floor(1000 + Math.random() * 9000);
+          for (let i = 0; i < item.quantity; i++) {
+            serialEntriesToSave.push({
+              serialNo: `BAT-${cleanPrefix}-RCV-${randBase + i}`,
+              batchNo: item.batchNo || item.modelName,
+              modelId: item.modelId,
+              modelName: item.modelName,
+              type: item.modelId === 'repair' ? 'repair_in' : item.modelId === 'service' ? 'service' : 'in',
+              cause: causeStr,
+              partner: payload.partner || item.fromBranchName,
+              vehicle: activeBranch.name,
+            });
+          }
         }
       });
 
@@ -1758,8 +1978,8 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => {
-                      exportSerialHistoryToExcel(serials, columns, activeBranchId);
-                      showToast('Downloaded Serial Numbers & Past History Excel (.xlsx)');
+                      exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
+                      showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
                     }}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md transition-colors cursor-pointer"
                     title="Excel 2: Download All Battery Serial Numbers + Past/Dispatched History (.xlsx)"
@@ -1862,8 +2082,8 @@ export default function App() {
               setIsSerialModalOpen(true);
             }}
             onDownloadSerialExcel={() => {
-              exportSerialHistoryToExcel(serials, columns, activeBranchId);
-              showToast('Downloaded Serial Numbers & Past History Excel (.xlsx)');
+              exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
+              showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
             }}
             onUpdateSerial={handleUpdateSingleSerial}
             onSelectSerialHistory={(item) => setSelectedSerialHistory(item)}
@@ -1904,8 +2124,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  exportSerialHistoryToExcel(serials, columns, activeBranchId);
-                  showToast('Downloaded Serials & History Excel (.xlsx)');
+                  exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
+                  showToast('Downloaded Complete Serials & History Excel (.xlsx)');
                 }}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md cursor-pointer"
                 title="Download Excel 2: All Battery Serials & Past Outward History (.xlsx)"
@@ -2138,16 +2358,28 @@ export default function App() {
         onClose={() => setIsSerialModalOpen(false)}
         serials={serials}
         columns={columns}
+        activeBranchId={activeBranchId}
         initialStatusFilter={serialModalInitialFilter}
         onDownloadSerialExcel={() => {
-          exportSerialHistoryToExcel(serials, columns, activeBranchId);
-          showToast('Downloaded Serial Numbers & Past History Excel (.xlsx)');
+          exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
+          showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
         }}
         onSaveSerial={async (item) => {
-          const updated = { ...serials, [item.serialNo]: item };
+          const stamped: BatterySerialItem = {
+            ...item,
+            serialNo: item.serialNo.trim().toUpperCase(),
+            branchId: item.branchId || activeBranchId,
+          };
+          inFlightSerialKeysRef.current.add(stamped.serialNo);
+          const updated = { ...serialsRef.current, [stamped.serialNo]: stamped };
           setSerials(updated);
-          await apiSaveSerial(item);
-          showToast(`Saved serial: ${item.serialNo}`);
+          saveLocalSerials(updated);
+          try {
+            await apiSaveSerial(stamped);
+          } finally {
+            inFlightSerialKeysRef.current.delete(stamped.serialNo);
+          }
+          showToast(`Saved serial: ${stamped.serialNo}`);
         }}
       />
 

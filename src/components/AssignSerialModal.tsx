@@ -26,7 +26,7 @@ interface AssignSerialModalProps {
   activeDate: string;
   initialTab?: 'assign_missing' | 'manage_existing';
   onSaveSerials: (items: BatterySerialItem[]) => void;
-  onUpdateSerial: (item: BatterySerialItem) => void;
+  onUpdateSerial: (item: BatterySerialItem, previousSerialNo?: string) => void;
 }
 
 export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
@@ -221,9 +221,13 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
       partner: editForm.status === 'dispatched' ? editForm.outwardPartner : editForm.inwardPartner,
     });
 
+    const finalSerialNo = editForm.newSerialNo.trim().toUpperCase() || editingSerial.serialNo;
+    const previousSerialNo =
+      finalSerialNo !== editingSerial.serialNo ? editingSerial.serialNo : undefined;
+
     const updatedItem: BatterySerialItem = {
       ...editingSerial,
-      serialNo: editForm.newSerialNo.trim().toUpperCase() || editingSerial.serialNo,
+      serialNo: finalSerialNo,
       status: editForm.status,
       inwardDate: editForm.inwardDate || editingSerial.inwardDate,
       inwardPartner: editForm.inwardPartner.trim() || undefined,
@@ -234,7 +238,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
       history: updatedHistory,
     };
 
-    onUpdateSerial(updatedItem);
+    onUpdateSerial(updatedItem, previousSerialNo);
     setEditingSerial(null);
   };
 

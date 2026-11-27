@@ -1,5 +1,7 @@
 import {
   BatteryColumn,
+  BatteryMovementEvent,
+  BatterySerialItem,
   DayRecord,
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_BRANCH_ID,
@@ -44,6 +46,7 @@ export function clearAllLocalStockStorage(resetEpoch?: string) {
     localStorage.removeItem('vehicle_stock_records_v1');
     localStorage.removeItem('battery_branch_transfers_v1');
     localStorage.removeItem('battery_pending_sync_keys_v1');
+    localStorage.removeItem('battery_pending_serial_sync_keys_v1');
     if (resetEpoch) {
       localStorage.setItem(STORAGE_KEY_RESET_EPOCH, resetEpoch);
     } else {
@@ -538,3 +541,97 @@ export function cascadeBranchOpeningStock(
 
   return { updatedRecordsMap: nextMap, changedRecords };
 }
+
+function getSerialLatestTimestampMs(item?: BatterySerialItem): number {
+  if (!item || !Array.isArray(item.history) || item.history.length === 0) return 0;
+  let maxTs = 0;
+  for (const evt of item.history) {
+    const ms = parseTimestampMs(evt?.timestamp);
+    if (ms > maxTs) maxTs = ms;
+  }
+  return maxTs;
+}
+
+function mergeUniqueSerialHistory(
+  a: BatteryMovementEvent[] = [],
+  b: BatteryMovementEvent[] = []
+): BatteryMovementEvent[] {
+  const seen = new Map<string, BatteryMovementEvent>();
+  const addEvt = (evt: BatteryMovementEvent) => {
+    if (!evt) return;
+    const key = evt.id || `${evt.date}|${evt.type}|${evt.timestamp}|${evt.cause}`;
+    if (!seen.has(key)) {
+      seen.set(key, evt);
+    }
+  };
+  a.forEach(addEvt);
+  b.forEach(addEvt);
+  return Array.from(seen.values()).sort((x, y) => {
+    const tx = parseTimestampMs(x.timestamp);
+    const ty = parseTimestampMs(y.timestamp);
+    if (tx !== ty) return ty - tx;
+    return toISODateString(y.date || '').localeCompare(toISODateString(x.date || ''));
+  });
+}
+
+/**
+ * Merge local & remote battery serial maps without ever overwriting
+ * pending/in-flight serial saves or losing movement history events.
+ */
+export function mergeSerialsByHistory(
+  localSerials: Record<string, BatterySerialItem>,
+  remoteSerials: Record<string, BatterySerialItem>,
+  protectedSerialNos: Set<string> = new Set()
+): { merged: Record<string, BatterySerialItem>; localNewerSerials: BatterySerialItem[] } {
+  const merged: Record<string, BatterySerialItem> = {};
+  const localNewerSerials: BatterySerialItem[] = [];
+  const allKeys = new Set([
+    ...Object.keys(remoteSerials || {}),
+    ...Object.keys(localSerials || {}),
+  ]);
+
+  allKeys.forEach((key) => {
+    const localItem = localSerials?.[key];
+    const remoteItem = remoteSerials?.[key];
+
+    if (protectedSerialNos.has(key)) {
+      if (localItem) {
+        merged[key] = localItem;
+        localNewerSerials.push(localItem);
+      } else if (remoteItem) {
+        merged[key] = remoteItem;
+      }
+      return;
+    }
+
+    if (localItem && !remoteItem) {
+      merged[key] = localItem;
+      localNewerSerials.push(localItem);
+      return;
+    }
+
+    if (remoteItem && !localItem) {
+      merged[key] = remoteItem;
+      return;
+    }
+
+    if (localItem && remoteItem) {
+      const localTs = getSerialLatestTimestampMs(localItem);
+      const remoteTs = getSerialLatestTimestampMs(remoteItem);
+      const combinedHistory = mergeUniqueSerialHistory(localItem.history, remoteItem.history);
+      const localLen = localItem.history?.length || 0;
+      const remoteLen = remoteItem.history?.length || 0;
+
+      if (localTs > remoteTs || (localTs === remoteTs && localLen > remoteLen)) {
+        const winner: BatterySerialItem = { ...localItem, history: combinedHistory };
+        merged[key] = winner;
+        localNewerSerials.push(winner);
+      } else {
+        merged[key] = { ...remoteItem, history: combinedHistory };
+      }
+    }
+  });
+
+  return { merged, localNewerSerials };
+}
+

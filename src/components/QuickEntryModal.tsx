@@ -209,23 +209,92 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   };
 
   const buildSerialList = (raw: string): string[] =>
-    raw
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    Array.from(
+      new Set(
+        raw
+          .split(/[\n,;]+/)
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
 
-  const generateRemainingInSerials = (existing: string[], modelName: string, qty: number): string[] => {
-    if (existing.length >= qty) return existing;
-    const cleanPrefix =
-      modelName
-        .replace(/[×x\s]/g, '')
-        .replace(/[^A-Za-z0-9]/g, '')
-        .toUpperCase()
-        .slice(0, 6) || 'BAT';
-    const randomBase = Math.floor(1000 + Math.random() * 9000);
-    const needed = qty - existing.length;
-    const generated = Array.from({ length: needed }, (_, i) => `BAT-${cleanPrefix}-${randomBase + i}`);
-    return [...existing, ...generated];
+  const allocateSerialsForMovement = (opts: {
+    providedSerials: string[];
+    modelId: string;
+    modelName: string;
+    qty: number;
+    mode: 'in' | 'out' | 'repair_in' | 'repair_out' | 'service';
+    alreadyAllocated: Set<string>;
+  }): string[] => {
+    const { providedSerials, modelId, modelName, qty, mode, alreadyAllocated } = opts;
+    const result: string[] = [];
+
+    for (const s of providedSerials) {
+      const clean = s.trim().toUpperCase();
+      if (clean && !alreadyAllocated.has(clean)) {
+        result.push(clean);
+        alreadyAllocated.add(clean);
+      }
+    }
+
+    if (result.length < qty && (mode === 'out' || mode === 'repair_out')) {
+      const candidates = Object.values(serials)
+        .filter((s) => {
+          if (alreadyAllocated.has(s.serialNo.toUpperCase())) return false;
+          if ((s.branchId || DEFAULT_BRANCH_ID) !== activeBranch.id) return false;
+          const modelMatches =
+            s.modelId === modelId || s.modelName === modelName || s.batchNo === modelName;
+          if (!modelMatches) return false;
+          if (mode === 'repair_out') {
+            return s.status === 'in_repair' || (s.modelId === 'repair' && s.status === 'in_stock');
+          }
+          if (modelId === 'service') {
+            return s.status === 'service_standby' || s.status === 'in_stock';
+          }
+          return s.status === 'in_stock';
+        })
+        .sort((a, b) =>
+          toISODateString(a.inwardDate || '').localeCompare(toISODateString(b.inwardDate || ''))
+        );
+
+      for (const item of candidates) {
+        if (result.length >= qty) break;
+        const clean = item.serialNo.trim().toUpperCase();
+        if (!alreadyAllocated.has(clean)) {
+          result.push(clean);
+          alreadyAllocated.add(clean);
+        }
+      }
+    }
+
+    if (result.length < qty) {
+      const cleanPrefix =
+        modelName
+          .replace(/[×x\s]/g, '')
+          .replace(/[^A-Za-z0-9]/g, '')
+          .toUpperCase()
+          .slice(0, 6) || 'BAT';
+      const suffixTag =
+        mode === 'out' || mode === 'repair_out'
+          ? 'OUT-'
+          : mode === 'repair_in'
+          ? 'REP-'
+          : mode === 'service'
+          ? 'SVC-'
+          : '';
+      let counter = 0;
+      let randomBase = Math.floor(1000 + Math.random() * 9000);
+      while (result.length < qty) {
+        const candidate = `BAT-${cleanPrefix}-${suffixTag}${randomBase + counter}`;
+        counter += 1;
+        if (!alreadyAllocated.has(candidate) && !serials[candidate]) {
+          result.push(candidate);
+          alreadyAllocated.add(candidate);
+        }
+      }
+    }
+
+    return result;
   };
 
   const handleSave = async (andSendWhatsApp = false) => {
@@ -241,11 +310,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
     const targetBranch = targetBranchId ? BRANCHES.find((b) => b.id === targetBranchId) : undefined;
     const allSerialEntries: SerialEntryPayload[] = [];
+    const alreadyAllocated = new Set<string>();
     let transferPayload: BranchTransferDispatchPayload | null = null;
 
     if (entryType === 'both') {
       // 1. Apply INWARD (IN) side
-      const inCol = columns.find((c) => c.id === inColId) || { id: inColId, name: inColId };
+      const inCol = resolveModel(inColId) || { id: inColId, name: inColId };
       const inFullCause =
         [inPartner.trim(), inCauseText.trim()].filter(Boolean).join(' , ') ||
         `Inward stock (+${inQuantity})`;
@@ -259,7 +329,14 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         ? `${updated.totalInCause}\n${inSummary}`
         : inSummary;
 
-      const inSerials = generateRemainingInSerials(buildSerialList(inSerialInput), inCol.name, inQuantity);
+      const inSerials = allocateSerialsForMovement({
+        providedSerials: buildSerialList(inSerialInput),
+        modelId: inCol.id,
+        modelName: inCol.name,
+        qty: inQuantity,
+        mode: 'in',
+        alreadyAllocated,
+      });
       inSerials.forEach((s) => {
         allSerialEntries.push({
           serialNo: s,
@@ -273,7 +350,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       });
 
       // 2. Apply OUTWARD (OUT) side
-      const outCol = columns.find((c) => c.id === selectedColId) || { id: selectedColId, name: selectedColId };
+      const outCol = resolveModel(selectedColId) || { id: selectedColId, name: selectedColId };
       const outLocationPart = targetBranch
         ? `Sent to ${targetBranch.name}`
         : vehicleOrLocation.trim();
@@ -286,7 +363,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         ...extraOutItems
           .filter((item) => item.quantity > 0)
           .map((item) => {
-            const col = columns.find((c) => c.id === item.modelId);
+            const col = resolveModel(item.modelId);
             return {
               modelId: item.modelId,
               modelName: col?.name || item.modelId,
@@ -295,7 +372,10 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           }),
       ];
 
-      outItems.forEach((item) => {
+      const manualOutSerials = buildSerialList(serialInput);
+      const itemSerialsMap: Record<number, string[]> = {};
+
+      outItems.forEach((item, idx) => {
         updated.outStock[item.modelId] = (updated.outStock[item.modelId] || 0) - item.quantity;
         updated.outCause[item.modelId] = updated.outCause[item.modelId]
           ? `${updated.outCause[item.modelId]}\n${outFullCause}`
@@ -304,19 +384,28 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         updated.totalOutCause = updated.totalOutCause
           ? `${updated.totalOutCause}\n${outSummary}`
           : outSummary;
-      });
 
-      const outSerials = buildSerialList(serialInput);
-      outSerials.forEach((s) => {
-        allSerialEntries.push({
-          serialNo: s,
-          batchNo: batchNo.trim() || outCol.name,
-          modelId: outCol.id,
-          modelName: outCol.name,
-          type: 'out',
-          cause: outFullCause,
-          partner: partnerName.trim() || targetBranch?.name || undefined,
-          vehicle: outLocationPart || undefined,
+        const outSerialsForItem = allocateSerialsForMovement({
+          providedSerials: idx === 0 ? manualOutSerials : [],
+          modelId: item.modelId,
+          modelName: item.modelName,
+          qty: item.quantity,
+          mode: 'out',
+          alreadyAllocated,
+        });
+        itemSerialsMap[idx] = outSerialsForItem;
+
+        outSerialsForItem.forEach((s) => {
+          allSerialEntries.push({
+            serialNo: s,
+            batchNo: batchNo.trim() || item.modelName,
+            modelId: item.modelId,
+            modelName: item.modelName,
+            type: 'out',
+            cause: outFullCause,
+            partner: partnerName.trim() || targetBranch?.name || undefined,
+            vehicle: outLocationPart || undefined,
+          });
         });
       });
 
@@ -326,7 +415,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           date: updated.date,
           items: outItems.map((it, idx) => ({
             ...it,
-            serialNos: idx === 0 && outSerials.length > 0 ? outSerials : undefined,
+            serialNos: itemSerialsMap[idx],
             notes: outFullCause,
           })),
           partner: partnerName.trim() || undefined,
@@ -337,7 +426,17 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       const locationPart =
         entryType === 'out' && targetBranch ? `Sent to ${targetBranch.name}` : vehicleOrLocation.trim();
       const parts = [locationPart, partnerName.trim(), cause.trim()].filter(Boolean);
-      const fullCause = parts.join(' , ');
+      const defaultCause =
+        entryType === 'in'
+          ? `Inward stock (+${quantity})`
+          : entryType === 'out'
+          ? `Outward dispatch (-${quantity})`
+          : entryType === 'repair_in'
+          ? `Received for repair (+${quantity})`
+          : entryType === 'repair_out'
+          ? `Sent for repair (-${quantity})`
+          : `Service standby pool (+${quantity})`;
+      const fullCause = parts.join(' , ') || defaultCause;
 
       if (entryType === 'in') {
         const targetCol = resolveModel(selectedColId);
@@ -368,7 +467,10 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
             }),
         ];
 
-        outItems.forEach((item) => {
+        const manualOutSerials = buildSerialList(serialInput);
+        const itemSerialsMap: Record<number, string[]> = {};
+
+        outItems.forEach((item, idx) => {
           updated.outStock[item.modelId] = (updated.outStock[item.modelId] || 0) - item.quantity;
           updated.outCause[item.modelId] = updated.outCause[item.modelId]
             ? `${updated.outCause[item.modelId]}\n${fullCause}`
@@ -377,16 +479,38 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           updated.totalOutCause = updated.totalOutCause
             ? `${updated.totalOutCause}\n${summaryLine}`
             : summaryLine;
+
+          const allocatedForItem = allocateSerialsForMovement({
+            providedSerials: idx === 0 ? manualOutSerials : [],
+            modelId: item.modelId,
+            modelName: item.modelName,
+            qty: item.quantity,
+            mode: 'out',
+            alreadyAllocated,
+          });
+          itemSerialsMap[idx] = allocatedForItem;
+
+          allocatedForItem.forEach((s) => {
+            allSerialEntries.push({
+              serialNo: s,
+              batchNo: batchNo.trim() || item.modelName,
+              modelId: item.modelId,
+              modelName: item.modelName,
+              type: 'out',
+              cause: fullCause,
+              partner: partnerName.trim() || targetBranch?.name || undefined,
+              vehicle: locationPart || undefined,
+            });
+          });
         });
 
         if (targetBranch && onCreateBranchTransfer) {
-          const outSerials = buildSerialList(serialInput);
           transferPayload = {
             toBranchId: targetBranch.id,
             date: updated.date,
             items: outItems.map((it, idx) => ({
               ...it,
-              serialNos: idx === 0 && outSerials.length > 0 ? outSerials : undefined,
+              serialNos: itemSerialsMap[idx],
               notes: fullCause,
             })),
             partner: partnerName.trim() || undefined,
@@ -404,33 +528,46 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           ? `${updated.repairOutCause}\n${fullCause}`
           : fullCause;
       } else if (entryType === 'service') {
-        updated.stock['service'] = (updated.stock['service'] || 0) + quantity;
+        updated.inStock['service'] = (updated.inStock['service'] || 0) + quantity;
+        updated.inCause['service'] = updated.inCause['service']
+          ? `${updated.inCause['service']}\n${fullCause}`
+          : fullCause;
+        const svcLine = `SERVICE BATTERY: ${fullCause}`;
+        updated.totalInCause = updated.totalInCause
+          ? `${updated.totalInCause}\n${svcLine}`
+          : svcLine;
       }
 
-      const targetModel =
-        entryType === 'repair_in' || entryType === 'repair_out'
-          ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
-          : entryType === 'service'
-          ? { id: 'service', name: 'SERVICE BATTERY' }
-          : resolveModel(selectedColId) || { id: selectedColId, name: selectedColId };
+      if (entryType !== 'out') {
+        const targetModel =
+          entryType === 'repair_in' || entryType === 'repair_out'
+            ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
+            : entryType === 'service'
+            ? { id: 'service', name: 'SERVICE BATTERY' }
+            : resolveModel(selectedColId) || { id: selectedColId, name: selectedColId };
 
-      let finalSerials = buildSerialList(serialInput);
-      if (entryType === 'in') {
-        finalSerials = generateRemainingInSerials(finalSerials, targetModel.name, quantity);
-      }
-
-      finalSerials.forEach((s) => {
-        allSerialEntries.push({
-          serialNo: s,
-          batchNo: batchNo.trim() || targetModel.name,
+        const finalSerials = allocateSerialsForMovement({
+          providedSerials: buildSerialList(serialInput),
           modelId: targetModel.id,
           modelName: targetModel.name,
-          type: entryType,
-          cause: fullCause,
-          partner: partnerName.trim() || targetBranch?.name || undefined,
-          vehicle: locationPart || undefined,
+          qty: quantity,
+          mode: entryType,
+          alreadyAllocated,
         });
-      });
+
+        finalSerials.forEach((s) => {
+          allSerialEntries.push({
+            serialNo: s,
+            batchNo: batchNo.trim() || targetModel.name,
+            modelId: targetModel.id,
+            modelName: targetModel.name,
+            type: entryType,
+            cause: fullCause,
+            partner: partnerName.trim() || targetBranch?.name || undefined,
+            vehicle: locationPart || undefined,
+          });
+        });
+      }
     }
 
     updated.lastModified = new Date().toISOString();
@@ -1053,16 +1190,26 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     <span>Repair Battery Pool Impact:</span>
                   </span>
                   <div className="flex items-center gap-2 font-mono">
-                    <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-amber-200 text-xs">
-                      Current: <strong className="text-slate-900">{record.stock['repair'] || 0}</strong>
-                    </span>
-                    <ArrowRight className="w-3.5 h-3.5 text-amber-600" />
-                    <span className="font-bold px-2.5 py-1 rounded border border-amber-300 bg-amber-100 text-amber-900 text-xs">
-                      New Closing:{' '}
-                      {entryType === 'repair_in'
-                        ? (record.stock['repair'] || 0) + quantity
-                        : (record.stock['repair'] || 0) - quantity}
-                    </span>
+                    {(() => {
+                      const repairClosing =
+                        (record.stock['repair'] || 0) +
+                        (record.inStock['repair'] || 0) +
+                        (record.outStock['repair'] || 0);
+                      return (
+                        <>
+                          <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-amber-200 text-xs">
+                            Current: <strong className="text-slate-900">{repairClosing}</strong>
+                          </span>
+                          <ArrowRight className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="font-bold px-2.5 py-1 rounded border border-amber-300 bg-amber-100 text-amber-900 text-xs">
+                            New Closing:{' '}
+                            {entryType === 'repair_in'
+                              ? repairClosing + quantity
+                              : repairClosing - quantity}
+                          </span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               ) : (
@@ -1072,13 +1219,23 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     <span>Service Standby Pool Impact:</span>
                   </span>
                   <div className="flex items-center gap-2 font-mono">
-                    <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-indigo-200 text-xs">
-                      Current: <strong className="text-slate-900">{record.stock['service'] || 0}</strong>
-                    </span>
-                    <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />
-                    <span className="font-bold px-2.5 py-1 rounded border border-indigo-300 bg-indigo-100 text-indigo-900 text-xs">
-                      New Closing: {(record.stock['service'] || 0) + quantity}
-                    </span>
+                    {(() => {
+                      const serviceClosing =
+                        (record.stock['service'] || 0) +
+                        (record.inStock['service'] || 0) +
+                        (record.outStock['service'] || 0);
+                      return (
+                        <>
+                          <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-indigo-200 text-xs">
+                            Current: <strong className="text-slate-900">{serviceClosing}</strong>
+                          </span>
+                          <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />
+                          <span className="font-bold px-2.5 py-1 rounded border border-indigo-300 bg-indigo-100 text-indigo-900 text-xs">
+                            New Closing: {serviceClosing + quantity}
+                          </span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
