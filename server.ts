@@ -27,6 +27,8 @@ import {
   deleteSerial,
   getChargerRecords,
   saveChargerRecord,
+  getVehicleRecords,
+  saveVehicleRecord,
   getBranchTransfers,
   createBranchTransfer,
   receiveBranchTransfers,
@@ -411,6 +413,36 @@ app.post('/api/chargers', async (req, res) => {
     const saved = await saveChargerRecord(branchId, date, record);
     const storage = getActiveStorageTarget();
     broadcastRealtime('CHARGER_UPDATED', saved);
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Vehicle Stock Register Routes
+app.get('/api/vehicles', async (req, res) => {
+  try {
+    const vehicles = await getVehicleRecords();
+    res.json({ success: true, data: vehicles });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/vehicles', async (req, res) => {
+  try {
+    const { branchId, date, record } = req.body || {};
+    if (!branchId || !date || !record) {
+      return res.status(400).json({ success: false, error: 'branchId, date, and record are required' });
+    }
+    const saved = await saveVehicleRecord(branchId, date, record);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('VEHICLE_UPDATED', saved);
     res.json({
       success: true,
       data: saved,

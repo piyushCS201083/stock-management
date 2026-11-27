@@ -752,6 +752,72 @@ export async function apiSaveChargerRecord(
   return { key: compositeKey, ...payload };
 }
 
+const STORAGE_KEY_VEHICLES = 'vehicle_stock_records_v1';
+
+export function loadLocalVehicles(): Record<string, any> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_VEHICLES);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
+export function saveLocalVehicles(data: Record<string, any>) {
+  try {
+    localStorage.setItem(STORAGE_KEY_VEHICLES, JSON.stringify(data));
+  } catch {}
+}
+
+export async function apiFetchVehicles(): Promise<Record<string, any>> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/vehicles`, { cache: 'no-store' });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocalVehicles(json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Vehicles fetch failed, using local cache:', err);
+  }
+  return loadLocalVehicles();
+}
+
+export async function apiSaveVehicleRecord(
+  branchId: string,
+  date: string,
+  record: Record<string, any>
+): Promise<any> {
+  const compositeKey = `${branchId}::${date}`;
+  const local = loadLocalVehicles();
+  const payload = {
+    branchId,
+    date,
+    items: record,
+    updatedAt: new Date().toISOString(),
+  };
+  local[compositeKey] = payload;
+  saveLocalVehicles(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/vehicles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branchId, date, record }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) return json.data;
+    }
+  } catch (err) {
+    console.warn('[API] Cloud vehicle save deferred:', err);
+  }
+  return { key: compositeKey, ...payload };
+}
+
 // Inter-Branch Transfers API & Local Fallback
 const STORAGE_KEY_TRANSFERS = 'battery_branch_transfers_v1';
 
@@ -858,6 +924,7 @@ export interface RealtimeSyncCallbacks {
   onColumnsUpdated?: (columns: BatteryColumn[]) => void;
   onTeamUpdated?: (team: TeamMember[]) => void;
   onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
+  onVehicleUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
   onTransfersUpdated?: (transfers: BranchTransfer[]) => void;
   onConnectionChange?: (connected: boolean) => void;
   onReconnected?: () => void;
@@ -961,6 +1028,19 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
           };
           saveLocalChargers(local);
           callbacks.onChargerUpdated?.(payload);
+        }
+        break;
+      case 'VEHICLE_UPDATED':
+        if (payload?.key && payload?.record) {
+          const local = loadLocalVehicles();
+          local[payload.key] = {
+            branchId: payload.branchId,
+            date: payload.date,
+            items: payload.record,
+            updatedAt: payload.updatedAt,
+          };
+          saveLocalVehicles(local);
+          callbacks.onVehicleUpdated?.(payload);
         }
         break;
       case 'TRANSFERS_UPDATED':

@@ -15,6 +15,7 @@ import {
 } from './types/stock';
 import { BranchCategoryPortal } from './components/BranchCategoryPortal';
 import { ChargerStockView } from './components/ChargerStockView';
+import { VehicleStockView } from './components/VehicleStockView';
 import { ReceiveGoodsBanner } from './components/ReceiveGoodsBanner';
 import {
   ReceiveTransferModal,
@@ -53,6 +54,10 @@ import {
   apiSaveChargerRecord,
   loadLocalChargers,
   saveLocalChargers,
+  apiFetchVehicles,
+  apiSaveVehicleRecord,
+  loadLocalVehicles,
+  saveLocalVehicles,
   apiFetchTransfers,
   apiCreateTransfer,
   apiReceiveTransfers,
@@ -109,6 +114,7 @@ import {
   Save,
   PackageCheck,
   Truck,
+  Car,
 } from 'lucide-react';
 
 import {
@@ -205,6 +211,7 @@ export default function App() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
   const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() => loadLocalSerials());
   const [chargerRecords, setChargerRecords] = useState<Record<string, any>>(() => loadLocalChargers());
+  const [vehicleRecords, setVehicleRecords] = useState<Record<string, any>>(() => loadLocalVehicles());
   const [transfers, setTransfers] = useState<BranchTransfer[]>(() => loadLocalTransfers());
   const [isReceivingGoods, setIsReceivingGoods] = useState<boolean>(false);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
@@ -213,12 +220,12 @@ export default function App() {
   // Current active date automatically defaults to today's date in Indian Standard Time (IST)
   const [currentDate, setCurrentDate] = useState<string>(() => getIndianTodayDate());
 
-  // Active stock category (battery, charger)
+  // Active stock category (battery, charger, vehicle)
   const [activeCategory, setActiveCategory] = useState<StockCategoryId>(() => {
     return (localStorage.getItem('active_stock_category') as StockCategoryId) || 'battery';
   });
 
-  // When opening the app, show the 4 branches selection portal
+  // When opening the app, show the 5 branches selection portal
   const [isBranchPortalOpen, setIsBranchPortalOpen] = useState<boolean>(() => {
     const hasVisited = sessionStorage.getItem('has_selected_branch_session');
     return !hasVisited;
@@ -317,7 +324,13 @@ export default function App() {
     if (pendingCount > 0) {
       showToast(`Opened ${branchName} — ${pendingCount} incoming batter${pendingCount === 1 ? 'y' : 'ies'} ready to receive!`);
     } else {
-      showToast(`Opened ${branchName} · ${categoryId === 'battery' ? 'Battery Stock' : 'Charger Stock'}`);
+      const catLabel =
+        categoryId === 'battery'
+          ? 'Battery Stock'
+          : categoryId === 'charger'
+          ? 'Charger Stock'
+          : 'Vehicle Stock';
+      showToast(`Opened ${branchName} · ${catLabel}`);
     }
   };
 
@@ -412,13 +425,14 @@ export default function App() {
         ...Array.from(inFlightRecordKeysRef.current),
       ]);
 
-      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteTransfers, health] =
+      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteVehicles, remoteTransfers, health] =
         await Promise.all([
           apiFetchRecords(protectedKeys),
           apiFetchColumns(),
           apiFetchTeam(),
           apiFetchSerials(),
           apiFetchChargers(),
+          apiFetchVehicles(),
           apiFetchTransfers(),
           checkBackendHealth(),
         ]);
@@ -470,6 +484,9 @@ export default function App() {
       }
       if (remoteChargers && Object.keys(remoteChargers).length > 0) {
         setChargerRecords(remoteChargers);
+      }
+      if (remoteVehicles && Object.keys(remoteVehicles).length > 0) {
+        setVehicleRecords(remoteVehicles);
       }
       if (Array.isArray(remoteTransfers)) {
         setTransfers(remoteTransfers);
@@ -561,6 +578,18 @@ export default function App() {
           },
         }));
         showToast(`⚡ Real-Time Cloud: Updated charger stock`);
+      },
+      onVehicleUpdated: (payload) => {
+        setVehicleRecords((prev) => ({
+          ...prev,
+          [payload.key]: {
+            branchId: payload.branchId,
+            date: payload.date,
+            items: payload.record,
+            updatedAt: payload.updatedAt,
+          },
+        }));
+        showToast(`⚡ Real-Time Cloud: Updated vehicle stock`);
       },
       onTransfersUpdated: (updatedTransfers) => {
         setTransfers(updatedTransfers);
@@ -1264,12 +1293,12 @@ export default function App() {
           <button
             onClick={() => setIsBranchPortalOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-500/40 text-blue-200 font-bold transition-all cursor-pointer shadow-2xs text-xs"
-            title="Click to view all 4 branches: 1-Chandravadni Naka, 2-Morar, 3-Yard City Center, 4-Service Center"
+            title="Click to view all 5 branches: 1-Chandravadni Naka, 2-Morar Battery Factory, 3-Yard City Center, 4-Service Center, 5-Vehicle Manufacturing Factory"
           >
             <Building2 className="w-3.5 h-3.5 text-blue-400" />
             <span>{activeBranch.name}</span>
             <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
-              Switch Branch (1-4)
+              Switch Branch (1-5)
             </span>
             {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
               <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
@@ -1282,7 +1311,7 @@ export default function App() {
           <span className="text-slate-600">/</span>
 
           {/* Quick Category Switcher */}
-          <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+          <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg border border-slate-700 flex-wrap">
             <button
               onClick={() => setActiveCategory('battery')}
               className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
@@ -1305,6 +1334,17 @@ export default function App() {
               <Zap className="w-3.5 h-3.5" />
               <span>Charger Stock</span>
             </button>
+            <button
+              onClick={() => setActiveCategory('vehicle')}
+              className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                activeCategory === 'vehicle'
+                  ? 'bg-emerald-600 text-white shadow-2xs'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Car className="w-3.5 h-3.5" />
+              <span>Vehicle Stock</span>
+            </button>
           </div>
         </div>
 
@@ -1316,7 +1356,7 @@ export default function App() {
             onClick={() => setIsBranchPortalOpen(true)}
             className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer flex items-center gap-1"
           >
-            <span>All 4 Branches & Categories</span>
+            <span>All 5 Branches & Categories</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -1405,6 +1445,33 @@ export default function App() {
                   },
                 };
                 saveLocalChargers(next);
+                return next;
+              });
+            }}
+          />
+        </main>
+      ) : activeCategory === 'vehicle' ? (
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
+          <VehicleStockView
+            branch={activeBranch}
+            onSwitchStockCategory={(cat) => setActiveCategory(cat)}
+            onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
+            activeDate={currentDate}
+            remoteVehicleRecords={vehicleRecords}
+            isCloudDbConnected={isCloudDbConnected}
+            onSaveVehicleRecord={async (branchId, date, record) => {
+              const saved = await apiSaveVehicleRecord(branchId, date, record);
+              setVehicleRecords((prev) => {
+                const next = {
+                  ...prev,
+                  [saved.key]: {
+                    branchId,
+                    date,
+                    items: record,
+                    updatedAt: saved.updatedAt,
+                  },
+                };
+                saveLocalVehicles(next);
                 return next;
               });
             }}

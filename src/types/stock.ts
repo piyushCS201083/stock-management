@@ -17,7 +17,7 @@ export interface BranchInfo {
   badge?: string;
 }
 
-export type StockCategoryId = 'battery' | 'charger' | 'spare_parts';
+export type StockCategoryId = 'battery' | 'charger' | 'vehicle';
 
 export interface StockCategoryInfo {
   id: StockCategoryId;
@@ -42,13 +42,13 @@ export const BRANCHES: BranchInfo[] = [
   {
     id: 'morar',
     number: 2,
-    name: '2 - Morar',
-    shortName: 'Morar',
-    subtitle: 'Morar Regional Warehouse & Distribution Hub',
+    name: '2 - Morar Battery Factory',
+    shortName: 'Morar Battery Factory',
+    subtitle: 'Morar Battery Manufacturing & Distribution Factory',
     code: 'MR-02',
-    address: 'Morar Cantt / Market Area',
-    contactPerson: 'Store Incharge',
-    badge: 'Regional Warehouse',
+    address: 'Morar Battery Factory / Market Area',
+    contactPerson: 'Factory Incharge',
+    badge: 'Battery Factory',
   },
   {
     id: 'yard_city_center',
@@ -72,6 +72,17 @@ export const BRANCHES: BranchInfo[] = [
     contactPerson: 'Service Lead',
     badge: 'Technical & Repairs',
   },
+  {
+    id: 'vehicle_factory',
+    number: 5,
+    name: '5 - Vehicle Manufacturing Factory',
+    shortName: 'Vehicle Manufacturing Factory',
+    subtitle: 'EV Vehicle Assembly, Chassis & Manufacturing Plant',
+    code: 'VF-05',
+    address: 'Vehicle Manufacturing Factory Unit',
+    contactPerson: 'Vehicle Factory Head',
+    badge: 'Manufacturing Factory',
+  },
 ];
 
 export const DEFAULT_CHARGER_COLUMNS: BatteryColumn[] = [
@@ -81,6 +92,15 @@ export const DEFAULT_CHARGER_COLUMNS: BatteryColumn[] = [
   { id: '48_60v_universal', name: '48V/60V Universal' },
   { id: '72v_30a_lithium', name: '72V 30A Lithium' },
   { id: 'old_charger_repair', name: 'Charger for Repair' },
+];
+
+export const DEFAULT_VEHICLE_COLUMNS: BatteryColumn[] = [
+  { id: 'e_rickshaw_passenger', name: 'E-Rickshaw Passenger' },
+  { id: 'e_rickshaw_loader', name: 'E-Rickshaw Loader / Cargo' },
+  { id: 'e_scooter_low_speed', name: 'E-Scooter (Low Speed)' },
+  { id: 'e_scooter_high_speed', name: 'E-Scooter (High Speed)' },
+  { id: 'e_auto_l5', name: 'E-Auto / L5 Electric' },
+  { id: 'chassis_under_assembly', name: 'Chassis / Under Assembly' },
 ];
 
 export const DEFAULT_BRANCH_ID = 'chandravadni_naka';

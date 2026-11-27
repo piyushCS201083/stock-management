@@ -63,6 +63,7 @@ export interface FullExcelInputState {
   columns: BatteryColumn[];
   serials?: Record<string, BatterySerialItem>;
   chargerRecords?: Record<string, any>;
+  vehicleRecords?: Record<string, any>;
   branchTransfers?: BranchTransfer[];
 }
 
@@ -342,6 +343,24 @@ export function buildStockDatabaseExcelBuffer(state: FullExcelInputState): Buffe
   });
   const chargerSheet = XLSX.utils.aoa_to_sheet(chargerRows);
   XLSX.utils.book_append_sheet(wb, chargerSheet, 'Charger_Stock');
+
+  // Vehicle Stock Sheet
+  const vehicleRows: any[][] = [
+    ['Key', 'Branch', 'Date', 'Updated At', 'Items JSON'],
+  ];
+  Object.entries(state.vehicleRecords || {}).forEach(([k, val]) => {
+    const branchName =
+      BRANCHES.find((b) => b.id === val?.branchId)?.name || val?.branchId || '';
+    vehicleRows.push([
+      k,
+      branchName,
+      val?.date || '',
+      val?.updatedAt || '',
+      JSON.stringify(val?.items || val || {}),
+    ]);
+  });
+  const vehicleSheet = XLSX.utils.aoa_to_sheet(vehicleRows);
+  XLSX.utils.book_append_sheet(wb, vehicleSheet, 'Vehicle_Stock');
 
   // Inter-Branch Transfers Sheet
   const transferRows: any[][] = [

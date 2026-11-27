@@ -21,6 +21,8 @@ import {
   CheckCircle2,
   Boxes,
   Plus,
+  Factory,
+  Car,
 } from 'lucide-react';
 
 interface BranchCategoryPortalProps {
@@ -50,11 +52,13 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
       case 1:
         return <Building2 className="w-6 h-6 text-blue-600" />;
       case 2:
-        return <Warehouse className="w-6 h-6 text-emerald-600" />;
+        return <Factory className="w-6 h-6 text-emerald-600" />;
       case 3:
         return <Truck className="w-6 h-6 text-amber-600" />;
       case 4:
         return <Wrench className="w-6 h-6 text-rose-600" />;
+      case 5:
+        return <Car className="w-6 h-6 text-indigo-600" />;
       default:
         return <Building2 className="w-6 h-6 text-slate-600" />;
     }
@@ -84,8 +88,8 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-xl">
               {viewStep === 'branches'
-                ? 'Manage and maintain verified daily stock across 4 regional branches and storage depots.'
-                : 'Choose the inventory register to view closing balances, serial tracker, and daily dispatches.'}
+                ? 'Manage and maintain verified daily stock across 5 branches, factories, and storage depots.'
+                : 'Choose the inventory register (Battery, Charger, or Vehicle) to view closing balances and daily dispatches.'}
             </p>
           </div>
 
@@ -95,19 +99,19 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
               onClick={() => setViewStep('branches')}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded-lg transition-colors cursor-pointer self-start md:self-auto"
             >
-              <span>← All 4 Branches</span>
+              <span>← All 5 Branches</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* STEP 1: Branch Selection Grid (4 Branches) */}
+      {/* STEP 1: Branch Selection Grid (5 Branches) */}
       {viewStep === 'branches' ? (
         <div className="space-y-4">
           <div className="flex items-center justify-between px-1">
             <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
               <Layers className="w-4 h-4 text-blue-600" />
-              <span>Available Branches (4 Locations)</span>
+              <span>Available Branches (5 Locations)</span>
             </h2>
             <span className="text-xs text-slate-500 font-medium">Click a branch to view its stock</span>
           </div>
@@ -178,16 +182,21 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                   </div>
 
                   {/* Stock Highlights footer */}
-                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                    <div className="flex items-center gap-3">
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 flex-wrap gap-2">
+                    <div className="flex items-center gap-2.5 flex-wrap">
                       <span className="flex items-center gap-1 text-slate-700 font-semibold">
                         <BatteryCharging className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Battery Stock</span>
+                        <span>Battery</span>
                       </span>
                       <span className="text-slate-300">·</span>
                       <span className="flex items-center gap-1 text-slate-700 font-semibold">
                         <Zap className="w-3.5 h-3.5 text-amber-600" />
-                        <span>Charger Stock</span>
+                        <span>Charger</span>
+                      </span>
+                      <span className="text-slate-300">·</span>
+                      <span className="flex items-center gap-1 text-slate-700 font-semibold">
+                        <Car className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Vehicle</span>
                       </span>
                     </div>
 
@@ -221,7 +230,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             {/* 1. BATTERY STOCK CARD (Opens our verified full register!) */}
             <div
               onClick={() => onSelectBranchAndCategory(selectedBranch.id, 'battery')}
@@ -306,6 +315,50 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                   className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
                 >
                   <span>Open Charger Stock</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* 3. VEHICLE STOCK CARD */}
+            <div
+              onClick={() => onSelectBranchAndCategory(selectedBranch.id, 'vehicle')}
+              className="group relative p-6 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 bg-white hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="p-3.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                  <Car className="w-8 h-8" />
+                </div>
+                <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  EV & Chassis Stock
+                </span>
+              </div>
+
+              <div className="mt-4">
+                <h3 className="text-lg font-black text-slate-900 group-hover:text-emerald-700 transition-colors flex items-center gap-2">
+                  <span>Vehicle Stock</span>
+                  <ArrowRight className="w-4 h-4 text-emerald-600 group-hover:translate-x-1 transition-transform" />
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
+                  Track EV vehicles (E-Rickshaw Passenger, Loader/Cargo, E-Scooter, E-Auto L5, Chassis), daily manufacturing inward, branch transfers, and customer deliveries.
+                </p>
+
+                <div className="mt-4 flex flex-wrap gap-1.5 text-[11px] font-mono text-slate-600">
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">E-Rickshaw Passenger</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">Loader / Cargo</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">E-Scooter</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">E-Auto L5</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">Chassis</span>
+                </div>
+              </div>
+
+              <div className="mt-6 pt-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-xs text-slate-500 font-semibold">Location: {selectedBranch.shortName}</span>
+                <button
+                  type="button"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+                >
+                  <span>Open Vehicle Stock</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </div>

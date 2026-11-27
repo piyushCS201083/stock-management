@@ -43,6 +43,7 @@ interface DatabaseState {
   teamMembers: TeamMember[];
   serials: Record<string, BatterySerialItem>;
   chargerRecords?: Record<string, any>;
+  vehicleRecords?: Record<string, any>;
   branchTransfers?: BranchTransfer[];
   logs: any[];
 }
@@ -321,6 +322,13 @@ async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
     metaRows.push({
       key: 'charger_records',
       data: local.chargerRecords,
+      updated_at: now,
+    });
+  }
+  if (local.vehicleRecords && Object.keys(local.vehicleRecords).length > 0) {
+    metaRows.push({
+      key: 'vehicle_records',
+      data: local.vehicleRecords,
       updated_at: now,
     });
   }
@@ -1495,14 +1503,127 @@ export async function saveChargerRecord(
   return { key: compositeKey, branchId, date, record, updatedAt };
 }
 
+export async function getVehicleRecords(): Promise<Record<string, any>> {
+  const local = readLocalFile();
+  let remoteMap: Record<string, any> | null = null;
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query("SELECT data FROM battery_metadata WHERE key = 'vehicle_records'");
+      if (res.rows.length > 0) {
+        remoteMap = typeof res.rows[0].data === 'string' ? JSON.parse(res.rows[0].data) : res.rows[0].data;
+      }
+    } catch (err) {
+      console.error('[DBMS] PG getVehicleRecords error:', err);
+    }
+  } else if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'vehicle_records')
+        .maybeSingle();
+      if (!error) {
+        remoteMap = data?.data
+          ? typeof data.data === 'string'
+            ? JSON.parse(data.data)
+            : data.data
+          : {};
+      } else {
+        console.error('[DBMS] Supabase getVehicleRecords error:', error.message);
+      }
+    } catch (err) {
+      console.error('[DBMS] Supabase getVehicleRecords exception:', err);
+    }
+  }
+
+  if (remoteMap) {
+    const merged = { ...remoteMap };
+    Object.entries(local.vehicleRecords || {}).forEach(([k, val]: [string, any]) => {
+      if (!merged[k] || parseTs(val?.updatedAt) > parseTs(merged[k]?.updatedAt)) {
+        merged[k] = val;
+      }
+    });
+    return merged;
+  }
+
+  return local.vehicleRecords || {};
+}
+
+export async function saveVehicleRecord(
+  branchId: string,
+  date: string,
+  record: Record<string, any>
+): Promise<{ key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }> {
+  if (typeof branchId !== 'string' || !branchId.trim() || typeof date !== 'string' || !date.trim()) {
+    throw new Error('Valid branchId and date are required');
+  }
+
+  const compositeKey = `${branchId}::${date}`;
+  const updatedAt = new Date().toISOString();
+  const existing = await getVehicleRecords();
+  const merged = {
+    ...existing,
+    [compositeKey]: {
+      branchId,
+      date,
+      items: record,
+      updatedAt,
+    },
+  };
+
+  mirrorToLocalFile((local) => {
+    local.vehicleRecords = merged;
+  });
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO battery_metadata (key, data, updated_at)
+         VALUES ('vehicle_records', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
+        [JSON.stringify(merged)]
+      );
+      scheduleCloudSpaceBackup(`saveVehicle:${compositeKey}`);
+      return { key: compositeKey, branchId, date, record, updatedAt };
+    } catch (err) {
+      console.error('[DBMS] PG saveVehicleRecord error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'vehicle_records',
+          data: merged,
+          updated_at: updatedAt,
+        },
+        { onConflict: 'key' }
+      );
+      if (!error) {
+        scheduleCloudSpaceBackup(`saveVehicle:${compositeKey}`);
+        return { key: compositeKey, branchId, date, record, updatedAt };
+      }
+      console.error('[DBMS] Supabase saveVehicleRecord error:', error.message);
+    } catch (err) {
+      console.error('[DBMS] Supabase saveVehicleRecord exception:', err);
+    }
+  }
+
+  scheduleCloudSpaceBackup(`saveVehicle:${compositeKey}`);
+  return { key: compositeKey, branchId, date, record, updatedAt };
+}
+
 export async function exportFullDatabaseSnapshot(reason = 'manual') {
-  const [records, columns, teamMembers, serials, chargerRecords, branchTransfers] =
+  const [records, columns, teamMembers, serials, chargerRecords, vehicleRecords, branchTransfers] =
     await Promise.all([
       getAllRecords(),
       getColumns(),
       getTeamMembers(),
       getAllSerials(),
       getChargerRecords(),
+      getVehicleRecords(),
       getBranchTransfers(),
     ]);
 
@@ -1515,6 +1636,7 @@ export async function exportFullDatabaseSnapshot(reason = 'manual') {
       records: Object.keys(records).length,
       serials: Object.keys(serials).length,
       chargers: Object.keys(chargerRecords).length,
+      vehicles: Object.keys(vehicleRecords).length,
       transfers: branchTransfers.length,
     },
     state: {
@@ -1523,6 +1645,7 @@ export async function exportFullDatabaseSnapshot(reason = 'manual') {
       teamMembers,
       serials,
       chargerRecords,
+      vehicleRecords,
       branchTransfers,
     },
   };
@@ -1585,6 +1708,8 @@ export async function restoreFullDatabaseSnapshot(
   const incomingTeam = Array.isArray(state.teamMembers) ? (state.teamMembers as TeamMember[]) : undefined;
   const incomingChargers =
     state.chargerRecords && typeof state.chargerRecords === 'object' ? state.chargerRecords : undefined;
+  const incomingVehicles =
+    state.vehicleRecords && typeof state.vehicleRecords === 'object' ? state.vehicleRecords : undefined;
   const incomingTransfers = Array.isArray(state.branchTransfers)
     ? (state.branchTransfers as BranchTransfer[])
     : undefined;
@@ -1614,6 +1739,30 @@ export async function restoreFullDatabaseSnapshot(
         {
           key: 'charger_records',
           data: mergedChargers,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+    }
+  }
+  if (incomingVehicles) {
+    const currentVehicles = await getVehicleRecords();
+    const mergedVehicles = { ...currentVehicles, ...incomingVehicles };
+    mirrorToLocalFile((local) => {
+      local.vehicleRecords = mergedVehicles;
+    });
+    if (isPostgresConnected && pgPool) {
+      await pgPool.query(
+        `INSERT INTO battery_metadata (key, data, updated_at)
+         VALUES ('vehicle_records', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
+        [JSON.stringify(mergedVehicles)]
+      );
+    } else if (isSupabaseReady && supabaseClient) {
+      await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'vehicle_records',
+          data: mergedVehicles,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'key' }

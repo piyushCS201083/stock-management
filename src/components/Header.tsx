@@ -9,6 +9,7 @@ import {
   Layers,
   BatteryCharging,
   Zap,
+  Car,
 } from 'lucide-react';
 import { getIndianCurrentTime } from '../utils/date';
 import { BranchInfo, BRANCHES, StockCategoryId } from '../types/stock';
@@ -67,7 +68,7 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           onClick={onOpenBranchPortal}
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-xs font-bold text-slate-900 transition-all cursor-pointer shadow-2xs"
-          title="Click to switch Branch (1-Chandravadni Naka, 2-Morar, 3-Yard, 4-Service Center) or stock category"
+          title="Click to switch Branch (1-Chandravadni Naka, 2-Morar Battery Factory, 3-Yard City Center, 4-Service Center, 5-Vehicle Manufacturing Factory) or stock category"
         >
           <Building2 className="w-3.5 h-3.5 text-blue-600" />
           <span className="font-bold text-blue-900">{activeBranch.shortName}</span>
@@ -78,10 +79,15 @@ export const Header: React.FC<HeaderProps> = ({
                 <BatteryCharging className="w-3.5 h-3.5 text-blue-600 inline" />
                 <span>Battery</span>
               </>
-            ) : (
+            ) : activeCategory === 'charger' ? (
               <>
                 <Zap className="w-3.5 h-3.5 text-amber-600 inline" />
                 <span>Charger</span>
+              </>
+            ) : (
+              <>
+                <Car className="w-3.5 h-3.5 text-emerald-600 inline" />
+                <span>Vehicle</span>
               </>
             )}
           </span>
@@ -158,6 +164,17 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Zap className="w-3.5 h-3.5" />
             <span>Charger Stock</span>
+          </button>
+          <button
+            onClick={() => onSelectCategory('vehicle')}
+            className={`px-3 py-1 rounded-md text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              activeCategory === 'vehicle'
+                ? 'bg-emerald-600 text-white shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Car className="w-3.5 h-3.5" />
+            <span>Vehicle Stock</span>
           </button>
         </div>
 

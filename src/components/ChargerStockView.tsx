@@ -3,6 +3,7 @@ import {
   BatteryColumn,
   DEFAULT_CHARGER_COLUMNS,
   BranchInfo,
+  StockCategoryId,
 } from '../types/stock';
 import { apiSaveChargerRecord } from '../services/api';
 import {
@@ -30,7 +31,7 @@ const DEFAULT_CHARGER_BASELINE: Record<string, {
 
 interface ChargerStockViewProps {
   branch: BranchInfo;
-  onSwitchStockCategory: (category: 'battery' | 'charger') => void;
+  onSwitchStockCategory: (category: StockCategoryId) => void;
   onOpenBranchPortal: () => void;
   activeDate: string;
   remoteChargerRecords?: Record<string, any>;
@@ -193,14 +194,21 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
             onClick={() => onSwitchStockCategory('battery')}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer shadow-xs"
           >
-            <span>Switch to Battery Stock</span>
+            <span>Battery Stock</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => onSwitchStockCategory('vehicle')}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors cursor-pointer shadow-xs"
+          >
+            <span>Vehicle Stock</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={onOpenBranchPortal}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition-colors cursor-pointer"
           >
-            <span>Change Branch (1-4)</span>
+            <span>Change Branch (1-5)</span>
           </button>
           <button
             onClick={handleShareWhatsApp}
