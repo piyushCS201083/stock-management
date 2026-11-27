@@ -128,11 +128,21 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     }
   }, [isOpen, initialEntryType]);
 
+  const resolveModel = (id: string): BatteryColumn | undefined =>
+    id === 'service'
+      ? { id: 'service', name: 'SERVICE BATTERY', isSpecial: true }
+      : columns.find((c) => c.id === id);
+
   const inStockSerialsForOutModel = useMemo(() => {
-    const col = columns.find((c) => c.id === selectedColId);
+    const col =
+      selectedColId === 'service'
+        ? { id: 'service', name: 'SERVICE BATTERY' }
+        : columns.find((c) => c.id === selectedColId);
     return Object.values(serials).filter(
       (s) =>
-        s.status === 'in_stock' &&
+        (selectedColId === 'service'
+          ? s.status === 'in_stock' || s.status === 'service_standby'
+          : s.status === 'in_stock') &&
         (s.branchId || DEFAULT_BRANCH_ID) === activeBranch.id &&
         (s.modelId === selectedColId ||
           (col && (s.modelName === col.name || s.batchNo === col.name)))
@@ -330,7 +340,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       const fullCause = parts.join(' , ');
 
       if (entryType === 'in') {
-        const targetCol = columns.find((c) => c.id === selectedColId);
+        const targetCol = resolveModel(selectedColId);
         updated.inStock[selectedColId] = (updated.inStock[selectedColId] || 0) + quantity;
         updated.inCause[selectedColId] = updated.inCause[selectedColId]
           ? `${updated.inCause[selectedColId]}\n${fullCause}`
@@ -343,13 +353,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         const outItems = [
           {
             modelId: selectedColId,
-            modelName: columns.find((c) => c.id === selectedColId)?.name || selectedColId,
+            modelName: resolveModel(selectedColId)?.name || selectedColId,
             quantity,
           },
           ...extraOutItems
             .filter((item) => item.quantity > 0)
             .map((item) => {
-              const col = columns.find((c) => c.id === item.modelId);
+              const col = resolveModel(item.modelId);
               return {
                 modelId: item.modelId,
                 modelName: col?.name || item.modelId,
@@ -402,7 +412,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
           : entryType === 'service'
           ? { id: 'service', name: 'SERVICE BATTERY' }
-          : columns.find((c) => c.id === selectedColId) || { id: selectedColId, name: selectedColId };
+          : resolveModel(selectedColId) || { id: selectedColId, name: selectedColId };
 
       let finalSerials = buildSerialList(serialInput);
       if (entryType === 'in') {
@@ -445,7 +455,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     setExtraOutItems([]);
   };
 
-  const selectedCol = columns.find((c) => c.id === selectedColId);
+  const selectedCol = resolveModel(selectedColId);
   const currentOpen = selectedCol ? record.stock[selectedCol.id] || 0 : 0;
   const currentIn = selectedCol ? record.inStock[selectedCol.id] || 0 : 0;
   const currentOut = selectedCol ? record.outStock[selectedCol.id] || 0 : 0;
@@ -876,6 +886,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                           {col.name} (Current: {record.stock[col.id] || 0} units)
                         </option>
                       ))}
+                      <option value="service">
+                        SERVICE BATTERY (Current:{' '}
+                        {(record.stock['service'] || 0) +
+                          (record.inStock['service'] || 0) +
+                          (record.outStock['service'] || 0)}{' '}
+                        units)
+                      </option>
                     </select>
                   </div>
 

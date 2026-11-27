@@ -42,7 +42,6 @@ import {
   flushPendingRecordsToServer,
   getPendingSyncKeys,
   apiTriggerCloudinaryBackup,
-  apiFactoryReset,
   apiFetchColumns,
   apiSaveColumns,
   apiFetchTeam,
@@ -101,7 +100,6 @@ import {
   Send,
   FileSpreadsheet,
   Download,
-  RotateCcw,
   CheckCircle,
   Database,
   Barcode,
@@ -1273,38 +1271,6 @@ export default function App() {
     }
   };
 
-  // Factory Reset all stock data, serials, chargers, vehicles, transfers & history from today onwards
-  const handleFactoryReset = async () => {
-    if (
-      !window.confirm(
-        `Factory reset ALL stock data, serial numbers, transfers, and history across all 5 branches? Everything will start fresh from today (${todayIST}) with 0 stock.`
-      )
-    ) {
-      return;
-    }
-    setIsCloudSpaceBackingUp(true);
-    setSaveState('saving');
-    try {
-      const res = await apiFactoryReset();
-      if (res.success) {
-        inFlightRecordKeysRef.current.clear();
-        setSerials({});
-        setChargerRecords({});
-        setVehicleRecords({});
-        setTransfers([]);
-        setCurrentDate(res.todayIST || todayIST);
-        setPendingSyncCount(0);
-        setSaveState('saved');
-        await syncWithCloudBackend(true);
-        showToast(`✓ Factory reset complete! Starting fresh from ${res.todayIST || todayIST}.`);
-      } else {
-        showToast(`⚠ Factory reset error: ${res.error || 'Please try again'}`);
-      }
-    } finally {
-      setIsCloudSpaceBackingUp(false);
-    }
-  };
-
   // Jump to Indian Standard Time (IST) Today
   const handleJumpToTodayIST = async () => {
     if (branchRecords[todayIST]) {
@@ -1956,15 +1922,6 @@ export default function App() {
               >
                 <Cloud className="w-3.5 h-3.5" />
                 <span>{isCloudSpaceBackingUp ? 'Syncing...' : 'Sync Excels to Cloud'}</span>
-              </button>
-              <button
-                onClick={handleFactoryReset}
-                disabled={isCloudSpaceBackingUp}
-                className="inline-flex items-center gap-1 text-xs text-rose-600 hover:text-rose-800 font-semibold cursor-pointer"
-                title="Factory reset all stock data & history and start fresh from today"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Factory Reset</span>
               </button>
             </div>
           </div>
