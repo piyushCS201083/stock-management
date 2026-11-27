@@ -28,49 +28,81 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
   const [newColName, setNewColName] = useState('');
   const [showAddCol, setShowAddCol] = useState(false);
 
+  const editingRef = React.useRef<{ row: string; colId: string } | null>(null);
+  const tempValueRef = React.useRef<string>('');
+  const recordRef = React.useRef<DayRecord>(record);
+  const committedRef = React.useRef<boolean>(false);
+
+  React.useEffect(() => {
+    recordRef.current = record;
+  }, [record]);
+
   const startEdit = (row: string, colId: string, currentVal: number | string) => {
     if (isCapturing) return;
-    setEditingCell({ row, colId });
-    setTempValue(String(currentVal ?? ''));
+    const cell = { row, colId };
+    const initialStr = String(currentVal ?? '');
+    committedRef.current = false;
+    editingRef.current = cell;
+    tempValueRef.current = initialStr;
+    setEditingCell(cell);
+    setTempValue(initialStr);
+  };
+
+  const updateTempValue = (val: string) => {
+    tempValueRef.current = val;
+    setTempValue(val);
   };
 
   const commitEdit = () => {
-    if (!editingCell) return;
-    const { row, colId } = editingCell;
-    const updated = { ...record };
+    const activeCell = editingRef.current;
+    if (!activeCell || committedRef.current) return;
+    committedRef.current = true;
+
+    const { row, colId } = activeCell;
+    const rawVal = tempValueRef.current;
+    const base = recordRef.current;
+    const updated: DayRecord = {
+      ...base,
+      stock: { ...base.stock },
+      inStock: { ...base.inStock },
+      inCause: { ...base.inCause },
+      outStock: { ...base.outStock },
+      outCause: { ...base.outCause },
+    };
 
     if (row === 'stock') {
-      const num = parseInt(tempValue, 10);
-      updated.stock = { ...updated.stock, [colId]: isNaN(num) ? 0 : num };
+      const num = parseInt(rawVal, 10);
+      updated.stock[colId] = isNaN(num) ? 0 : num;
     } else if (row === 'inStock') {
-      const num = parseInt(tempValue, 10);
-      updated.inStock = { ...updated.inStock, [colId]: isNaN(num) ? 0 : Math.abs(num) };
+      const num = parseInt(rawVal, 10);
+      updated.inStock[colId] = isNaN(num) ? 0 : Math.abs(num);
     } else if (row === 'inCause') {
       if (colId === 'total') {
-        updated.totalInCause = tempValue;
+        updated.totalInCause = rawVal;
       } else if (colId === 'repair') {
-        updated.repairInCause = tempValue;
+        updated.repairInCause = rawVal;
       } else {
-        updated.inCause = { ...updated.inCause, [colId]: tempValue };
+        updated.inCause[colId] = rawVal;
       }
     } else if (row === 'outStock') {
-      const num = parseInt(tempValue, 10);
+      const num = parseInt(rawVal, 10);
       // Ensure outStock is stored as negative number (e.g., -1) to match spreadsheet conventions
-      const finalVal = isNaN(num) ? 0 : (num > 0 ? -num : num);
-      updated.outStock = { ...updated.outStock, [colId]: finalVal };
+      const finalVal = isNaN(num) ? 0 : num > 0 ? -num : num;
+      updated.outStock[colId] = finalVal;
     } else if (row === 'outCause') {
       if (colId === 'total') {
-        updated.totalOutCause = tempValue;
+        updated.totalOutCause = rawVal;
       } else if (colId === 'repair') {
-        updated.repairOutCause = tempValue;
+        updated.repairOutCause = rawVal;
       } else {
-        updated.outCause = { ...updated.outCause, [colId]: tempValue };
+        updated.outCause[colId] = rawVal;
       }
     }
 
     updated.lastModified = new Date().toISOString();
-    onUpdateRecord(updated);
+    editingRef.current = null;
     setEditingCell(null);
+    onUpdateRecord(updated);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -78,6 +110,8 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
       e.preventDefault();
       commitEdit();
     } else if (e.key === 'Escape') {
+      committedRef.current = true;
+      editingRef.current = null;
       setEditingCell(null);
     }
   };
@@ -95,11 +129,11 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
     <div className="w-full">
       {/* Optional Top Mini-Toolbar for Column Addition */}
       {!isCapturing && (
-        <div className="flex items-center justify-between pb-2 text-xs text-slate-500">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between pb-2 text-xs text-slate-500 flex-wrap gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-slate-700">Daily Stock Sheet:</span>
             <span className="font-semibold text-blue-700">{record.date}</span>
-            <span className="text-slate-400">· Click any cell to edit directly</span>
+            <span className="text-slate-400">· Click any cell to edit directly (auto-saves & carries forward)</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -274,7 +308,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                         <input
                           type="number"
                           value={tempValue}
-                          onChange={(e) => setTempValue(e.target.value)}
+                          onChange={(e) => updateTempValue(e.target.value)}
                           onBlur={commitEdit}
                           onKeyDown={handleKeyDown}
                           className="w-full text-center font-bold bg-white text-slate-900 rounded outline-none px-1"
@@ -301,7 +335,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <input
                       type="number"
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       className="w-full text-center font-bold bg-white outline-none px-1"
@@ -321,7 +355,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <input
                       type="number"
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       className="w-full text-center font-bold bg-white outline-none px-1"
@@ -355,7 +389,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                         <input
                           type="number"
                           value={tempValue}
-                          onChange={(e) => setTempValue(e.target.value)}
+                          onChange={(e) => updateTempValue(e.target.value)}
                           onBlur={commitEdit}
                           onKeyDown={handleKeyDown}
                           className="w-full text-center font-bold bg-white outline-none px-1"
@@ -382,7 +416,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <input
                       type="number"
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       className="w-full text-center font-bold bg-white outline-none px-1"
@@ -402,7 +436,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <input
                       type="number"
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       className="w-full text-center font-bold bg-white outline-none px-1"
@@ -435,7 +469,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                       {isEditing ? (
                         <textarea
                           value={tempValue}
-                          onChange={(e) => setTempValue(e.target.value)}
+                          onChange={(e) => updateTempValue(e.target.value)}
                           onBlur={commitEdit}
                           onKeyDown={handleKeyDown}
                           rows={2}
@@ -457,7 +491,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                   {editingCell?.row === 'inCause' && editingCell?.colId === 'total' ? (
                     <textarea
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       rows={2}
@@ -479,7 +513,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                   {editingCell?.row === 'inCause' && editingCell?.colId === 'repair' ? (
                     <textarea
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       rows={2}
@@ -521,7 +555,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                         <input
                           type="number"
                           value={tempValue}
-                          onChange={(e) => setTempValue(e.target.value)}
+                          onChange={(e) => updateTempValue(e.target.value)}
                           onBlur={commitEdit}
                           onKeyDown={handleKeyDown}
                           className="w-full text-center font-bold bg-white outline-none px-1"
@@ -548,7 +582,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <input
                       type="number"
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       className="w-full text-center font-bold bg-white outline-none px-1"
@@ -568,7 +602,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <input
                       type="number"
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       className="w-full text-center font-bold bg-white outline-none px-1"
@@ -601,7 +635,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                       {isEditing ? (
                         <textarea
                           value={tempValue}
-                          onChange={(e) => setTempValue(e.target.value)}
+                          onChange={(e) => updateTempValue(e.target.value)}
                           onBlur={commitEdit}
                           onKeyDown={handleKeyDown}
                           rows={2}
@@ -623,7 +657,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                   {editingCell?.row === 'outCause' && editingCell?.colId === 'total' ? (
                     <textarea
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       rows={2}
@@ -645,7 +679,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                   {editingCell?.row === 'outCause' && editingCell?.colId === 'repair' ? (
                     <textarea
                       value={tempValue}
-                      onChange={(e) => setTempValue(e.target.value)}
+                      onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
                       rows={3}

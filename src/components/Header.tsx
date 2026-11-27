@@ -27,6 +27,7 @@ interface HeaderProps {
   onSelectCategory: (cat: StockCategoryId) => void;
   isRealtimeActive?: boolean;
   isCloudDbConnected?: boolean;
+  pendingReceiveCount?: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -43,6 +44,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectCategory,
   isRealtimeActive = true,
   isCloudDbConnected = false,
+  pendingReceiveCount = 0,
 }) => {
   const [istTime, setIstTime] = useState<string>(() => getIndianCurrentTime());
 
@@ -84,6 +86,11 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </span>
           <ChevronDown className="w-3.5 h-3.5 text-slate-500 ml-0.5" />
+          {pendingReceiveCount > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-400 text-slate-950 animate-pulse">
+              {pendingReceiveCount} Receive
+            </span>
+          )}
         </button>
 
         <div

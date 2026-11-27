@@ -13,6 +13,7 @@ import {
   getAllRecords,
   getRecord,
   saveRecord,
+  saveRecordWithStatus,
   deleteRecord,
   getColumns,
   saveColumns,
@@ -26,8 +27,20 @@ import {
   deleteSerial,
   getChargerRecords,
   saveChargerRecord,
+  getBranchTransfers,
+  createBranchTransfer,
+  receiveBranchTransfers,
+  deleteBranchTransfer,
   backupPermanentCodebase,
+  exportFullDatabaseSnapshot,
+  triggerCloudSpaceBackupNow,
+  restoreFullDatabaseSnapshot,
 } from './server/db.ts';
+import {
+  getCloudinaryStatus,
+  listCloudSpaceBackups,
+  readCloudSpaceSnapshot,
+} from './server/cloudinary.ts';
 
 dotenv.config();
 
@@ -216,14 +229,15 @@ app.post('/api/records', async (req, res) => {
     if (!record || !record.date) {
       return res.status(400).json({ success: false, error: 'Date is required' });
     }
-    const saved = await saveRecord(record);
+    const result = await saveRecordWithStatus(record);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('RECORD_UPDATED', saved);
+    broadcastRealtime('RECORD_UPDATED', result.record);
     res.json({
       success: true,
-      data: saved,
+      data: result.record,
       storage,
-      persistedToRemote: storage !== 'local_file',
+      persistedToRemote: storage === 'local_file' ? false : result.persistedToRemote,
+      remoteError: result.remoteError,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -406,18 +420,157 @@ app.post('/api/chargers', async (req, res) => {
   }
 });
 
-// Permanent Codebase & Disk Backup Sync
+// Inter-Branch Stock Transfers & Receive Goods Notifications
+app.get('/api/transfers', async (req, res) => {
+  try {
+    const transfers = await getBranchTransfers();
+    res.json({ success: true, data: transfers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/transfers', async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.fromBranchId || !body.toBranchId || !body.date || !Array.isArray(body.items) || body.items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'fromBranchId, toBranchId, date, and non-empty items array are required',
+      });
+    }
+    const result = await createBranchTransfer(body);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('TRANSFERS_UPDATED', result.transfers);
+    res.json({
+      success: true,
+      data: result.created,
+      transfers: result.transfers,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/transfers/receive', async (req, res) => {
+  try {
+    const { selections, receivedBy } = req.body || {};
+    if (!Array.isArray(selections) || selections.length === 0) {
+      return res.status(400).json({ success: false, error: 'selections array is required' });
+    }
+    const result = await receiveBranchTransfers(selections, receivedBy);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('TRANSFERS_UPDATED', result.transfers);
+    res.json({
+      success: true,
+      data: result.transfers,
+      newlyReceived: result.newlyReceived,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/transfers/:id', async (req, res) => {
+  try {
+    const transfers = await deleteBranchTransfer(req.params.id);
+    broadcastRealtime('TRANSFERS_UPDATED', transfers);
+    res.json({ success: true, data: transfers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Permanent Codebase & Disk + Cloud Space Backup Sync
 app.post('/api/backup-permanent', async (req, res) => {
   try {
     const { records, serials } = req.body || {};
     const result = await backupPermanentCodebase(records, serials);
+    const cloudSpace = await triggerCloudSpaceBackupNow(undefined, undefined, 'permanent_sync');
     const storage = getActiveStorageTarget();
     broadcastRealtime('PERMANENT_SYNC_COMPLETE', result);
     res.json({
       ...result,
+      cloudSpace,
       storage,
       persistedToRemote: storage !== 'local_file',
     });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Cloudinary Cloud Space Backup & Snapshot Restore Routes
+app.get('/api/cloud/cloudinary/status', (req, res) => {
+  res.json({
+    success: true,
+    ...getCloudinaryStatus(),
+  });
+});
+
+app.get('/api/cloud/cloudinary/backups', async (req, res) => {
+  try {
+    const list = await listCloudSpaceBackups();
+    res.json({
+      success: true,
+      ...list,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/cloud/cloudinary/backup', async (req, res) => {
+  try {
+    const { records, serials, reason } = req.body || {};
+    const result = await triggerCloudSpaceBackupNow(
+      records,
+      serials,
+      typeof reason === 'string' && reason.trim() ? reason.trim() : 'manual_ui'
+    );
+    const storage = getActiveStorageTarget();
+    res.json({
+      ...result,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+      cloudinaryStatus: getCloudinaryStatus(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/cloud/cloudinary/restore', async (req, res) => {
+  try {
+    const { source, secureUrl, fileName } = req.body || {};
+    if (source !== 'cloudinary' && source !== 'local_disk') {
+      return res.status(400).json({ success: false, error: 'Valid source (cloudinary or local_disk) is required' });
+    }
+    const snapshot = await readCloudSpaceSnapshot({ source, secureUrl, fileName });
+    const restored = await restoreFullDatabaseSnapshot(snapshot);
+    broadcastRealtime('PERMANENT_SYNC_COMPLETE', restored);
+    res.json({
+      ...restored,
+      source,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/cloud/snapshot/export', async (req, res) => {
+  try {
+    const snapshot = await exportFullDatabaseSnapshot('download');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="battery-stock-backup-${new Date().toISOString().slice(0, 10)}.json"`
+    );
+    res.send(JSON.stringify(snapshot, null, 2));
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

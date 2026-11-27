@@ -62,16 +62,40 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
 
   const [toast, setToast] = useState<string | null>(null);
   const saveTimerRef = useRef<any>(null);
+  const lastLocalEditAtRef = useRef<number>(0);
 
   useEffect(() => {
     if (saveTimerRef.current) return;
+    if (Date.now() - lastLocalEditAtRef.current < 6000) return;
     const remote = remoteChargerRecords?.[compositeKey]?.items;
     if (remote) {
       setChargerRecord(remote);
-    } else {
-      setChargerRecord(DEFAULT_CHARGER_BASELINE);
+      return;
     }
-  }, [compositeKey, remoteChargerRecords]);
+
+    // Carry forward closing stock from the latest prior record for this branch if available
+    if (remoteChargerRecords) {
+      const prefix = `${branch.id}::`;
+      const priorEntries = Object.entries(remoteChargerRecords)
+        .filter(([k]) => k.startsWith(prefix) && k !== compositeKey)
+        .sort(([, a]: any, [, b]: any) =>
+          String(b?.updatedAt || '').localeCompare(String(a?.updatedAt || ''))
+        );
+      if (priorEntries.length > 0 && priorEntries[0][1]?.items) {
+        const prevItems = priorEntries[0][1].items;
+        const carried: Record<string, any> = {};
+        columns.forEach((col) => {
+          const r = prevItems[col.id] || { opening: 0, inward: 0, outward: 0 };
+          const closing = (r.opening || 0) + (r.inward || 0) + (r.outward || 0);
+          carried[col.id] = { opening: closing, inward: 0, inCause: '', outward: 0, outCause: '' };
+        });
+        setChargerRecord(carried);
+        return;
+      }
+    }
+
+    setChargerRecord(DEFAULT_CHARGER_BASELINE);
+  }, [compositeKey, remoteChargerRecords, branch.id, columns]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -83,6 +107,7 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
     field: 'opening' | 'inward' | 'inCause' | 'outward' | 'outCause',
     val: any
   ) => {
+    lastLocalEditAtRef.current = Date.now();
     setChargerRecord((prev) => {
       const next = {
         ...prev,
@@ -94,6 +119,7 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
         saveTimerRef.current = null;
+        lastLocalEditAtRef.current = Date.now();
         if (onSaveChargerRecord) {
           onSaveChargerRecord(branch.id, activeDate, next);
         } else {
@@ -101,7 +127,7 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
         }
         showToast(
           isCloudDbConnected
-            ? '✓ Charger stock synced to Supabase'
+            ? '✓ Charger stock synced to Supabase & Cloud Space'
             : '✓ Charger stock saved & live synced'
         );
       }, 450);

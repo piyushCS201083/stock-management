@@ -2,15 +2,19 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   BatteryColumn,
   BatterySerialItem,
+  BranchTransfer,
   DayRecord,
-  TeamMember,
+  DEFAULT_BRANCH_ID,
   INITIAL_RECORD_31_10_2026,
   BRANCHES,
-  BranchInfo,
   StockCategoryId,
+  TeamMember,
+  getBatteryRecordKey,
+  parseBatteryRecordKey,
 } from './types/stock';
 import { BranchCategoryPortal } from './components/BranchCategoryPortal';
 import { ChargerStockView } from './components/ChargerStockView';
+import { ReceiveGoodsBanner } from './components/ReceiveGoodsBanner';
 import {
   loadRecords,
   saveRecords,
@@ -20,10 +24,16 @@ import {
   saveTeamMembers,
   calculateRecordTotals,
   createNextDayRecord,
+  createEmptyDayRecord,
+  mergeRecordsByTimestamp,
+  cascadeBranchOpeningStock,
 } from './utils/storage';
 import {
   apiFetchRecords,
-  apiSaveRecord,
+  apiSaveRecordWithMeta,
+  flushPendingRecordsToServer,
+  getPendingSyncKeys,
+  apiTriggerCloudinaryBackup,
   apiFetchColumns,
   apiSaveColumns,
   apiFetchTeam,
@@ -37,6 +47,11 @@ import {
   apiSaveChargerRecord,
   loadLocalChargers,
   saveLocalChargers,
+  apiFetchTransfers,
+  apiCreateTransfer,
+  apiReceiveTransfers,
+  loadLocalTransfers,
+  saveLocalTransfers,
   checkBackendHealth,
   BackendStatus,
   subscribeRealtimeSync,
@@ -44,7 +59,12 @@ import {
 import { exportRecordToExcel } from './utils/excelExport';
 import { Header } from './components/Header';
 import { ExcelGrid } from './components/ExcelGrid';
-import { QuickEntryModal, SerialEntryPayload } from './components/QuickEntryModal';
+import {
+  QuickEntryModal,
+  QuickEntryType,
+  SerialEntryPayload,
+  BranchTransferDispatchPayload,
+} from './components/QuickEntryModal';
 import { WhatsAppDispatchModal } from './components/WhatsAppDispatchModal';
 import { TeamManagementModal } from './components/TeamManagementModal';
 import { CloudDatabaseSettingsModal } from './components/CloudDatabaseSettingsModal';
@@ -59,27 +79,29 @@ import {
   ChevronLeft,
   ChevronRight,
   Plus,
+  PlusCircle,
+  MinusCircle,
+  ArrowLeftRight,
   Send,
   FileSpreadsheet,
   Download,
-  Users,
   RotateCcw,
   CheckCircle,
   Database,
-  Cloud,
   Barcode,
   ShieldCheck,
   X,
   Building2,
   BatteryCharging,
   Zap,
-  Boxes,
   ArrowRight,
+  BellRing,
+  Cloud,
+  Save,
 } from 'lucide-react';
 
 import {
   getIndianTodayDate,
-  getIndianFullDateString,
   addDaysToDateString,
   toISODateString,
   fromISODateString,
@@ -87,56 +109,87 @@ import {
   isAfterTodayIST,
 } from './utils/date';
 
-// Helper to guarantee today's ledger exists with carried forward closing stock
+// Extract clean date-keyed records for a specific branch
+function extractBranchRecords(
+  allRecords: Record<string, DayRecord>,
+  branchId: string
+): Record<string, DayRecord> {
+  const result: Record<string, DayRecord> = {};
+  Object.entries(allRecords).forEach(([key, rec]) => {
+    const parsed = parseBatteryRecordKey(key);
+    const recBranch = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    if (recBranch === branchId) {
+      const cleanDate = rec.date || parsed.date;
+      result[cleanDate] = { ...rec, date: cleanDate, branchId: recBranch };
+    }
+  });
+  return result;
+}
+
+// Helper to guarantee today's ledger exists for a branch with carried forward closing stock
 function ensureTodayLedger(
   recordsMap: Record<string, DayRecord>,
   cols: BatteryColumn[],
-  persistToCloud = false
+  persistToCloud = false,
+  branchId: string = DEFAULT_BRANCH_ID
 ): Record<string, DayRecord> {
   const today = getIndianTodayDate();
-  if (recordsMap[today]) {
+  const todayKey = getBatteryRecordKey(branchId, today);
+  if (recordsMap[todayKey]) {
     return recordsMap;
   }
 
-  const sortedDates = Object.keys(recordsMap).sort((a, b) => {
+  const branchOnly = extractBranchRecords(recordsMap, branchId);
+  const sortedDates = Object.keys(branchOnly).sort((a, b) => {
     return toISODateString(a).localeCompare(toISODateString(b));
   });
 
-  const latestDate = sortedDates[sortedDates.length - 1];
-  const baseRecord = recordsMap[latestDate] || INITIAL_RECORD_31_10_2026;
+  let todayRecord: DayRecord;
+  if (sortedDates.length > 0) {
+    const latestDate = sortedDates[sortedDates.length - 1];
+    const baseRecord = branchOnly[latestDate];
+    todayRecord = createNextDayRecord(baseRecord, cols);
+    todayRecord.date = today;
+    todayRecord.branchId = branchId;
+    todayRecord.notes = `Auto-created for Today (${today}) carrying forward closing stock from ${baseRecord.date}`;
+  } else if (branchId === DEFAULT_BRANCH_ID) {
+    todayRecord = createNextDayRecord(INITIAL_RECORD_31_10_2026, cols);
+    todayRecord.date = today;
+    todayRecord.branchId = DEFAULT_BRANCH_ID;
+    todayRecord.notes = `Auto-created for Today (${today}) carrying forward closing stock from ${INITIAL_RECORD_31_10_2026.date}`;
+  } else {
+    todayRecord = createEmptyDayRecord(today, cols, branchId);
+  }
 
-  const todayRecord = createNextDayRecord(baseRecord, cols);
-  todayRecord.date = today;
-  todayRecord.notes = `Auto-created for Today (${today}) carrying forward closing stock from ${baseRecord.date}`;
-
-  const updated = { ...recordsMap, [today]: todayRecord };
+  const updated = { ...recordsMap, [todayKey]: todayRecord };
   if (persistToCloud) {
     saveRecords(updated);
-    apiSaveRecord(todayRecord).catch(() => {});
+    apiSaveRecordWithMeta(todayRecord).catch(() => {});
   }
   return updated;
 }
 
 export default function App() {
   const [columns, setColumns] = useState<BatteryColumn[]>(() => loadColumns());
+  const [activeBranchId, setActiveBranchId] = useState<string>(() => {
+    return localStorage.getItem('active_branch_id') || DEFAULT_BRANCH_ID;
+  });
   const [records, setRecords] = useState<Record<string, DayRecord>>(() => {
     const loaded = loadRecords();
     const cols = loadColumns();
-    return ensureTodayLedger(loaded, cols, false);
+    const initialBranch = localStorage.getItem('active_branch_id') || DEFAULT_BRANCH_ID;
+    return ensureTodayLedger(loaded, cols, false, initialBranch);
   });
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
   const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() => loadLocalSerials());
   const [chargerRecords, setChargerRecords] = useState<Record<string, any>>(() => loadLocalChargers());
+  const [transfers, setTransfers] = useState<BranchTransfer[]>(() => loadLocalTransfers());
+  const [isReceivingGoods, setIsReceivingGoods] = useState<boolean>(false);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const isCloudDbConnected = Boolean(backendStatus?.supabaseReady || backendStatus?.hasPostgresUrl);
 
   // Current active date automatically defaults to today's date in Indian Standard Time (IST)
   const [currentDate, setCurrentDate] = useState<string>(() => getIndianTodayDate());
-
-  // Active branch (1-Chandravadni Naka, 2-Morar, 3-Yard City Center, 4-Service Center)
-  const [activeBranchId, setActiveBranchId] = useState<string>(() => {
-    return localStorage.getItem('active_branch_id') || 'chandravadni_naka';
-  });
 
   // Active stock category (battery, charger)
   const [activeCategory, setActiveCategory] = useState<StockCategoryId>(() => {
@@ -153,6 +206,24 @@ export default function App() {
     return BRANCHES.find((b) => b.id === activeBranchId) || BRANCHES[0];
   }, [activeBranchId]);
 
+  const activeBranchRef = useRef(activeBranchId);
+  useEffect(() => {
+    activeBranchRef.current = activeBranchId;
+  }, [activeBranchId]);
+
+  const pendingTransfersByBranch = useMemo(() => {
+    const counts: Record<string, number> = {};
+    transfers
+      .filter((t) => t.status !== 'received')
+      .forEach((t) => {
+        const unreceivedCount = (t.items || []).filter((it) => !it.received).length;
+        if (unreceivedCount > 0) {
+          counts[t.toBranchId] = (counts[t.toBranchId] || 0) + unreceivedCount;
+        }
+      });
+    return counts;
+  }, [transfers]);
+
   const handleSelectBranchAndCategory = (branchId: string, categoryId: StockCategoryId) => {
     setActiveBranchId(branchId);
     setActiveCategory(categoryId);
@@ -160,12 +231,23 @@ export default function App() {
     localStorage.setItem('active_stock_category', categoryId);
     sessionStorage.setItem('has_selected_branch_session', 'true');
     setIsBranchPortalOpen(false);
+    setRecords((prev) => ensureTodayLedger(prev, columns, isCloudDbConnected, branchId));
     const branchName = BRANCHES.find((b) => b.id === branchId)?.name || branchId;
-    showToast(`Opened ${branchName} · ${categoryId === 'battery' ? 'Battery Stock' : 'Charger Stock'}`);
+    const pendingCount = pendingTransfersByBranch[branchId] || 0;
+    if (pendingCount > 0) {
+      showToast(`Opened ${branchName} — ${pendingCount} incoming goods pending to receive!`);
+    } else {
+      showToast(`Opened ${branchName} · ${categoryId === 'battery' ? 'Battery Stock' : 'Charger Stock'}`);
+    }
   };
 
   // Modal states
   const [isQuickEntryOpen, setIsQuickEntryOpen] = useState(false);
+  const [quickEntryInitialType, setQuickEntryInitialType] = useState<QuickEntryType>('in');
+  const openQuickEntryWithType = (type: QuickEntryType) => {
+    setQuickEntryInitialType(type);
+    setIsQuickEntryOpen(true);
+  };
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
   const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
@@ -209,30 +291,75 @@ export default function App() {
   const tableRef = useRef<HTMLDivElement>(null);
 
   const [isRealtimeActive, setIsRealtimeActive] = useState<boolean>(true);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'pending' | 'error'>('saved');
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(() => getPendingSyncKeys().length);
+  const [isCloudSpaceBackingUp, setIsCloudSpaceBackingUp] = useState<boolean>(false);
 
   const isSyncingRef = useRef(false);
+  const inFlightRecordKeysRef = useRef<Set<string>>(new Set());
+  const recordsRef = useRef(records);
+  const columnsRef = useRef(columns);
+  const serialsRef = useRef(serials);
 
-  // Sync data from Cloud DBMS / backend on mount & subscribe to Real-Time SSE + mobile wake/polling
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
+
+  useEffect(() => {
+    columnsRef.current = columns;
+  }, [columns]);
+
+  useEffect(() => {
+    serialsRef.current = serials;
+  }, [serials]);
+
+  // Sync data from Cloud DBMS / backend safely without overwriting local/in-flight edits
   const syncWithCloudBackend = async () => {
     if (isSyncingRef.current) return;
     isSyncingRef.current = true;
     try {
-      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, health] =
+      // Push any queued offline/failed local edits up to the server first
+      if (getPendingSyncKeys().length > 0) {
+        await flushPendingRecordsToServer(recordsRef.current);
+      }
+
+      const protectedKeys = new Set<string>([
+        ...getPendingSyncKeys(),
+        ...Array.from(inFlightRecordKeysRef.current),
+      ]);
+
+      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteTransfers, health] =
         await Promise.all([
-          apiFetchRecords(),
+          apiFetchRecords(protectedKeys),
           apiFetchColumns(),
           apiFetchTeam(),
           apiFetchSerials(),
           apiFetchChargers(),
+          apiFetchTransfers(),
           checkBackendHealth(),
         ]);
 
-      const activeCols = remoteCols && remoteCols.length > 0 ? remoteCols : columns;
+      const activeCols = remoteCols && remoteCols.length > 0 ? remoteCols : columnsRef.current;
 
       if (remoteRecords && Object.keys(remoteRecords).length > 0) {
-        const withToday = ensureTodayLedger(remoteRecords, activeCols, health.online);
+        const latestProtected = new Set<string>([
+          ...getPendingSyncKeys(),
+          ...Array.from(inFlightRecordKeysRef.current),
+        ]);
+        const { merged, localNewerKeys } = mergeRecordsByTimestamp(
+          recordsRef.current,
+          remoteRecords,
+          latestProtected
+        );
+        const withToday = ensureTodayLedger(merged, activeCols, health.online, activeBranchRef.current);
         saveRecords(withToday);
         setRecords(withToday);
+
+        if (localNewerKeys.length > 0 && health.online) {
+          flushPendingRecordsToServer(withToday, localNewerKeys)
+            .then(() => setPendingSyncCount(getPendingSyncKeys().length))
+            .catch(() => {});
+        }
       }
       if (remoteCols && remoteCols.length > 0) {
         setColumns(remoteCols);
@@ -255,12 +382,20 @@ export default function App() {
         setTeamMembers(sanitized.length > 0 ? sanitized : loadTeamMembers());
       }
       if (remoteSerials && Object.keys(remoteSerials).length > 0) {
-        setSerials(remoteSerials);
+        setSerials((prev) => ({ ...remoteSerials, ...prev }));
       }
       if (remoteChargers && Object.keys(remoteChargers).length > 0) {
         setChargerRecords(remoteChargers);
       }
+      if (Array.isArray(remoteTransfers)) {
+        setTransfers(remoteTransfers);
+      }
       setBackendStatus(health);
+      const remainingPending = getPendingSyncKeys().length;
+      setPendingSyncCount(remainingPending);
+      if (remainingPending > 0) {
+        setSaveState('pending');
+      }
       if (health.online) {
         setIsRealtimeActive(true);
       }
@@ -277,16 +412,27 @@ export default function App() {
     // Subscribe to live multi-device Real-Time Cloud Synchronization
     const unsubscribe = subscribeRealtimeSync({
       onRecordUpdated: (updatedRecord) => {
-        setRecords((prev) => ({
-          ...prev,
-          [updatedRecord.date]: updatedRecord,
-        }));
+        const recordKey = getBatteryRecordKey(updatedRecord.branchId, updatedRecord.date);
+        if (inFlightRecordKeysRef.current.has(recordKey) || getPendingSyncKeys().includes(recordKey)) {
+          return;
+        }
+        setRecords((prev) => {
+          const existing = prev[recordKey];
+          const prevTs = existing?.lastModified ? Date.parse(existing.lastModified) : 0;
+          const nextTs = updatedRecord.lastModified ? Date.parse(updatedRecord.lastModified) : 0;
+          if (existing && prevTs > nextTs) {
+            return prev;
+          }
+          const next = { ...prev, [recordKey]: updatedRecord };
+          saveRecords(next);
+          return next;
+        });
         showToast(`⚡ Real-Time Cloud: Updated ledger for ${updatedRecord.date}`);
       },
-      onRecordDeleted: (deletedDate) => {
+      onRecordDeleted: (deletedKey) => {
         setRecords((prev) => {
           const copy = { ...prev };
-          delete copy[deletedDate];
+          delete copy[deletedKey];
           return copy;
         });
       },
@@ -332,6 +478,15 @@ export default function App() {
         }));
         showToast(`⚡ Real-Time Cloud: Updated charger stock`);
       },
+      onTransfersUpdated: (updatedTransfers) => {
+        setTransfers(updatedTransfers);
+        const pendingForHere = updatedTransfers.filter(
+          (t) => t.toBranchId === activeBranchRef.current && t.status !== 'received'
+        );
+        if (pendingForHere.length > 0) {
+          showToast(`📦 Receive Goods Notification: ${pendingForHere.length} incoming transfer(s) ready!`);
+        }
+      },
       onConnectionChange: (connected) => {
         setIsRealtimeActive(connected);
       },
@@ -370,9 +525,15 @@ export default function App() {
     };
   }, []);
 
+  // Branch-scoped battery records for the active branch
+  const branchRecords = useMemo(() => {
+    return extractBranchRecords(records, activeBranchId);
+  }, [records, activeBranchId]);
+
   // Active day record
-  const currentRecord: DayRecord = records[currentDate] || {
+  const currentRecord: DayRecord = branchRecords[currentDate] || {
     date: currentDate,
+    branchId: activeBranchId,
     stock: {},
     inStock: {},
     inCause: {},
@@ -382,10 +543,12 @@ export default function App() {
 
   const totals = calculateRecordTotals(currentRecord, columns);
 
-  // Total unassigned stock count across all models for current record closing stock
+  // Total unassigned stock count across all models for current branch closing stock
   const unassignedCount = useMemo(() => {
     let unassigned = 0;
-    const serialList = Object.values(serials);
+    const serialList = Object.values(serials).filter(
+      (s) => (s.branchId || DEFAULT_BRANCH_ID) === activeBranchId
+    );
 
     // Check main columns
     columns.forEach((col) => {
@@ -419,51 +582,74 @@ export default function App() {
     }
 
     return unassigned;
-  }, [columns, totals.closingStock, totals.repair.closing, totals.service.closing, serials]);
+  }, [columns, totals.closingStock, totals.repair.closing, totals.service.closing, serials, activeBranchId]);
 
   // Bulk save serials from AssignSerialModal
   const handleBulkSaveSerials = async (newItems: BatterySerialItem[]) => {
+    const stamped = newItems.map((it) => ({ ...it, branchId: it.branchId || activeBranchId }));
     const updated = { ...serials };
-    newItems.forEach((item) => {
+    stamped.forEach((item) => {
       updated[item.serialNo] = item;
     });
     setSerials(updated);
     saveLocalSerials(updated);
-    await apiBulkSaveSerials(newItems);
+    await apiBulkSaveSerials(stamped);
     showToast(
       isCloudDbConnected
-        ? `✓ Assigned & saved ${newItems.length} serials to Supabase`
-        : `✓ Assigned & permanently registered ${newItems.length} serials in Cloud DBMS!`
+        ? `✓ Assigned & saved ${stamped.length} serials to Supabase`
+        : `✓ Assigned & permanently registered ${stamped.length} serials in Cloud DBMS!`
     );
   };
 
   // Update single serial from edit form
   const handleUpdateSingleSerial = async (updatedItem: BatterySerialItem) => {
-    const updated = { ...serials, [updatedItem.serialNo]: updatedItem };
+    const stamped = { ...updatedItem, branchId: updatedItem.branchId || activeBranchId };
+    const updated = { ...serials, [stamped.serialNo]: stamped };
     setSerials(updated);
     saveLocalSerials(updated);
-    await apiSaveSerial(updatedItem);
+    await apiSaveSerial(stamped);
     showToast(
       isCloudDbConnected
-        ? `✓ Updated serial ${updatedItem.serialNo} in Supabase`
-        : `✓ Permanently updated serial: ${updatedItem.serialNo} in Cloud DBMS`
+        ? `✓ Updated serial ${stamped.serialNo} in Supabase`
+        : `✓ Permanently updated serial: ${stamped.serialNo} in Cloud DBMS`
     );
   };
 
-  // Update records in state, localStorage, and Cloud DBMS
+  // Update records in state, localStorage, cascade closing stock forward, and persist to Cloud DBMS
   const handleUpdateRecord = async (
-    updated: DayRecord,
+    updatedInput: DayRecord,
     andTriggerWhatsApp = false,
     serialEntries?: SerialEntryPayload[]
   ) => {
-    const newRecords = { ...records, [updated.date]: updated };
-    setRecords(newRecords);
-    saveRecords(newRecords);
+    const targetBranch = updatedInput.branchId || activeBranchId;
+    const timestamp = new Date().toISOString();
+    const updated: DayRecord = {
+      ...updatedInput,
+      branchId: targetBranch,
+      lastModified: timestamp,
+    };
+    const recordKey = getBatteryRecordKey(targetBranch, updated.date);
 
-    let updatedSerials = { ...serials };
+    inFlightRecordKeysRef.current.add(recordKey);
+    setSaveState('saving');
+
+    let cascadedChanged: DayRecord[] = [];
+    setRecords((prev) => {
+      const withEdit = { ...prev, [recordKey]: updated };
+      const { updatedRecordsMap, changedRecords } = cascadeBranchOpeningStock(
+        withEdit,
+        targetBranch,
+        updated.date,
+        columnsRef.current
+      );
+      cascadedChanged = changedRecords;
+      saveRecords(updatedRecordsMap);
+      return updatedRecordsMap;
+    });
+
+    let updatedSerials = { ...serialsRef.current };
     const savedList: BatterySerialItem[] = [];
 
-    // Process serial numbers if entered or auto-generated for inward
     if (serialEntries && serialEntries.length > 0) {
       serialEntries.forEach((entry) => {
         const existing: BatterySerialItem = updatedSerials[entry.serialNo] || {
@@ -471,6 +657,7 @@ export default function App() {
           batchNo: entry.batchNo,
           modelId: entry.modelId,
           modelName: entry.modelName,
+          branchId: targetBranch,
           status:
             entry.type === 'out'
               ? 'dispatched'
@@ -493,9 +680,11 @@ export default function App() {
           cause: entry.cause,
           partner: entry.partner,
           vehicleOrLocation: entry.vehicle,
+          branchId: targetBranch,
         };
 
         existing.history = [movement, ...(existing.history || [])];
+        existing.branchId = targetBranch;
 
         if (entry.type === 'in') {
           existing.status = 'in_stock';
@@ -522,26 +711,55 @@ export default function App() {
       setSerials(updatedSerials);
       saveLocalSerials(updatedSerials);
       await apiBulkSaveSerials(savedList);
-      showToast(
-        isCloudDbConnected
-          ? `✓ Inward ${savedList.length} batteries serialized & saved to Supabase!`
-          : `✓ Inward ${savedList.length} batteries serialized & backed up in Cloud!`
-      );
-    } else {
-      showToast(`Saving ${updated.date}...`);
     }
 
-    // Async save to Cloud DBMS (Supabase / PostgreSQL)
     try {
-      const saved = await apiSaveRecord(updated);
-      setRecords((prev) => ({ ...prev, [saved.date]: saved }));
-      showToast(
-        isCloudDbConnected
-          ? `✓ Stock change saved to Supabase & synced live!`
-          : `✓ Stock change synced to Cloud DBMS & real-time broadcasted!`
-      );
-    } catch (e) {
-      showToast(`Saved locally (will sync when online)`);
+      const saveResult = await apiSaveRecordWithMeta(updated);
+      // Persist any cascaded later days so their opening stock proceeds from this edit permanently
+      for (const downstreamRec of cascadedChanged) {
+        await apiSaveRecordWithMeta(downstreamRec);
+      }
+
+      const saved = saveResult.record;
+      const savedKey = getBatteryRecordKey(saved.branchId || targetBranch, saved.date);
+      inFlightRecordKeysRef.current.delete(recordKey);
+
+      setRecords((prev) => {
+        const currentRec = prev[savedKey];
+        const currentTs = currentRec?.lastModified ? Date.parse(currentRec.lastModified) : 0;
+        const savedTs = saved.lastModified ? Date.parse(saved.lastModified) : 0;
+        // Never overwrite a newer rapid local edit with an older in-flight response
+        if (currentRec && currentTs > savedTs) {
+          return prev;
+        }
+        const next = { ...prev, [savedKey]: saved };
+        saveRecords(next);
+        return next;
+      });
+
+      const remaining = getPendingSyncKeys().length;
+      setPendingSyncCount(remaining);
+
+      if (saveResult.persistedToServer && (saveResult.persistedToRemote || saveResult.storage === 'local_file')) {
+        setSaveState('saved');
+        const cascadeMsg =
+          cascadedChanged.length > 0 ? ` + carried forward ${cascadedChanged.length} day(s)` : '';
+        showToast(
+          savedList.length > 0
+            ? `✓ Saved ${savedList.length} serials & stock to ${isCloudDbConnected ? 'Supabase' : 'Cloud DBMS'}${cascadeMsg}!`
+            : `✓ Stock saved to ${isCloudDbConnected ? 'Supabase & Cloud Space' : 'Cloud DBMS'}${cascadeMsg}!`
+        );
+      } else {
+        setSaveState('pending');
+        showToast(
+          `⚠ Saved locally (${saveResult.error || 'cloud retry queued'}) — will sync automatically`
+        );
+      }
+    } catch {
+      inFlightRecordKeysRef.current.delete(recordKey);
+      setPendingSyncCount(getPendingSyncKeys().length);
+      setSaveState('pending');
+      showToast(`⚠ Saved locally (will sync when online)`);
     }
 
     if (andTriggerWhatsApp) {
@@ -549,9 +767,176 @@ export default function App() {
     }
   };
 
+  // Manual Save & Cloudinary Cloud Space Backup action from Top Toolbar
+  const handleManualSaveAndBackup = async () => {
+    setIsCloudSpaceBackingUp(true);
+    setSaveState('saving');
+    try {
+      await flushPendingRecordsToServer(recordsRef.current);
+      const res = await apiTriggerCloudinaryBackup(
+        recordsRef.current,
+        serialsRef.current,
+        'toolbar_manual_save'
+      );
+      const remaining = getPendingSyncKeys().length;
+      setPendingSyncCount(remaining);
+      setSaveState(remaining > 0 ? 'pending' : 'saved');
+      const refreshedHealth = await checkBackendHealth();
+      setBackendStatus(refreshedHealth);
+
+      if (res.uploadedToCloudinary) {
+        showToast(
+          `✓ Saved & Backed up to Supabase + Cloudinary (${res.cloudName}) [${res.recordCount || 0} ledgers]`
+        );
+      } else if (res.success && !res.cloudinaryConfigured) {
+        showToast(
+          `✓ Saved to Supabase & Server Disk (${res.recordCount || 0} ledgers). Add Cloudinary Secrets for Cloud Space upload.`
+        );
+      } else {
+        showToast(`⚠ Saved locally/DB; Cloud Space note: ${res.error || 'retry shortly'}`);
+      }
+    } finally {
+      setIsCloudSpaceBackingUp(false);
+    }
+  };
+
+  // Create Inter-Branch Stock Transfer from QuickEntryModal
+  const handleCreateBranchTransfer = async (payload: BranchTransferDispatchPayload) => {
+    const res = await apiCreateTransfer({
+      fromBranchId: activeBranchId,
+      toBranchId: payload.toBranchId,
+      date: payload.date,
+      category: 'battery',
+      items: payload.items,
+      partner: payload.partner,
+      notes: payload.notes,
+    });
+    if (res.transfers) {
+      setTransfers(res.transfers);
+    }
+    const targetName = BRANCHES.find((b) => b.id === payload.toBranchId)?.name || payload.toBranchId;
+    const totalUnits = payload.items.reduce((s, it) => s + (it.quantity || 0), 0);
+    showToast(`📦 Sent ${totalUnits} unit(s) to ${targetName} — Receive Goods notification created!`);
+  };
+
+  // Receive Checked / All Goods at active branch and reflect immediately in branch stock
+  const handleReceiveTransfers = async (
+    selections: Array<{ transferId: string; itemIds: string[] }>
+  ) => {
+    if (selections.length === 0) return;
+    setIsReceivingGoods(true);
+    try {
+      // Collect items to be received from current transfers before marking
+      const itemsToApply: Array<{
+        fromBranchName: string;
+        partner?: string;
+        notes?: string;
+        modelId: string;
+        modelName: string;
+        quantity: number;
+        serialNos?: string[];
+      }> = [];
+
+      selections.forEach((sel) => {
+        const trf = transfers.find((t) => t.id === sel.transferId);
+        if (!trf) return;
+        const idSet = new Set(sel.itemIds);
+        trf.items.forEach((it) => {
+          if (!it.received && idSet.has(it.id)) {
+            itemsToApply.push({
+              fromBranchName: trf.fromBranchName,
+              partner: trf.partner,
+              notes: it.notes || trf.notes,
+              modelId: it.modelId,
+              modelName: it.modelName,
+              quantity: it.quantity,
+              serialNos: it.serialNos,
+            });
+          }
+        });
+      });
+
+      const updatedTransfers = await apiReceiveTransfers(selections, activeBranch.name);
+      setTransfers(updatedTransfers);
+
+      if (itemsToApply.length === 0) return;
+
+      // Apply inward quantities to current branch's active ledger record
+      const updatedRecord: DayRecord = {
+        ...currentRecord,
+        branchId: activeBranchId,
+        stock: { ...currentRecord.stock },
+        inStock: { ...currentRecord.inStock },
+        inCause: { ...currentRecord.inCause },
+        outStock: { ...currentRecord.outStock },
+        outCause: { ...currentRecord.outCause },
+        lastModified: new Date().toISOString(),
+      };
+
+      const serialEntriesToSave: SerialEntryPayload[] = [];
+      let totalReceivedUnits = 0;
+
+      itemsToApply.forEach((item) => {
+        totalReceivedUnits += item.quantity;
+        const causeStr = [
+          `Received from ${item.fromBranchName}`,
+          item.partner ? `via ${item.partner}` : '',
+          item.notes && !item.notes.startsWith('Sent to ') ? item.notes : '',
+        ]
+          .filter(Boolean)
+          .join(' , ');
+
+        if (item.modelId === 'repair') {
+          updatedRecord.inStock['repair'] = (updatedRecord.inStock['repair'] || 0) + item.quantity;
+          updatedRecord.repairInCause = updatedRecord.repairInCause
+            ? `${updatedRecord.repairInCause}\n${causeStr}`
+            : causeStr;
+        } else if (item.modelId === 'service') {
+          updatedRecord.inStock['service'] = (updatedRecord.inStock['service'] || 0) + item.quantity;
+        } else {
+          updatedRecord.inStock[item.modelId] =
+            (updatedRecord.inStock[item.modelId] || 0) + item.quantity;
+          updatedRecord.inCause[item.modelId] = updatedRecord.inCause[item.modelId]
+            ? `${updatedRecord.inCause[item.modelId]}\n${causeStr}`
+            : causeStr;
+          const summaryLine = `${item.modelName}: ${causeStr} (+${item.quantity})`;
+          updatedRecord.totalInCause = updatedRecord.totalInCause
+            ? `${updatedRecord.totalInCause}\n${summaryLine}`
+            : summaryLine;
+        }
+
+        if (item.serialNos && item.serialNos.length > 0) {
+          item.serialNos.forEach((sn) => {
+            serialEntriesToSave.push({
+              serialNo: sn,
+              batchNo: item.modelName,
+              modelId: item.modelId,
+              modelName: item.modelName,
+              type: 'in',
+              cause: causeStr,
+              partner: item.fromBranchName,
+              vehicle: activeBranch.name,
+            });
+          });
+        }
+      });
+
+      await handleUpdateRecord(
+        updatedRecord,
+        false,
+        serialEntriesToSave.length > 0 ? serialEntriesToSave : undefined
+      );
+      showToast(
+        `✓ Received ${totalReceivedUnits} unit(s) into ${activeBranch.shortName} stock!`
+      );
+    } finally {
+      setIsReceivingGoods(false);
+    }
+  };
+
   const showToast = (msg: string) => {
     setNotificationToast(msg);
-    setTimeout(() => setNotificationToast(null), 3000);
+    setTimeout(() => setNotificationToast(null), 3500);
   };
 
   // Add battery column
@@ -569,20 +954,56 @@ export default function App() {
     showToast(`Added battery model: ${name}`);
   };
 
-  // Create next day entry carrying over today's closing stock (up to today in IST)
+  // Create or carry forward next day entry WITHOUT destroying existing transactions if nextDate already exists
   const handleCreateNextDay = async () => {
     const nextDate = addDaysToDateString(currentRecord.date, 1);
     if (isAfterTodayIST(nextDate)) {
       showToast(`Cannot create ledger beyond today in IST (${getIndianTodayDate()})`);
       return;
     }
-    const nextDayRecord = createNextDayRecord(currentRecord, columns);
+
+    const existingNext = branchRecords[nextDate];
+    if (existingNext) {
+      const prevTotals = calculateRecordTotals(currentRecord, columns);
+      const updatedStock: Record<string, number> = { ...existingNext.stock };
+      [...columns.map((c) => c.id), 'repair', 'service'].forEach((id) => {
+        updatedStock[id] = prevTotals.closingStock[id] || 0;
+      });
+      const updatedNext: DayRecord = {
+        ...existingNext,
+        branchId: activeBranchId,
+        stock: updatedStock,
+        lastModified: new Date().toISOString(),
+      };
+      const key = getBatteryRecordKey(activeBranchId, nextDate);
+      let cascaded: DayRecord[] = [];
+      setRecords((prev) => {
+        const nextMap = { ...prev, [key]: updatedNext };
+        const res = cascadeBranchOpeningStock(nextMap, activeBranchId, nextDate, columns);
+        cascaded = res.changedRecords;
+        saveRecords(res.updatedRecordsMap);
+        return res.updatedRecordsMap;
+      });
+      setCurrentDate(nextDate);
+      await apiSaveRecordWithMeta(updatedNext);
+      for (const rec of cascaded) {
+        await apiSaveRecordWithMeta(rec);
+      }
+      showToast(`Synced opening balance into ${nextDate} while preserving existing transactions!`);
+      return;
+    }
+
+    const nextDayRecord = createNextDayRecord({ ...currentRecord, branchId: activeBranchId }, columns);
     nextDayRecord.date = nextDate;
-    const newRecords = { ...records, [nextDayRecord.date]: nextDayRecord };
-    setRecords(newRecords);
-    saveRecords(newRecords);
+    nextDayRecord.branchId = activeBranchId;
+    const key = getBatteryRecordKey(activeBranchId, nextDayRecord.date);
+    setRecords((prev) => {
+      const nextMap = { ...prev, [key]: nextDayRecord };
+      saveRecords(nextMap);
+      return nextMap;
+    });
     setCurrentDate(nextDayRecord.date);
-    await apiSaveRecord(nextDayRecord);
+    await apiSaveRecordWithMeta(nextDayRecord);
     showToast(`Created new ledger for ${nextDayRecord.date} with closing balance carried over!`);
   };
 
@@ -593,30 +1014,39 @@ export default function App() {
       return;
     }
 
-    if (records[targetDate]) {
+    if (branchRecords[targetDate]) {
       setCurrentDate(targetDate);
       showToast(`Switched to ${targetDate} ledger`);
       return;
     }
 
-    // Date does not exist yet: find the closest previous date to carry forward
-    const sortedDates = Object.keys(records).sort((a, b) => {
+    const sortedDates = Object.keys(branchRecords).sort((a, b) => {
       return toISODateString(a).localeCompare(toISODateString(b));
     });
 
     const priorDates = sortedDates.filter((d) => toISODateString(d) <= toISODateString(targetDate));
     const baseDate = priorDates.length > 0 ? priorDates[priorDates.length - 1] : sortedDates[0];
-    const baseRecord = records[baseDate] || currentRecord;
+    const baseRecord = baseDate ? branchRecords[baseDate] : currentRecord;
 
-    const newDayRecord = createNextDayRecord(baseRecord, columns);
+    const newDayRecord = createNextDayRecord({ ...baseRecord, branchId: activeBranchId }, columns);
     newDayRecord.date = targetDate;
+    newDayRecord.branchId = activeBranchId;
     newDayRecord.notes = `Created for ${targetDate} carrying forward closing balance from ${baseRecord.date}`;
 
-    const newRecords = { ...records, [targetDate]: newDayRecord };
-    setRecords(newRecords);
-    saveRecords(newRecords);
+    const key = getBatteryRecordKey(activeBranchId, targetDate);
+    let cascaded: DayRecord[] = [];
+    setRecords((prev) => {
+      const nextMap = { ...prev, [key]: newDayRecord };
+      const res = cascadeBranchOpeningStock(nextMap, activeBranchId, targetDate, columns);
+      cascaded = res.changedRecords;
+      saveRecords(res.updatedRecordsMap);
+      return res.updatedRecordsMap;
+    });
     setCurrentDate(targetDate);
-    await apiSaveRecord(newDayRecord);
+    await apiSaveRecordWithMeta(newDayRecord);
+    for (const rec of cascaded) {
+      await apiSaveRecordWithMeta(rec);
+    }
     showToast(`Created ${targetDate} ledger carrying forward closing balance!`);
   };
 
@@ -624,12 +1054,12 @@ export default function App() {
   const todayIST = getIndianTodayDate();
   const isViewingToday = currentDate === todayIST;
 
-  // Chronologically sorted recorded dates
+  // Chronologically sorted recorded dates for active branch
   const recordedDates = useMemo(() => {
-    return Object.keys(records).sort((a, b) => {
+    return Object.keys(branchRecords).sort((a, b) => {
       return toISODateString(a).localeCompare(toISODateString(b));
     });
-  }, [records]);
+  }, [branchRecords]);
 
   const currentIndex = recordedDates.indexOf(currentDate);
 
@@ -637,9 +1067,11 @@ export default function App() {
   useEffect(() => {
     const checkDayRollover = () => {
       const liveToday = getIndianTodayDate();
+      const bId = activeBranchRef.current;
+      const key = getBatteryRecordKey(bId, liveToday);
       setRecords((prev) => {
-        if (!prev[liveToday]) {
-          const withToday = ensureTodayLedger(prev, columns, true);
+        if (!prev[key]) {
+          const withToday = ensureTodayLedger(prev, columns, true, bId);
           setCurrentDate(liveToday);
           return withToday;
         }
@@ -677,31 +1109,35 @@ export default function App() {
       setRecords(initial);
       saveRecords(initial);
       setCurrentDate('31-10-2026');
-      if (initial['31-10-2026']) {
-        await apiSaveRecord(initial['31-10-2026']);
+      const baselineKey = getBatteryRecordKey(DEFAULT_BRANCH_ID, '31-10-2026');
+      const baselineRec = initial[baselineKey] || initial['31-10-2026'];
+      if (baselineRec) {
+        await apiSaveRecordWithMeta(baselineRec);
       }
       showToast('Reset to official 31-10-2026 photo baseline.');
     }
   };
 
   // Jump to Indian Standard Time (IST) Today
-  const handleJumpToTodayIST = () => {
-    if (records[todayIST]) {
+  const handleJumpToTodayIST = async () => {
+    if (branchRecords[todayIST]) {
       setCurrentDate(todayIST);
       showToast(`Switched to today's date in India: ${todayIST}`);
     } else {
-      // Create today carrying forward from the latest record
       const latestDate = recordedDates[recordedDates.length - 1];
-      const baseRecord = records[latestDate] || currentRecord;
-      const newDayRecord = createNextDayRecord(baseRecord, columns);
+      const baseRecord = latestDate ? branchRecords[latestDate] : currentRecord;
+      const newDayRecord = createNextDayRecord({ ...baseRecord, branchId: activeBranchId }, columns);
       newDayRecord.date = todayIST;
+      newDayRecord.branchId = activeBranchId;
       newDayRecord.notes = `Created for IST Today (${todayIST}) carrying forward closing stock`;
+      newDayRecord.lastModified = new Date().toISOString();
 
-      const newRecords = { ...records, [todayIST]: newDayRecord };
+      const key = getBatteryRecordKey(activeBranchId, todayIST);
+      const newRecords = { ...records, [key]: newDayRecord };
       setRecords(newRecords);
       saveRecords(newRecords);
       setCurrentDate(todayIST);
-      apiSaveRecord(newDayRecord);
+      await apiSaveRecordWithMeta(newDayRecord);
       showToast(`Created today's ledger (${todayIST} IST) with closing balance carried over!`);
     }
   };
@@ -710,7 +1146,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-900 font-sans">
       {/* Top Bar adhering to Top Bar Contract */}
       <Header
-        onOpenQuickEntry={() => setIsQuickEntryOpen(true)}
+        onOpenQuickEntry={() => openQuickEntryWithType('both')}
         onOpenWhatsAppDispatch={() => setIsWhatsAppOpen(true)}
         onOpenTeamModal={() => setIsTeamModalOpen(true)}
         onOpenCloudSettings={() => setIsCloudModalOpen(true)}
@@ -723,6 +1159,7 @@ export default function App() {
         onSelectCategory={(cat) => setActiveCategory(cat)}
         isRealtimeActive={isRealtimeActive}
         isCloudDbConnected={isCloudDbConnected}
+        pendingReceiveCount={pendingTransfersByBranch[activeBranchId] || 0}
       />
 
       {/* Branch & Category Navigation Bar */}
@@ -738,6 +1175,12 @@ export default function App() {
             <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
               Switch Branch (1-4)
             </span>
+            {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
+              <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                <BellRing className="w-3 h-3" />
+                <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
+              </span>
+            )}
           </button>
 
           <span className="text-slate-600">/</span>
@@ -789,6 +1232,7 @@ export default function App() {
           <BranchCategoryPortal
             currentBranchId={activeBranchId}
             currentCategoryId={activeCategory}
+            pendingTransfersByBranch={pendingTransfersByBranch}
             onSelectBranchAndCategory={handleSelectBranchAndCategory}
             onClose={() => setIsBranchPortalOpen(false)}
             isModal={false}
@@ -823,264 +1267,331 @@ export default function App() {
         </main>
       ) : (
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
-          {/* Top: Batchwise Stock (Battery Models) & Serial Number History Search */}
-        <BatchStockOverview
-          currentRecord={currentRecord}
-          columns={columns}
-          serials={serials}
-          closingStock={totals.closingStock}
-          onOpenAssignModal={(modelId, modelName, currentStock) => {
-            setAssignModal({
-              isOpen: true,
-              modelId,
-              modelName,
-              currentStock,
-            });
-          }}
-          onOpenSerialTrackerModal={() => setIsSerialModalOpen(true)}
-          onUpdateSerial={handleUpdateSingleSerial}
-          onSelectSerialHistory={(item) => setSelectedSerialHistory(item)}
-        />
-
-        {/* Workspace Toolbar & Date Bar */}
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            {/* Left: Date Switcher & Day Navigation & Cloud Status */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <div
-                className={`flex items-center rounded-lg p-1 transition-all ${
-                  isViewingToday
-                    ? 'bg-blue-50/90 border-2 border-blue-500 shadow-xs ring-2 ring-blue-500/20'
-                    : 'bg-slate-50 border border-slate-300'
-                }`}
-              >
-                <button
-                  onClick={handlePrevDate}
-                  disabled={currentIndex <= 0}
-                  className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
-                  title="Previous Date"
+          {/* TOP: Workspace Toolbar & Date Bar (Moved to top per user request) */}
+          <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              {/* Left: Date Switcher & Day Navigation & Cloud Status */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div
+                  className={`flex items-center rounded-lg p-1 transition-all ${
+                    isViewingToday
+                      ? 'bg-blue-50/90 border-2 border-blue-500 shadow-xs ring-2 ring-blue-500/20'
+                      : 'bg-slate-50 border border-slate-300'
+                  }`}
                 >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-
-                <div className="flex items-center gap-2 px-3 py-1 font-bold text-slate-900 text-sm">
-                  <Calendar className="w-4 h-4 text-blue-600 shrink-0" />
-                  <select
-                    value={currentDate}
-                    onChange={(e) => handleSelectOrCreateDate(e.target.value)}
-                    className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer"
+                  <button
+                    onClick={handlePrevDate}
+                    disabled={currentIndex <= 0}
+                    className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
+                    title="Previous Date"
                   >
-                    {recordedDates.map((d) => (
-                      <option key={d} value={d}>
-                        {d} {d === todayIST ? '★ (Today)' : d === '31-10-2026' ? '(Official Photo Baseline)' : ''}
-                      </option>
-                    ))}
-                  </select>
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
 
-                  {/* Auto-updating Today indicator badge */}
-                  {isViewingToday ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                      <span>Today</span>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleJumpToTodayIST}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer"
-                      title="Return to today's active ledger"
+                  <div className="flex items-center gap-2 px-3 py-1 font-bold text-slate-900 text-sm">
+                    <Calendar className="w-4 h-4 text-blue-600 shrink-0" />
+                    <select
+                      value={currentDate}
+                      onChange={(e) => handleSelectOrCreateDate(e.target.value)}
+                      className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer"
                     >
-                      <span>Jump to Today</span>
-                    </button>
-                  )}
+                      {recordedDates.map((d) => (
+                        <option key={d} value={d}>
+                          {d} {d === todayIST ? '★ (Today)' : d === '31-10-2026' ? '(Official Photo Baseline)' : ''}
+                        </option>
+                      ))}
+                    </select>
 
-                  <input
-                    type="date"
-                    max={getIndianTodayISODate()}
-                    value={toISODateString(currentDate)}
-                    onChange={(e) => {
-                      const iso = e.target.value;
-                      if (!iso) return;
-                      const target = fromISODateString(iso);
-                      if (target) handleSelectOrCreateDate(target);
-                    }}
-                    title="Change date till today (IST)"
-                    className="text-xs text-slate-600 border border-slate-300 rounded px-1.5 py-0.5 bg-white cursor-pointer focus:outline-blue-500"
-                  />
+                    {isViewingToday ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span>Today</span>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleJumpToTodayIST}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer"
+                        title="Return to today's active ledger"
+                      >
+                        <span>Jump to Today</span>
+                      </button>
+                    )}
+
+                    <input
+                      type="date"
+                      max={getIndianTodayISODate()}
+                      value={toISODateString(currentDate)}
+                      onChange={(e) => {
+                        const iso = e.target.value;
+                        if (!iso) return;
+                        const target = fromISODateString(iso);
+                        if (target) handleSelectOrCreateDate(target);
+                      }}
+                      title="Change date till today (IST)"
+                      className="text-xs text-slate-600 border border-slate-300 rounded px-1.5 py-0.5 bg-white cursor-pointer focus:outline-blue-500"
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleNextDate}
+                    disabled={isViewingToday}
+                    className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
+                    title={isViewingToday ? "Already at today's active ledger" : "Next Date / Tomorrow"}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
                 </div>
 
                 <button
-                  onClick={handleNextDate}
-                  disabled={isViewingToday}
-                  className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
-                  title={isViewingToday ? "Already at today's active ledger" : "Next Date / Tomorrow"}
+                  onClick={handleJumpToTodayIST}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                    isViewingToday
+                      ? 'text-emerald-900 bg-emerald-50 border-emerald-400 font-bold shadow-2xs'
+                      : 'text-amber-900 bg-amber-50 hover:bg-amber-100 border-amber-300'
+                  }`}
+                  title="Jump to today's date in India Standard Time"
                 >
-                  <ChevronRight className="w-4 h-4" />
+                  {isViewingToday && <span className="w-2 h-2 rounded-full bg-emerald-500"></span>}
+                  <span>Today ({todayIST})</span>
                 </button>
+
+                <button
+                  onClick={handleCreateNextDay}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors cursor-pointer"
+                  title="Create next day entry carrying forward today's closing stock"
+                >
+                  <Plus className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Next Day Carryover</span>
+                </button>
+
+                <button
+                  onClick={() => setIsCloudModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 cursor-pointer"
+                  title="View Cloud DBMS, Supabase & Cloudinary Cloud Space settings"
+                >
+                  <Database className="w-3 h-3 text-emerald-600" />
+                  <span className="hidden sm:inline">DBMS:</span>
+                  <span className="font-semibold text-slate-800">
+                    {saveState === 'saving'
+                      ? 'Saving...'
+                      : pendingSyncCount > 0
+                      ? `Pending (${pendingSyncCount})`
+                      : backendStatus?.supabaseReady
+                      ? 'Supabase Saved'
+                      : backendStatus?.online
+                      ? 'Saved'
+                      : 'Local Safe'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleManualSaveAndBackup}
+                  disabled={isCloudSpaceBackingUp}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                    backendStatus?.cloudinary?.configured
+                      ? 'text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border-indigo-300'
+                      : 'text-slate-700 bg-white hover:bg-slate-50 border-slate-300'
+                  }`}
+                  title={
+                    backendStatus?.cloudinary?.configured
+                      ? `Save & upload snapshot to Cloudinary Cloud Space (${backendStatus.cloudinary.cloudName})`
+                      : 'Flush pending saves & create server backup snapshot (configure Cloudinary keys in Cloud DBMS settings for Cloud Space upload)'
+                  }
+                >
+                  {isCloudSpaceBackingUp ? (
+                    <Cloud className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5 text-indigo-600" />
+                  )}
+                  <span>
+                    {isCloudSpaceBackingUp
+                      ? 'Backing up...'
+                      : backendStatus?.cloudinary?.configured
+                      ? 'Save & Cloud Space'
+                      : 'Save & Backup'}
+                  </span>
+                </button>
+
+                <ReferenceImageViewer />
               </div>
 
-              <button
-                onClick={handleJumpToTodayIST}
-                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                  isViewingToday
-                    ? 'text-emerald-900 bg-emerald-50 border-emerald-400 font-bold shadow-2xs'
-                    : 'text-amber-900 bg-amber-50 hover:bg-amber-100 border-amber-300'
-                }`}
-                title="Jump to today's date in India Standard Time"
-              >
-                {isViewingToday && <span className="w-2 h-2 rounded-full bg-emerald-500"></span>}
-                <span>Today ({todayIST})</span>
-              </button>
+              {/* Right: Quick Action Buttons with IN, OUT, and Both IN & OUT */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => setIsBarcodeScannerOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 border border-blue-700 rounded-lg shadow-xs transition-all cursor-pointer ring-2 ring-blue-500/20"
+                  title="Scan any barcode or QR code with high-speed camera scanner"
+                >
+                  <Barcode className="w-4 h-4 text-white" />
+                  <span>Scan Barcode</span>
+                </button>
 
-              <button
-                onClick={handleCreateNextDay}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors cursor-pointer"
-                title="Create next day entry carrying forward today's closing stock"
-              >
-                <Plus className="w-3.5 h-3.5 text-blue-600" />
-                <span>Next Day Carryover</span>
-              </button>
+                <button
+                  onClick={() => setIsSerialModalOpen(true)}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 border border-amber-500 rounded-lg shadow-xs transition-all cursor-pointer ring-1 ring-amber-400/50"
+                  title="Search battery serials, view batchwise stock, and trace complete history"
+                >
+                  <Barcode className="w-4 h-4 text-slate-950" />
+                  <span className="font-extrabold text-slate-950">Serial & Batch Tracker</span>
+                  {unassignedCount > 0 ? (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-900 text-amber-300 font-bold">
+                      {unassignedCount} to Assign
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-800 text-white font-bold">
+                      All Serialized
+                    </span>
+                  )}
+                </button>
 
-              <button
-                onClick={() => setIsCloudModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 cursor-pointer"
-                title="View Cloud DBMS and deployment info"
-              >
-                <Database className="w-3 h-3 text-emerald-600" />
-                <span className="hidden sm:inline">DBMS:</span>
-                <span className="font-semibold text-slate-800">
-                  {backendStatus?.online ? 'Connected' : 'Active'}
+                <div className="inline-flex items-center rounded-lg border border-slate-300 bg-slate-100 p-0.5 gap-0.5 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => openQuickEntryWithType('in')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-md transition-colors cursor-pointer"
+                    title="Log Stock IN (+)"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>IN (+)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openQuickEntryWithType('out')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-md transition-colors cursor-pointer"
+                    title="Log Stock OUT (-) or Send to Another Branch"
+                  >
+                    <MinusCircle className="w-3.5 h-3.5 text-rose-600" />
+                    <span>OUT (-)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openQuickEntryWithType('both')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 rounded-md transition-colors cursor-pointer"
+                    title="Log Both IN and OUT transactions together"
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Both IN & OUT</span>
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => setIsWhatsAppOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Dispatch to WhatsApp</span>
+                </button>
+
+                <button
+                  onClick={() => exportRecordToExcel(currentRecord, columns)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer"
+                  title="Export this sheet to Excel (.xlsx)"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Excel (.xlsx)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* KPI Summary Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-3 border-t border-slate-100">
+              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">
+                  Opening Stock
                 </span>
-              </button>
+                <span className="text-xl font-extrabold text-slate-900 tabular-nums">
+                  {totals.openingStockTotal}
+                </span>
+                <span className="text-[11px] text-slate-400 block mt-0.5">Standard models</span>
+              </div>
 
-              <ReferenceImageViewer />
-            </div>
+              <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
+                <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide block">
+                  Inward (In Stock)
+                </span>
+                <span className="text-xl font-extrabold text-emerald-700 tabular-nums">
+                  +{totals.inStockTotal}
+                </span>
+                <span className="text-[11px] text-emerald-600/80 block mt-0.5">
+                  Received / Exchanged
+                </span>
+              </div>
 
-            {/* Right: Quick Action Buttons */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={() => setIsBarcodeScannerOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 border border-blue-700 rounded-lg shadow-xs transition-all cursor-pointer ring-2 ring-blue-500/20"
-                title="Scan any barcode or QR code with high-speed camera scanner"
-              >
-                <Barcode className="w-4 h-4 text-white" />
-                <span>Scan Barcode</span>
-              </button>
+              <div className="p-3 bg-rose-50/60 rounded-lg border border-rose-200">
+                <span className="text-[11px] font-semibold text-rose-700 uppercase tracking-wide block">
+                  Outward (Out Stock)
+                </span>
+                <span className="text-xl font-extrabold text-rose-700 tabular-nums">
+                  {totals.outStockTotal}
+                </span>
+                <span className="text-[11px] text-rose-600/80 block mt-0.5">
+                  Vehicles / Dealers
+                </span>
+              </div>
 
-              <button
-                onClick={() => setIsSerialModalOpen(true)}
-                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 border border-amber-500 rounded-lg shadow-xs transition-all cursor-pointer ring-1 ring-amber-400/50"
-                title="Search battery serials, view batchwise stock, and trace complete history"
-              >
-                <Barcode className="w-4 h-4 text-slate-950" />
-                <span className="font-extrabold text-slate-950">Serial & Batch Tracker</span>
-                {unassignedCount > 0 ? (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-900 text-amber-300 font-bold">
-                    {unassignedCount} to Assign
-                  </span>
-                ) : (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-800 text-white font-bold">
-                    All Serialized
-                  </span>
-                )}
-              </button>
+              <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-200">
+                <span className="text-[11px] font-semibold text-blue-700 uppercase tracking-wide block">
+                  Today's Closing
+                </span>
+                <span className="text-xl font-extrabold text-blue-800 tabular-nums">
+                  {totals.closingStockTotal}
+                </span>
+                <span className="text-[11px] text-blue-600/80 block mt-0.5">Units in store</span>
+              </div>
 
-              <button
-                onClick={() => setIsQuickEntryOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Log Transaction</span>
-              </button>
+              <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-200">
+                <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide block">
+                  Old For Repair
+                </span>
+                <span className="text-xl font-extrabold text-amber-900 tabular-nums">
+                  {totals.repair.closing}
+                </span>
+                <span className="text-[11px] text-amber-700/80 block mt-0.5">
+                  In: +{totals.repair.in} | Out: {totals.repair.out}
+                </span>
+              </div>
 
-              <button
-                onClick={() => setIsWhatsAppOpen(true)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Dispatch to WhatsApp</span>
-              </button>
-
-              <button
-                onClick={() => exportRecordToExcel(currentRecord, columns)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer"
-                title="Export this sheet to Excel (.xlsx)"
-              >
-                <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>Excel (.xlsx)</span>
-              </button>
-            </div>
-          </div>
-
-          {/* KPI Summary Strip (Quantitative rigor with tabular nums) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-3 border-t border-slate-100">
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">
-                Opening Stock
-              </span>
-              <span className="text-xl font-extrabold text-slate-900 tabular-nums">
-                {totals.openingStockTotal}
-              </span>
-              <span className="text-[11px] text-slate-400 block mt-0.5">Standard models</span>
-            </div>
-
-            <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
-              <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide block">
-                Inward (In Stock)
-              </span>
-              <span className="text-xl font-extrabold text-emerald-700 tabular-nums">
-                +{totals.inStockTotal}
-              </span>
-              <span className="text-[11px] text-emerald-600/80 block mt-0.5">
-                Received / Exchanged
-              </span>
-            </div>
-
-            <div className="p-3 bg-rose-50/60 rounded-lg border border-rose-200">
-              <span className="text-[11px] font-semibold text-rose-700 uppercase tracking-wide block">
-                Outward (Out Stock)
-              </span>
-              <span className="text-xl font-extrabold text-rose-700 tabular-nums">
-                {totals.outStockTotal}
-              </span>
-              <span className="text-[11px] text-rose-600/80 block mt-0.5">
-                Vehicles / Dealers
-              </span>
-            </div>
-
-            <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-200">
-              <span className="text-[11px] font-semibold text-blue-700 uppercase tracking-wide block">
-                Today's Closing
-              </span>
-              <span className="text-xl font-extrabold text-blue-800 tabular-nums">
-                {totals.closingStockTotal}
-              </span>
-              <span className="text-[11px] text-blue-600/80 block mt-0.5">Units in store</span>
-            </div>
-
-            <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-200">
-              <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide block">
-                Old For Repair
-              </span>
-              <span className="text-xl font-extrabold text-amber-900 tabular-nums">
-                {totals.repair.closing}
-              </span>
-              <span className="text-[11px] text-amber-700/80 block mt-0.5">
-                In: +{totals.repair.in} | Out: {totals.repair.out}
-              </span>
-            </div>
-
-            <div className="p-3 bg-indigo-50/60 rounded-lg border border-indigo-200">
-              <span className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wide block">
-                Service Standby
-              </span>
-              <span className="text-xl font-extrabold text-indigo-900 tabular-nums">
-                {totals.service.closing}
-              </span>
-              <span className="text-[11px] text-indigo-600/80 block mt-0.5">Total pool units</span>
+              <div className="p-3 bg-indigo-50/60 rounded-lg border border-indigo-200">
+                <span className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wide block">
+                  Service Standby
+                </span>
+                <span className="text-xl font-extrabold text-indigo-900 tabular-nums">
+                  {totals.service.closing}
+                </span>
+                <span className="text-[11px] text-indigo-600/80 block mt-0.5">Total pool units</span>
+              </div>
             </div>
           </div>
-        </div>
+
+          {/* Incoming Goods Notification Banner for Active Branch */}
+          <ReceiveGoodsBanner
+            activeBranch={activeBranch}
+            transfers={transfers}
+            isReceiving={isReceivingGoods}
+            onReceiveSelected={handleReceiveTransfers}
+          />
+
+          {/* Below: Batchwise Stock (Battery Models) & Serial Number History Search */}
+          <BatchStockOverview
+            currentRecord={currentRecord}
+            columns={columns}
+            serials={serials}
+            closingStock={totals.closingStock}
+            activeBranchId={activeBranchId}
+            onOpenAssignModal={(modelId, modelName, currentStock) => {
+              setAssignModal({
+                isOpen: true,
+                modelId,
+                modelName,
+                currentStock,
+              });
+            }}
+            onOpenSerialTrackerModal={() => setIsSerialModalOpen(true)}
+            onUpdateSerial={handleUpdateSingleSerial}
+            onSelectSerialHistory={(item) => setSelectedSerialHistory(item)}
+          />
 
         {/* The Excel Spreadsheet (Exact replica of user's photo) */}
         <section className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-3">
@@ -1254,9 +1765,12 @@ export default function App() {
         onClose={() => setIsQuickEntryOpen(false)}
         record={currentRecord}
         columns={columns}
+        activeBranch={activeBranch}
+        initialEntryType={quickEntryInitialType}
         onSaveRecord={(updated, andWhatsApp, serialEntries) =>
           handleUpdateRecord(updated, andWhatsApp, serialEntries)
         }
+        onCreateBranchTransfer={handleCreateBranchTransfer}
         recordedDates={recordedDates}
         onSelectDate={handleSelectOrCreateDate}
       />

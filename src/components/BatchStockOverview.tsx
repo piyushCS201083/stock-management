@@ -20,6 +20,8 @@ import {
   Copy,
   Check,
   Edit2,
+  List,
+  LayoutGrid,
 } from 'lucide-react';
 
 interface BatchStockOverviewProps {
@@ -27,6 +29,7 @@ interface BatchStockOverviewProps {
   columns: BatteryColumn[];
   serials: Record<string, BatterySerialItem>;
   closingStock: Record<string, number>;
+  activeBranchId?: string;
   onOpenAssignModal: (modelId: string, modelName: string, currentStock: number) => void;
   onOpenSerialTrackerModal: () => void;
   onUpdateSerial: (item: BatterySerialItem) => void;
@@ -38,6 +41,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
   columns,
   serials,
   closingStock,
+  activeBranchId = 'chandravadni_naka',
   onOpenAssignModal,
   onOpenSerialTrackerModal,
   onUpdateSerial,
@@ -48,9 +52,15 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
     'all' | 'in_stock' | 'dispatched' | 'missing' | 'repair'
   >('all');
   const [copiedSerial, setCopiedSerial] = useState<string | null>(null);
-  const [isBatchCardsExpanded, setIsBatchCardsExpanded] = useState(true);
+  const [isBatchCardsExpanded, setIsBatchCardsExpanded] = useState(false);
+  const [detailedViewMode, setDetailedViewMode] = useState<'batch' | 'serial_wise'>('batch');
+  const [serialStockFilter, setSerialStockFilter] = useState<'in_stock' | 'all' | 'dispatched' | 'in_repair'>('in_stock');
 
   const serialList = useMemo(() => Object.values(serials), [serials]);
+  const branchSerialList = useMemo(
+    () => serialList.filter((s) => (s.branchId || 'chandravadni_naka') === activeBranchId),
+    [serialList, activeBranchId]
+  );
 
   // Combine standard columns and special columns (Repair & Service) into the complete Batches list
   const allBatches = useMemo(() => {
@@ -64,10 +74,13 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
 
   // Calculate batch-wise statistics (Stock count vs assigned in-stock serials)
   const batchStats = useMemo(() => {
+    const branchSerials = serialList.filter(
+      (s) => (s.branchId || 'chandravadni_naka') === activeBranchId
+    );
     return allBatches.map((batch) => {
       const stock = closingStock[batch.id] || 0;
-      // Find all serials belonging to this model/batch
-      const matchingSerials = serialList.filter(
+      // Find all serials belonging to this model/batch at the active branch
+      const matchingSerials = branchSerials.filter(
         (s) => s.modelId === batch.id || s.modelName === batch.name || s.batchNo === batch.name
       );
       const inStockSerials = matchingSerials.filter((s) => s.status === 'in_stock');
@@ -88,7 +101,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
         isFullySerialized: stock > 0 ? missingCount === 0 : true,
       };
     });
-  }, [allBatches, closingStock, serialList]);
+  }, [allBatches, closingStock, serialList, activeBranchId]);
 
   // Summary counts
   const totalStockSum = useMemo(() => {
@@ -224,6 +237,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                   if (pill.id === 'missing') {
                     // Scroll to or highlight batchwise cards
                     setIsBatchCardsExpanded(true);
+                    setDetailedViewMode('batch');
                   }
                   setSelectedQuickFilter(pill.id as any);
                   if (pill.id !== 'all' && pill.id !== 'missing') {
@@ -423,144 +437,331 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
       </div>
 
       {/* =========================================================================
-          SECTION 2: BATCHWISE CURRENT STOCK (BATTERY MODELS)
+          SECTION 2: DETAILED STOCK (MINIMISED BY DEFAULT — MODEL & SERIAL-WISE)
          ========================================================================= */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-4 sm:p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setIsBatchCardsExpanded((prev) => !prev)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setIsBatchCardsExpanded((prev) => !prev);
+            }
+          }}
+          className={`p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer hover:bg-slate-50/80 transition-colors select-none ${
+            isBatchCardsExpanded ? 'border-b border-slate-100' : ''
+          }`}
+        >
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Tag className="w-4 h-4 text-blue-600" />
               <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide">
-                Batch-wise Current Stock (Battery Models)
+                Detailed Stock (Model & Serial No.-Wise)
               </h2>
+              <span className="text-[11px] px-2 py-0.5 rounded font-mono font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                {totalStockSum} Total Units
+              </span>
               <span className="text-[11px] px-2 py-0.5 rounded font-mono font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                Batch = Battery Model
+                {branchSerialList.filter((s) => s.status === 'in_stock').length} Serials In Stock
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Current available stock by model. For any stock showing in app without serial numbers, click{' '}
-              <strong className="text-amber-700">Assign Serial No.</strong> to register its unique serial.
+              {isBatchCardsExpanded
+                ? 'Switch between Battery Model-wise summary and Serial No.-wise stock list below.'
+                : 'Minimised by default — click here to view detailed model-wise and serial no.-wise stock.'}
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {totalMissingSerials > 0 ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-amber-900 bg-amber-100 border border-amber-300 rounded-lg">
                 <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                <span>{totalMissingSerials} Batteries Missing Serials</span>
+                <span>{totalMissingSerials} Missing Serials</span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 rounded-lg">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>All Current Stock Serialized</span>
+                <span>All Stock Serialized</span>
               </span>
             )}
 
-            <button
-              onClick={() => setIsBatchCardsExpanded(!isBatchCardsExpanded)}
-              className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
-              title={isBatchCardsExpanded ? 'Collapse Batch Cards' : 'Expand Batch Cards'}
-            >
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold text-slate-700 bg-slate-100 border border-slate-200">
+              <span>{isBatchCardsExpanded ? 'Minimise' : 'View Details'}</span>
               {isBatchCardsExpanded ? (
                 <ChevronUp className="w-4 h-4" />
               ) : (
                 <ChevronDown className="w-4 h-4" />
               )}
-            </button>
+            </span>
           </div>
         </div>
 
-        {/* Batch Cards Grid */}
+        {/* Expanded Detailed Stock Content */}
         {isBatchCardsExpanded && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 pt-4">
-            {batchStats.map((batch) => {
-              const hasMissing = batch.missingCount > 0;
-              const hasStock = batch.stock > 0;
-
-              return (
-                <div
-                  key={batch.id}
-                  className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between ${
-                    hasMissing
-                      ? 'border-amber-300 bg-amber-50/40 hover:border-amber-400 shadow-2xs'
-                      : hasStock
-                      ? 'border-slate-200 bg-white hover:border-blue-300 hover:shadow-2xs'
-                      : 'border-slate-100 bg-slate-50/60 opacity-80'
+          <div className="p-4 sm:p-5 space-y-4">
+            {/* Mode Switcher: Model/Batch View vs Serial No.-Wise Stock */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+              <div className="inline-flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 self-start">
+                <button
+                  type="button"
+                  onClick={() => setDetailedViewMode('batch')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                    detailedViewMode === 'batch'
+                      ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <div>
-                    {/* Model Name (Batch) */}
-                    <div className="flex items-start justify-between gap-1">
-                      <span className="font-bold text-xs text-slate-900 leading-tight">
-                        {batch.name}
-                      </span>
-                      {batch.isSpecial && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-200 text-slate-700 font-bold shrink-0">
-                          Special
-                        </span>
-                      )}
-                    </div>
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>Model / Batch-wise Stock</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailedViewMode('serial_wise')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                    detailedViewMode === 'serial_wise'
+                      ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span>Serial No.-wise Stock ({branchSerialList.length})</span>
+                </button>
+              </div>
 
-                    {/* Stock Figure */}
-                    <div className="mt-2 flex items-baseline justify-between">
-                      <div>
-                        <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
-                          {batch.stock}
-                        </span>
-                        <span className="text-[11px] font-medium text-slate-500 ml-1">in stock</span>
-                      </div>
-                    </div>
-
-                    {/* Serial tracking status */}
-                    <div className="mt-2 pt-2 border-t border-slate-100 space-y-1 text-[11px]">
-                      <div className="flex items-center justify-between text-slate-600">
-                        <span>Serials Assigned:</span>
-                        <strong className="font-mono text-slate-800">{batch.inStockCount}</strong>
-                      </div>
-
-                      {hasMissing ? (
-                        <div className="flex items-center gap-1 font-bold text-amber-700">
-                          <AlertCircle className="w-3 h-3 text-amber-600 shrink-0" />
-                          <span>{batch.missingCount} unit(s) without serial</span>
-                        </div>
-                      ) : hasStock ? (
-                        <div className="flex items-center gap-1 font-semibold text-emerald-700">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                          <span>All serialized</span>
-                        </div>
-                      ) : (
-                        <div className="text-slate-400">0 available in store</div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Action Button: Update / Assign Serial */}
-                  <div className="mt-3 pt-2">
-                    {hasMissing ? (
-                      <button
-                        onClick={() => onOpenAssignModal(batch.id, batch.name, batch.stock)}
-                        className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg shadow-2xs transition-colors cursor-pointer ring-1 ring-amber-400/50"
-                        title="Assign serial numbers to stock batteries without serial numbers"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Assign Serial No.</span>
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => onOpenAssignModal(batch.id, batch.name, batch.stock)}
-                        className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-                        title="View or update serial numbers for this battery model"
-                      >
-                        <Edit2 className="w-3 h-3 text-slate-500" />
-                        <span>
-                          {batch.totalSerials > 0 ? `Update Serials (${batch.totalSerials})` : 'Manage'}
-                        </span>
-                      </button>
-                    )}
-                  </div>
+              {detailedViewMode === 'serial_wise' && (
+                <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                  {[
+                    {
+                      id: 'in_stock' as const,
+                      label: `In Stock (${branchSerialList.filter((s) => s.status === 'in_stock').length})`,
+                    },
+                    {
+                      id: 'dispatched' as const,
+                      label: `Dispatched (${branchSerialList.filter((s) => s.status === 'dispatched').length})`,
+                    },
+                    {
+                      id: 'in_repair' as const,
+                      label: `In Repair (${branchSerialList.filter((s) => s.status === 'in_repair').length})`,
+                    },
+                    {
+                      id: 'all' as const,
+                      label: `All (${branchSerialList.length})`,
+                    },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setSerialStockFilter(tab.id)}
+                      className={`px-2.5 py-1 rounded-md font-bold border transition-colors cursor-pointer ${
+                        serialStockFilter === tab.id
+                          ? 'bg-blue-600 text-white border-blue-700'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
-              );
-            })}
+              )}
+            </div>
+
+            {detailedViewMode === 'batch' ? (
+              /* Batch Cards Grid */
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+                {batchStats.map((batch) => {
+                  const hasMissing = batch.missingCount > 0;
+                  const hasStock = batch.stock > 0;
+
+                  return (
+                    <div
+                      key={batch.id}
+                      className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between ${
+                        hasMissing
+                          ? 'border-amber-300 bg-amber-50/40 hover:border-amber-400 shadow-2xs'
+                          : hasStock
+                          ? 'border-slate-200 bg-white hover:border-blue-300 hover:shadow-2xs'
+                          : 'border-slate-100 bg-slate-50/60 opacity-80'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-1">
+                          <span className="font-bold text-xs text-slate-900 leading-tight">
+                            {batch.name}
+                          </span>
+                          {batch.isSpecial && (
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-slate-200 text-slate-700 font-bold shrink-0">
+                              Special
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-2 flex items-baseline justify-between">
+                          <div>
+                            <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
+                              {batch.stock}
+                            </span>
+                            <span className="text-[11px] font-medium text-slate-500 ml-1">in stock</span>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 pt-2 border-t border-slate-100 space-y-1 text-[11px]">
+                          <div className="flex items-center justify-between text-slate-600">
+                            <span>Serials Assigned:</span>
+                            <strong className="font-mono text-slate-800">{batch.inStockCount}</strong>
+                          </div>
+
+                          {hasMissing ? (
+                            <div className="flex items-center gap-1 font-bold text-amber-700">
+                              <AlertCircle className="w-3 h-3 text-amber-600 shrink-0" />
+                              <span>{batch.missingCount} unit(s) without serial</span>
+                            </div>
+                          ) : hasStock ? (
+                            <div className="flex items-center gap-1 font-semibold text-emerald-700">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                              <span>All serialized</span>
+                            </div>
+                          ) : (
+                            <div className="text-slate-400">0 available in store</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 pt-2">
+                        {hasMissing ? (
+                          <button
+                            onClick={() => onOpenAssignModal(batch.id, batch.name, batch.stock)}
+                            className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg shadow-2xs transition-colors cursor-pointer ring-1 ring-amber-400/50"
+                            title="Assign serial numbers to stock batteries without serial numbers"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Assign Serial No.</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => onOpenAssignModal(batch.id, batch.name, batch.stock)}
+                            className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                            title="View or update serial numbers for this battery model"
+                          >
+                            <Edit2 className="w-3 h-3 text-slate-500" />
+                            <span>
+                              {batch.totalSerials > 0 ? `Update Serials (${batch.totalSerials})` : 'Manage'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Serial No.-Wise Stock Table */
+              (() => {
+                const filteredSerials = branchSerialList.filter((item) =>
+                  serialStockFilter === 'all' ? true : item.status === serialStockFilter
+                );
+
+                if (filteredSerials.length === 0) {
+                  return (
+                    <div className="p-6 text-center bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                      <Barcode className="w-8 h-8 text-slate-300 mx-auto" />
+                      <div className="text-xs font-bold text-slate-700">
+                        No serial numbers found for filter "{serialStockFilter.replace('_', ' ')}"
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Switch to Model / Batch-wise Stock to assign serial numbers or choose "All" above.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                          <th className="py-2.5 px-3">Serial Number</th>
+                          <th className="py-2.5 px-3">Model / Batch</th>
+                          <th className="py-2.5 px-3">Status</th>
+                          <th className="py-2.5 px-3">Inward Date & Source</th>
+                          <th className="py-2.5 px-3">Outward / Remarks</th>
+                          <th className="py-2.5 px-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white">
+                        {filteredSerials.map((item) => (
+                          <tr key={item.serialNo} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-2.5 px-3 font-mono font-extrabold text-blue-800 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span>{item.serialNo}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopySerial(item.serialNo)}
+                                  className="p-0.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                                  title="Copy Serial Number"
+                                >
+                                  {copiedSerial === item.serialNo ? (
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                  ) : (
+                                    <Copy className="w-3 h-3" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 font-bold text-slate-900 whitespace-nowrap">
+                              {item.modelName}
+                            </td>
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              {item.status === 'in_stock' ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                  IN STOCK
+                                </span>
+                              ) : item.status === 'dispatched' ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-800 border border-slate-300">
+                                  DISPATCHED
+                                </span>
+                              ) : item.status === 'in_repair' ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                  IN REPAIR
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-900 border border-indigo-300">
+                                  STANDBY
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-700">
+                              <span className="font-mono font-semibold text-slate-900">
+                                {item.inwardDate || '—'}
+                              </span>
+                              {item.inwardPartner && (
+                                <span className="text-slate-500 ml-1.5">· {item.inwardPartner}</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-600 max-w-xs truncate">
+                              {item.outwardDate
+                                ? `${item.outwardDate}${item.outwardPartner ? ` · ${item.outwardPartner}` : ''}`
+                                : item.inwardCause || 'Available in store'}
+                            </td>
+                            <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => onSelectSerialHistory(item)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md cursor-pointer"
+                              >
+                                <History className="w-3 h-3" />
+                                <span>History</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()
+            )}
           </div>
         )}
       </div>

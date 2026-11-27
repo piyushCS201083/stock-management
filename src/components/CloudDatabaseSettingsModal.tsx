@@ -4,6 +4,10 @@ import {
   setCustomBackendUrl,
   checkBackendHealth,
   retestBackendConnection,
+  apiListCloudinaryBackups,
+  apiTriggerCloudinaryBackup,
+  apiRestoreCloudinaryBackup,
+  CloudBackupSnapshotMeta,
   BackendStatus,
 } from '../services/api';
 import {
@@ -13,12 +17,13 @@ import {
   CheckCircle,
   AlertCircle,
   RefreshCw,
-  ExternalLink,
   Download,
   Upload,
   Copy,
   Check,
   X,
+  RotateCcw,
+  HardDrive,
 } from 'lucide-react';
 
 interface CloudDatabaseSettingsModalProps {
@@ -38,12 +43,24 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
+  // Cloudinary Cloud Space state
+  const [backups, setBackups] = useState<CloudBackupSnapshotMeta[]>([]);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isRestoringId, setIsRestoringId] = useState<string | null>(null);
+  const [cloudSpaceMessage, setCloudSpaceMessage] = useState<string | null>(null);
+
   useEffect(() => {
     if (isOpen) {
       setBackendUrl(getApiBaseUrl());
       handleCheck();
+      loadBackups();
     }
   }, [isOpen]);
+
+  const loadBackups = async () => {
+    const res = await apiListCloudinaryBackups();
+    setBackups(res.backups || []);
+  };
 
   const handleCheck = async () => {
     setIsChecking(true);
@@ -54,6 +71,51 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
       onDataReload();
     }
     setIsChecking(false);
+  };
+
+  const handleTriggerCloudSpaceBackup = async () => {
+    setIsBackingUp(true);
+    setCloudSpaceMessage(null);
+    const res = await apiTriggerCloudinaryBackup(undefined, undefined, 'settings_modal');
+    if (res.uploadedToCloudinary) {
+      setCloudSpaceMessage(
+        `✓ Backed up ${res.recordCount || 0} records & ${res.serialCount || 0} serials to Cloudinary (${res.cloudName})`
+      );
+    } else if (res.success && !res.cloudinaryConfigured) {
+      setCloudSpaceMessage(
+        `✓ Saved snapshot to server disk (${res.recordCount || 0} records). Add CLOUDINARY_* secrets to upload to Cloudinary.`
+      );
+    } else {
+      setCloudSpaceMessage(`⚠ Backup warning: ${res.error || 'Could not reach Cloudinary'}`);
+    }
+    await loadBackups();
+    await handleCheck();
+    setIsBackingUp(false);
+  };
+
+  const handleRestoreSnapshot = async (snap: CloudBackupSnapshotMeta) => {
+    if (
+      !window.confirm(
+        `Restore snapshot "${snap.fileName}" (${snap.source === 'cloudinary' ? 'Cloudinary Cloud Space' : 'Local Server Disk'})? Newer existing records will be preserved while missing/older dates will be restored.`
+      )
+    ) {
+      return;
+    }
+    setIsRestoringId(snap.id);
+    const res = await apiRestoreCloudinaryBackup({
+      source: snap.source,
+      secureUrl: snap.secureUrl,
+      fileName: snap.fileName,
+    });
+    if (res.success) {
+      setCloudSpaceMessage(
+        `✓ Restored ${res.restoredRecords || 0} records & ${res.restoredSerials || 0} serials!`
+      );
+      onDataReload();
+    } else {
+      setCloudSpaceMessage(`⚠ Restore failed: ${res.error || 'Unknown error'}`);
+    }
+    setIsRestoringId(null);
   };
 
   const handleSaveUrl = (e: React.FormEvent) => {
@@ -264,6 +326,109 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                 )}
               </button>
             </div>
+          </div>
+
+          {/* Cloudinary Cloud Space Permanent Snapshot Backup */}
+          <div className="p-4 rounded-lg border border-indigo-200 bg-indigo-50/50 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <Cloud className="w-4 h-4 text-indigo-600" />
+                <span>
+                  Cloudinary Cloud Space Backups{' '}
+                  {status?.cloudinary?.cloudName ? `(${status.cloudinary.cloudName})` : ''}
+                </span>
+              </span>
+              <span
+                className={`font-mono text-[10px] font-bold px-2 py-0.5 rounded ${
+                  status?.cloudinary?.configured
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-900'
+                }`}
+              >
+                {status?.cloudinary?.configured ? 'CLOUD SPACE ACTIVE' : 'ENV KEYS NEEDED'}
+              </span>
+            </div>
+
+            <p className="text-slate-600 text-[11px]">
+              Every stock edit automatically creates a point-in-time JSON snapshot on server disk and uploads it to your Cloudinary Cloud Space (<code className="bg-white px-1 rounded font-mono">stock-register-backups/</code>) so old transactions never get lost.
+            </p>
+
+            {!status?.cloudinary?.configured && (
+              <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1">
+                <span className="font-bold block">Add Cloudinary Secrets in Environment Settings:</span>
+                <span>
+                  Set <code className="bg-amber-100 px-1 rounded font-mono">CLOUDINARY_CLOUD_NAME</code>,{' '}
+                  <code className="bg-amber-100 px-1 rounded font-mono">CLOUDINARY_API_KEY</code>,{' '}
+                  <code className="bg-amber-100 px-1 rounded font-mono">CLOUDINARY_API_SECRET</code>, and{' '}
+                  <code className="bg-amber-100 px-1 rounded font-mono">CLOUDINARY_URL</code> in Secrets, then restart/retest.
+                </span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleTriggerCloudSpaceBackup}
+                disabled={isBackingUp}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer shadow-2xs"
+              >
+                <Upload className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-bounce' : ''}`} />
+                <span>{isBackingUp ? 'Backing up...' : 'Backup Now to Cloud Space'}</span>
+              </button>
+
+              <a
+                href={`${getApiBaseUrl()}/api/cloud/snapshot/export`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-slate-600" />
+                <span>Download Full Backup (.json)</span>
+              </a>
+            </div>
+
+            {cloudSpaceMessage && (
+              <div className="p-2 rounded bg-white border border-indigo-200 text-[11px] font-semibold text-slate-800">
+                {cloudSpaceMessage}
+              </div>
+            )}
+
+            {backups.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <span className="text-[11px] font-bold text-slate-700 block">
+                  Recent Saved Snapshots ({backups.length}):
+                </span>
+                <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                  {backups.slice(0, 8).map((snap) => (
+                    <div
+                      key={snap.id}
+                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded text-[11px]"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {snap.source === 'cloudinary' ? (
+                          <Cloud className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        ) : (
+                          <HardDrive className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        )}
+                        <div className="truncate">
+                          <span className="font-mono font-semibold text-slate-800">{snap.fileName}</span>
+                          <span className="text-slate-400 ml-2">
+                            {new Date(snap.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreSnapshot(snap)}
+                        disabled={isRestoringId === snap.id}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded cursor-pointer shrink-0"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>{isRestoringId === snap.id ? 'Restoring...' : 'Restore'}</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Backend URL Configuration for Render & Vercel */}

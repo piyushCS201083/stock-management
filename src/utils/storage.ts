@@ -2,11 +2,14 @@ import {
   BatteryColumn,
   DayRecord,
   DEFAULT_BATTERY_COLUMNS,
+  DEFAULT_BRANCH_ID,
   DEFAULT_TEAM_MEMBERS,
   INITIAL_RECORD_31_10_2026,
   TeamMember,
+  getBatteryRecordKey,
+  parseBatteryRecordKey,
 } from '../types/stock';
-import { addDaysToDateString } from './date';
+import { addDaysToDateString, toISODateString } from './date';
 
 const STORAGE_KEYS = {
   RECORDS: 'battery_stock_records_v3_ist',
@@ -193,6 +196,46 @@ export function saveTeamMembers(team: TeamMember[]) {
   }
 }
 
+export function createEmptyDayRecord(
+  date: string,
+  columns: BatteryColumn[],
+  branchId = 'chandravadni_naka'
+): DayRecord {
+  const stock: Record<string, number> = {};
+  const inStock: Record<string, number> = {};
+  const outStock: Record<string, number> = {};
+
+  columns.forEach((col) => {
+    stock[col.id] = 0;
+    inStock[col.id] = 0;
+    outStock[col.id] = 0;
+  });
+
+  stock['repair'] = 0;
+  inStock['repair'] = 0;
+  outStock['repair'] = 0;
+
+  stock['service'] = 0;
+  inStock['service'] = 0;
+  outStock['service'] = 0;
+
+  return {
+    date,
+    branchId,
+    stock,
+    inStock,
+    inCause: {},
+    outStock,
+    outCause: {},
+    totalInCause: '',
+    totalOutCause: '',
+    repairInCause: '',
+    repairOutCause: '',
+    lastModified: new Date().toISOString(),
+    notes: `Initialized ledger for ${branchId} (${date})`,
+  };
+}
+
 // Initialize a new day carrying over closing stock from previous day
 export function createNextDayRecord(prevRecord: DayRecord, columns: BatteryColumn[]): DayRecord {
   const nextDate = addDaysToDateString(prevRecord.date, 1);
@@ -219,6 +262,7 @@ export function createNextDayRecord(prevRecord: DayRecord, columns: BatteryColum
 
   return {
     date: nextDate,
+    branchId: prevRecord.branchId || 'chandravadni_naka',
     stock: newStock,
     inStock: newInStock,
     inCause: {},
@@ -231,4 +275,127 @@ export function createNextDayRecord(prevRecord: DayRecord, columns: BatteryColum
     lastModified: new Date().toISOString(),
     notes: `Carried forward from ${prevRecord.date} closing stock`,
   };
+}
+
+function parseTimestampMs(ts?: string): number {
+  if (!ts) return 0;
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * Merge local & remote DayRecord maps by lastModified timestamp.
+ * Protected keys (currently saving or pending retry) always preserve the local copy.
+ */
+export function mergeRecordsByTimestamp(
+  localMap: Record<string, DayRecord>,
+  remoteMap: Record<string, DayRecord>,
+  protectedKeys?: Set<string>
+): { merged: Record<string, DayRecord>; localNewerKeys: string[] } {
+  const merged: Record<string, DayRecord> = {};
+  const localNewerKeys: string[] = [];
+  const allKeys = new Set([...Object.keys(localMap || {}), ...Object.keys(remoteMap || {})]);
+
+  allKeys.forEach((key) => {
+    const localRec = localMap?.[key];
+    const remoteRec = remoteMap?.[key];
+
+    if (localRec && !remoteRec) {
+      merged[key] = localRec;
+      localNewerKeys.push(key);
+      return;
+    }
+    if (!localRec && remoteRec) {
+      merged[key] = remoteRec;
+      return;
+    }
+    if (!localRec || !remoteRec) return;
+
+    if (protectedKeys?.has(key)) {
+      merged[key] = localRec;
+      localNewerKeys.push(key);
+      return;
+    }
+
+    const localTs = parseTimestampMs(localRec.lastModified);
+    const remoteTs = parseTimestampMs(remoteRec.lastModified);
+
+    if (localTs > remoteTs) {
+      merged[key] = localRec;
+      localNewerKeys.push(key);
+    } else {
+      merged[key] = remoteRec;
+    }
+  });
+
+  return { merged, localNewerKeys };
+}
+
+/**
+ * Recalculate Opening Stock (`stock`) on every chronologically later day for `branchId`
+ * starting from `fromDate`, while keeping all IN/OUT transactions & remarks untouched.
+ */
+export function cascadeBranchOpeningStock(
+  recordsMap: Record<string, DayRecord>,
+  branchId: string,
+  fromDate: string,
+  columns: BatteryColumn[]
+): { updatedRecordsMap: Record<string, DayRecord>; changedRecords: DayRecord[] } {
+  const normalizedBranch = branchId && branchId.trim() ? branchId.trim() : DEFAULT_BRANCH_ID;
+  const branchEntries: Array<{ key: string; rec: DayRecord; iso: string }> = [];
+
+  Object.entries(recordsMap).forEach(([key, rec]) => {
+    if (!rec) return;
+    const parsed = parseBatteryRecordKey(key);
+    const recBranch = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    if (recBranch === normalizedBranch) {
+      const cleanDate = rec.date || parsed.date;
+      branchEntries.push({
+        key: getBatteryRecordKey(normalizedBranch, cleanDate),
+        rec: { ...rec, date: cleanDate, branchId: normalizedBranch },
+        iso: toISODateString(cleanDate),
+      });
+    }
+  });
+
+  branchEntries.sort((a, b) => a.iso.localeCompare(b.iso));
+  const startIdx = branchEntries.findIndex((e) => e.rec.date === fromDate);
+  if (startIdx === -1 || startIdx >= branchEntries.length - 1) {
+    return { updatedRecordsMap: recordsMap, changedRecords: [] };
+  }
+
+  const nextMap = { ...recordsMap };
+  const changedRecords: DayRecord[] = [];
+  const allColIds = [...columns.map((c) => c.id), 'repair', 'service'];
+
+  for (let i = startIdx; i < branchEntries.length - 1; i++) {
+    const prevRec = nextMap[branchEntries[i].key] || branchEntries[i].rec;
+    const nextEntry = branchEntries[i + 1];
+    const nextRec = nextMap[nextEntry.key] || nextEntry.rec;
+    const prevTotals = calculateRecordTotals(prevRec, columns);
+
+    let hasStockDiff = false;
+    const updatedOpening: Record<string, number> = { ...nextRec.stock };
+
+    allColIds.forEach((id) => {
+      const expectedOpening = prevTotals.closingStock[id] || 0;
+      if ((updatedOpening[id] || 0) !== expectedOpening) {
+        updatedOpening[id] = expectedOpening;
+        hasStockDiff = true;
+      }
+    });
+
+    if (hasStockDiff) {
+      const updatedNext: DayRecord = {
+        ...nextRec,
+        branchId: normalizedBranch,
+        stock: updatedOpening,
+        lastModified: new Date().toISOString(),
+      };
+      nextMap[nextEntry.key] = updatedNext;
+      changedRecords.push(updatedNext);
+    }
+  }
+
+  return { updatedRecordsMap: nextMap, changedRecords };
 }

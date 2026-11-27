@@ -26,6 +26,7 @@ import {
 interface BranchCategoryPortalProps {
   currentBranchId: string;
   currentCategoryId: StockCategoryId;
+  pendingTransfersByBranch?: Record<string, number>;
   onSelectBranchAndCategory: (branchId: string, categoryId: StockCategoryId) => void;
   onClose?: () => void;
   isModal?: boolean;
@@ -34,6 +35,7 @@ interface BranchCategoryPortalProps {
 export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
   currentBranchId,
   currentCategoryId,
+  pendingTransfersByBranch = {},
   onSelectBranchAndCategory,
   onClose,
   isModal = false,
@@ -129,7 +131,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                         {getBranchIcon(branch.number)}
                       </div>
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h3 className="text-base font-black text-slate-900 group-hover:text-blue-600 transition-colors">
                             {branch.name}
                           </h3>
@@ -142,6 +144,11 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                               }`}
                             >
                               {branch.badge}
+                            </span>
+                          )}
+                          {(pendingTransfersByBranch[branch.id] || 0) > 0 && (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 border border-amber-500 animate-pulse">
+                              {pendingTransfersByBranch[branch.id]} Receive Goods
                             </span>
                           )}
                         </div>

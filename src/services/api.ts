@@ -1,9 +1,12 @@
 import {
   BatteryColumn,
   BatterySerialItem,
+  BranchTransfer,
   DayRecord,
+  DEFAULT_BRANCH_ID,
   TeamMember,
   INITIAL_BASELINE_SERIALS,
+  getBatteryRecordKey,
 } from '../types/stock';
 import {
   loadRecords as loadLocalRecords,
@@ -12,6 +15,7 @@ import {
   saveColumns as saveLocalColumns,
   loadTeamMembers as loadLocalTeamMembers,
   saveTeamMembers as saveLocalTeamMembers,
+  mergeRecordsByTimestamp,
 } from '../utils/storage';
 
 export const DEFAULT_RENDER_BACKEND_URL = 'https://stock-management-hbuv.onrender.com';
@@ -71,6 +75,16 @@ export function setCustomBackendUrl(url: string) {
   }
 }
 
+export interface CloudinaryStatusInfo {
+  configured: boolean;
+  cloudName?: string;
+  folder?: string;
+  lastBackupAt?: string;
+  lastBackupUrl?: string;
+  lastBackupSource?: 'cloudinary' | 'local_disk';
+  lastError?: string;
+}
+
 export interface BackendStatus {
   online: boolean;
   engine: string;
@@ -85,6 +99,7 @@ export interface BackendStatus {
   supabaseJwksConfigured?: boolean;
   supabaseLastError?: string;
   supabaseProjectRef?: string;
+  cloudinary?: CloudinaryStatusInfo;
   error?: string;
 }
 
@@ -103,6 +118,7 @@ function mapHealthResponse(data: any, resolvedUrl: string): BackendStatus {
     supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
     supabaseLastError: data.db?.supabaseLastError,
     supabaseProjectRef: data.db?.supabaseProjectRef,
+    cloudinary: data.db?.cloudinary,
   };
 }
 
@@ -167,59 +183,179 @@ export async function retestBackendConnection(): Promise<BackendStatus> {
   return checkBackendHealth();
 }
 
-// Fetch all records with local cache fallback
-export async function apiFetchRecords(): Promise<Record<string, DayRecord>> {
+const STORAGE_KEY_PENDING_SYNC = 'battery_pending_sync_keys_v1';
+
+export function getPendingSyncKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PENDING_SYNC);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {}
+  return [];
+}
+
+function setPendingSyncKeys(keys: string[]) {
+  try {
+    const unique = Array.from(new Set(keys));
+    localStorage.setItem(STORAGE_KEY_PENDING_SYNC, JSON.stringify(unique));
+  } catch {}
+}
+
+export function addPendingSyncKey(key: string) {
+  const current = getPendingSyncKeys();
+  if (!current.includes(key)) {
+    setPendingSyncKeys([...current, key]);
+  }
+}
+
+export function removePendingSyncKey(key: string) {
+  const current = getPendingSyncKeys();
+  if (current.includes(key)) {
+    setPendingSyncKeys(current.filter((k) => k !== key));
+  }
+}
+
+// Fetch all records and merge safely with local cache by lastModified timestamp
+export async function apiFetchRecords(protectedKeys?: Set<string>): Promise<Record<string, DayRecord>> {
   const base = getApiBaseUrl();
+  const local = loadLocalRecords();
   try {
     const res = await fetch(`${base}/api/records`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
-        saveLocalRecords(json.data); // Update local cache from authoritative backend
-        return json.data;
+        const combinedProtected = new Set([
+          ...getPendingSyncKeys(),
+          ...(protectedKeys ? Array.from(protectedKeys) : []),
+        ]);
+        const { merged } = mergeRecordsByTimestamp(local, json.data, combinedProtected);
+        saveLocalRecords(merged);
+        return merged;
       }
     }
   } catch (err) {
     console.warn('[API] Could not fetch remote records, using local cache:', err);
   }
-  return loadLocalRecords();
+  return local;
 }
 
-// Save single day record to cloud database
-export async function apiSaveRecord(record: DayRecord): Promise<DayRecord> {
-  // Update local cache optimistically
+export interface SaveRecordResponse {
+  record: DayRecord;
+  persistedToServer: boolean;
+  persistedToRemote: boolean;
+  storage?: string;
+  error?: string;
+}
+
+// Save single day record to cloud database with explicit persistence metadata & retry queue
+export async function apiSaveRecordWithMeta(record: DayRecord): Promise<SaveRecordResponse> {
+  const key = getBatteryRecordKey(record.branchId, record.date);
+  const recordWithBranch: DayRecord = {
+    ...record,
+    branchId: record.branchId || DEFAULT_BRANCH_ID,
+    lastModified: record.lastModified || new Date().toISOString(),
+  };
+
+  // Persist locally & queue immediately so no edit can vanish during network/poll race
   const local = loadLocalRecords();
-  local[record.date] = record;
+  local[key] = recordWithBranch;
   saveLocalRecords(local);
+  addPendingSyncKey(key);
 
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/records`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(record),
+      body: JSON.stringify(recordWithBranch),
     });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
-        return json.data;
+        const persistedToRemote = Boolean(json.persistedToRemote);
+        const isIntentionalLocalMode = json.storage === 'local_file';
+        if (persistedToRemote || isIntentionalLocalMode) {
+          removePendingSyncKey(key);
+        }
+        return {
+          record: json.data,
+          persistedToServer: true,
+          persistedToRemote,
+          storage: json.storage,
+          error: json.remoteError,
+        };
       }
+      return {
+        record: recordWithBranch,
+        persistedToServer: false,
+        persistedToRemote: false,
+        error: json?.error || 'Server rejected save',
+      };
     }
-  } catch (err) {
-    console.warn('[API] Cloud save deferred, record saved locally:', err);
+    return {
+      record: recordWithBranch,
+      persistedToServer: false,
+      persistedToRemote: false,
+      error: `HTTP ${res.status}`,
+    };
+  } catch (err: any) {
+    console.warn('[API] Cloud save deferred, record queued locally:', err);
+    return {
+      record: recordWithBranch,
+      persistedToServer: false,
+      persistedToRemote: false,
+      error: err?.message || 'Network unavailable',
+    };
   }
-  return record;
+}
+
+// Save single day record to cloud database
+export async function apiSaveRecord(record: DayRecord): Promise<DayRecord> {
+  const res = await apiSaveRecordWithMeta(record);
+  return res.record;
+}
+
+// Flush any locally queued/newer records back up to the server & Supabase
+export async function flushPendingRecordsToServer(
+  recordsSource?: Record<string, DayRecord>,
+  extraKeysToPush?: string[]
+): Promise<{ flushed: number; remaining: number }> {
+  const local = recordsSource || loadLocalRecords();
+  const keysToPush = Array.from(new Set([...getPendingSyncKeys(), ...(extraKeysToPush || [])]));
+  if (keysToPush.length === 0) {
+    return { flushed: 0, remaining: 0 };
+  }
+
+  let flushed = 0;
+  for (const key of keysToPush) {
+    const rec = local[key];
+    if (!rec) {
+      removePendingSyncKey(key);
+      continue;
+    }
+    const res = await apiSaveRecordWithMeta(rec);
+    if (res.persistedToServer && (res.persistedToRemote || res.storage === 'local_file')) {
+      flushed++;
+    }
+  }
+
+  return {
+    flushed,
+    remaining: getPendingSyncKeys().length,
+  };
 }
 
 // Delete day record
-export async function apiDeleteRecord(date: string): Promise<boolean> {
+export async function apiDeleteRecord(recordKey: string): Promise<boolean> {
   const local = loadLocalRecords();
-  delete local[date];
+  delete local[recordKey];
   saveLocalRecords(local);
 
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/records/${date}`, {
+    const res = await fetch(`${base}/api/records/${encodeURIComponent(recordKey)}`, {
       method: 'DELETE',
     });
     return res.ok;
@@ -417,11 +553,21 @@ export async function apiBulkSaveSerials(items: BatterySerialItem[]): Promise<Ba
   return items;
 }
 
-// Backup current state permanently to disk & cloud database
+// Backup current state permanently to disk, Supabase, & Cloudinary Cloud Space
 export async function apiBackupPermanentCodebase(
   records?: Record<string, DayRecord>,
   serials?: Record<string, BatterySerialItem>
-): Promise<boolean> {
+): Promise<{
+  success: boolean;
+  cloudSpace?: {
+    cloudinaryConfigured: boolean;
+    uploadedToCloudinary: boolean;
+    cloudName?: string;
+    secureUrl?: string;
+    latestUrl?: string;
+    error?: string;
+  };
+}> {
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/backup-permanent`, {
@@ -429,10 +575,105 @@ export async function apiBackupPermanentCodebase(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ records, serials }),
     });
-    return res.ok;
+    if (res.ok) {
+      return await res.json();
+    }
+    return { success: false };
   } catch (err) {
     console.warn('[API] Backup permanent codebase deferred:', err);
-    return false;
+    return { success: false };
+  }
+}
+
+export interface CloudBackupSnapshotMeta {
+  id: string;
+  publicId: string;
+  fileName: string;
+  source: 'cloudinary' | 'local_disk';
+  createdAt: string;
+  bytes?: number;
+  secureUrl?: string;
+}
+
+export async function apiGetCloudinaryStatus(): Promise<CloudinaryStatusInfo | null> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/cloud/cloudinary/status`, { cache: 'no-store' });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return null;
+}
+
+export async function apiTriggerCloudinaryBackup(
+  records?: Record<string, DayRecord>,
+  serials?: Record<string, BatterySerialItem>,
+  reason = 'manual_ui'
+): Promise<{
+  success: boolean;
+  cloudinaryConfigured: boolean;
+  uploadedToCloudinary: boolean;
+  cloudName?: string;
+  secureUrl?: string;
+  latestUrl?: string;
+  recordCount?: number;
+  serialCount?: number;
+  timestamp?: string;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/cloud/cloudinary/backup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records, serials, reason }),
+    });
+    const json = await res.json();
+    return json;
+  } catch (err: any) {
+    return {
+      success: false,
+      cloudinaryConfigured: false,
+      uploadedToCloudinary: false,
+      error: err?.message || 'Backup request failed',
+    };
+  }
+}
+
+export async function apiListCloudinaryBackups(): Promise<{
+  cloudinaryConfigured: boolean;
+  cloudName?: string;
+  backups: CloudBackupSnapshotMeta[];
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/cloud/cloudinary/backups`, { cache: 'no-store' });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err: any) {
+    return { cloudinaryConfigured: false, backups: [], error: err?.message };
+  }
+  return { cloudinaryConfigured: false, backups: [] };
+}
+
+export async function apiRestoreCloudinaryBackup(payload: {
+  source: 'cloudinary' | 'local_disk';
+  secureUrl?: string;
+  fileName?: string;
+}): Promise<{ success: boolean; restoredRecords?: number; restoredSerials?: number; error?: string }> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/cloud/cloudinary/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Restore failed' };
   }
 }
 
@@ -502,6 +743,102 @@ export async function apiSaveChargerRecord(
   return { key: compositeKey, ...payload };
 }
 
+// Inter-Branch Transfers API & Local Fallback
+const STORAGE_KEY_TRANSFERS = 'battery_branch_transfers_v1';
+
+export function loadLocalTransfers(): BranchTransfer[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_TRANSFERS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {}
+  return [];
+}
+
+export function saveLocalTransfers(transfers: BranchTransfer[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY_TRANSFERS, JSON.stringify(transfers));
+  } catch {}
+}
+
+export async function apiFetchTransfers(): Promise<BranchTransfer[]> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/transfers`, { cache: 'no-store' });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        saveLocalTransfers(json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Transfers fetch failed, using local cache:', err);
+  }
+  return loadLocalTransfers();
+}
+
+export async function apiCreateTransfer(payload: {
+  fromBranchId: string;
+  toBranchId: string;
+  date: string;
+  category?: 'battery' | 'charger';
+  items: Array<{
+    modelId: string;
+    modelName: string;
+    quantity: number;
+    serialNos?: string[];
+    notes?: string;
+  }>;
+  partner?: string;
+  notes?: string;
+}): Promise<{ created: BranchTransfer | null; transfers: BranchTransfer[] }> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/transfers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.transfers)) {
+        saveLocalTransfers(json.transfers);
+        return { created: json.data || null, transfers: json.transfers };
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Create branch transfer failed:', err);
+  }
+  return { created: null, transfers: loadLocalTransfers() };
+}
+
+export async function apiReceiveTransfers(
+  selections: Array<{ transferId: string; itemIds?: string[] }>,
+  receivedBy?: string
+): Promise<BranchTransfer[]> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/transfers/receive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selections, receivedBy }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        saveLocalTransfers(json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Receive transfers failed:', err);
+  }
+  return loadLocalTransfers();
+}
+
 // Real-Time Cloud Synchronization Callback Interface
 export interface RealtimeSyncCallbacks {
   onRecordUpdated?: (record: DayRecord) => void;
@@ -512,6 +849,7 @@ export interface RealtimeSyncCallbacks {
   onColumnsUpdated?: (columns: BatteryColumn[]) => void;
   onTeamUpdated?: (team: TeamMember[]) => void;
   onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
+  onTransfersUpdated?: (transfers: BranchTransfer[]) => void;
   onConnectionChange?: (connected: boolean) => void;
   onReconnected?: () => void;
 }
@@ -542,10 +880,19 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
     switch (event) {
       case 'RECORD_UPDATED':
         if (payload?.date) {
+          const key = getBatteryRecordKey(payload.branchId, payload.date);
+          if (getPendingSyncKeys().includes(key)) {
+            break;
+          }
           const local = loadLocalRecords();
-          local[payload.date] = payload;
-          saveLocalRecords(local);
-          callbacks.onRecordUpdated?.(payload);
+          const existingLocal = local[key];
+          const localTs = existingLocal?.lastModified ? Date.parse(existingLocal.lastModified) : 0;
+          const incomingTs = payload.lastModified ? Date.parse(payload.lastModified) : 0;
+          if (!existingLocal || incomingTs >= localTs) {
+            local[key] = payload;
+            saveLocalRecords(local);
+            callbacks.onRecordUpdated?.(payload);
+          }
         }
         break;
       case 'RECORD_DELETED':
@@ -605,6 +952,12 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
           };
           saveLocalChargers(local);
           callbacks.onChargerUpdated?.(payload);
+        }
+        break;
+      case 'TRANSFERS_UPDATED':
+        if (Array.isArray(payload)) {
+          saveLocalTransfers(payload);
+          callbacks.onTransfersUpdated?.(payload);
         }
         break;
       case 'PERMANENT_SYNC_COMPLETE':

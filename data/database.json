@@ -108,6 +108,108 @@
       "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE",
       "lastModified": "2026-10-31T17:22:46.790Z",
       "notes": "Official live baseline from verified Excel photo dated 31-10-2026"
+    },
+    "23-11-2026": {
+      "date": "23-11-2026",
+      "notes": "Auto-created for Today (23-11-2026) carrying forward closing stock from 31-10-2026",
+      "stock": {
+        "repair": 0,
+        "service": 2,
+        "48x30_old": 1,
+        "60x24_old": 2,
+        "60x30_old": 0,
+        "60x36_old": 0,
+        "60x24_flat": 1,
+        "60x30_flat": 2,
+        "60x36_flat": 2,
+        "60x45_flat": 1,
+        "60x38_magnus": 0
+      },
+      "inCause": {
+        "60x24_old": ""
+      },
+      "inStock": {
+        "repair": 0,
+        "service": 0,
+        "48x30_old": 0,
+        "60x24_old": 2,
+        "60x30_old": 0,
+        "60x36_old": 0,
+        "60x24_flat": 0,
+        "60x30_flat": 0,
+        "60x36_flat": 0,
+        "60x45_flat": 0,
+        "60x38_magnus": 0
+      },
+      "outCause": {},
+      "outStock": {
+        "repair": 0,
+        "service": 0,
+        "48x30_old": 0,
+        "60x24_old": 0,
+        "60x30_old": 0,
+        "60x36_old": 0,
+        "60x24_flat": 0,
+        "60x30_flat": 0,
+        "60x36_flat": 0,
+        "60x45_flat": 0,
+        "60x38_magnus": 0
+      },
+      "lastModified": "2026-11-22T19:28:58.598Z",
+      "totalInCause": "60×24 OLD: \n60×24 OLD: ",
+      "repairInCause": "",
+      "totalOutCause": "",
+      "repairOutCause": ""
+    },
+    "27-11-2026": {
+      "date": "27-11-2026",
+      "notes": "Auto-created for Today (27-11-2026) carrying forward closing stock from 23-11-2026",
+      "stock": {
+        "repair": 0,
+        "service": 2,
+        "48x30_old": 1,
+        "60x24_old": 4,
+        "60x30_old": 0,
+        "60x36_old": 0,
+        "60x24_flat": 1,
+        "60x30_flat": 2,
+        "60x36_flat": 2,
+        "60x45_flat": 1,
+        "60x38_magnus": 0
+      },
+      "inCause": {},
+      "inStock": {
+        "repair": 0,
+        "service": 0,
+        "48x30_old": 0,
+        "60x24_old": 0,
+        "60x30_old": 0,
+        "60x36_old": 0,
+        "60x24_flat": 0,
+        "60x30_flat": 0,
+        "60x36_flat": 0,
+        "60x45_flat": 0,
+        "60x38_magnus": 0
+      },
+      "outCause": {},
+      "outStock": {
+        "repair": 0,
+        "service": 0,
+        "48x30_old": 0,
+        "60x24_old": 0,
+        "60x30_old": 0,
+        "60x36_old": 0,
+        "60x24_flat": 0,
+        "60x30_flat": 0,
+        "60x36_flat": 0,
+        "60x45_flat": 0,
+        "60x38_magnus": 0
+      },
+      "lastModified": "2026-11-27T10:38:00.982Z",
+      "totalInCause": "",
+      "repairInCause": "",
+      "totalOutCause": "",
+      "repairOutCause": ""
     }
   },
   "columns": [
@@ -158,6 +260,11 @@
     }
   ],
   "logs": [
+    {
+      "action": "SAVE_RECORD",
+      "date": "test_branch::01-01-2025",
+      "timestamp": "2026-11-27T11:13:40.318Z"
+    },
     {
       "action": "PERMANENT_CODEBASE_BACKUP",
       "timestamp": "2026-11-01T10:05:54.219Z",

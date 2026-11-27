@@ -83,8 +83,30 @@ export const DEFAULT_CHARGER_COLUMNS: BatteryColumn[] = [
   { id: 'old_charger_repair', name: 'Charger for Repair' },
 ];
 
+export const DEFAULT_BRANCH_ID = 'chandravadni_naka';
+
+export function getBatteryRecordKey(branchId: string | undefined, date: string): string {
+  const normalizedBranch = branchId && branchId.trim() ? branchId.trim() : DEFAULT_BRANCH_ID;
+  if (normalizedBranch === DEFAULT_BRANCH_ID) {
+    return date;
+  }
+  return `${normalizedBranch}::${date}`;
+}
+
+export function parseBatteryRecordKey(key: string): { branchId: string; date: string } {
+  const idx = key.indexOf('::');
+  if (idx === -1) {
+    return { branchId: DEFAULT_BRANCH_ID, date: key };
+  }
+  return {
+    branchId: key.slice(0, idx) || DEFAULT_BRANCH_ID,
+    date: key.slice(idx + 2),
+  };
+}
+
 export interface DayRecord {
   date: string; // "DD-MM-YYYY" e.g. "31-10-2026"
+  branchId?: string; // Defaults to 'chandravadni_naka'
   // Opening stock values by column ID
   stock: Record<string, number>;
   // Inward additions by column ID
@@ -122,6 +144,7 @@ export interface BatteryMovementEvent {
   cause: string;
   partner?: string; // e.g. "Luvkush", "Aman Wadhwani"
   vehicleOrLocation?: string; // e.g. "Service center", "Morar"
+  branchId?: string;
   notes?: string;
 }
 
@@ -130,6 +153,7 @@ export interface BatterySerialItem {
   batchNo?: string;
   modelId: string;
   modelName: string;
+  branchId?: string;
   status: 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby';
   inwardDate: string;
   inwardCause?: string;
@@ -139,6 +163,34 @@ export interface BatterySerialItem {
   outwardPartner?: string;
   currentHolderOrLocation?: string;
   history: BatteryMovementEvent[];
+}
+
+export interface BranchTransferItem {
+  id: string;
+  modelId: string;
+  modelName: string;
+  quantity: number;
+  serialNos?: string[];
+  notes?: string;
+  received?: boolean;
+  receivedAt?: string;
+}
+
+export interface BranchTransfer {
+  id: string;
+  fromBranchId: string;
+  fromBranchName: string;
+  toBranchId: string;
+  toBranchName: string;
+  date: string; // DD-MM-YYYY
+  category: 'battery' | 'charger';
+  items: BranchTransferItem[];
+  partner?: string;
+  notes?: string;
+  status: 'pending' | 'partial' | 'received';
+  createdAt: string;
+  receivedAt?: string;
+  receivedBy?: string;
 }
 
 export const DEFAULT_BATTERY_COLUMNS: BatteryColumn[] = [
