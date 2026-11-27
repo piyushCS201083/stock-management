@@ -8,7 +8,7 @@ import {
   DEFAULT_BRANCH_ID,
   DayRecord,
   parseBatteryRecordKey,
-} from '../src/types/stock.ts';
+} from '../src/types/stock';
 
 function computeTotals(record: DayRecord, columns: BatteryColumn[]) {
   let openingStockTotal = 0;
