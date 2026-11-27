@@ -41,6 +41,7 @@ import {
   triggerCloudSpaceBackupNow,
   restoreFullDatabaseSnapshot,
   getResetEpoch,
+  getResetDateIST,
   factoryResetAllData,
   getAdminConfigStatus,
   claimFirstRunAdminPassword,
@@ -451,7 +452,12 @@ app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
 app.get('/api/records', async (req, res) => {
   try {
     const records = await getAllRecords();
-    res.json({ success: true, data: records, resetEpoch: getResetEpoch() });
+    res.json({
+      success: true,
+      data: records,
+      resetEpoch: getResetEpoch(),
+      resetDateIST: getResetDateIST(),
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -566,7 +572,12 @@ app.post('/api/team', async (req, res) => {
 app.get('/api/serials', async (req, res) => {
   try {
     const serials = await getAllSerials();
-    res.json({ success: true, data: serials });
+    res.json({
+      success: true,
+      data: serials,
+      resetEpoch: getResetEpoch(),
+      resetDateIST: getResetDateIST(),
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

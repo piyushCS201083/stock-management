@@ -17,7 +17,10 @@ import {
   mergeRecordsByTimestamp,
   mergeSerialsByHistory,
   getLocalResetEpoch,
+  getLocalResetDateIST,
   clearAllLocalStockStorage,
+  prunePreResetRecords,
+  prunePreResetSerials,
 } from '../utils/storage';
 
 export const DEFAULT_RENDER_BACKEND_URL = 'https://stock-management-hbuv.onrender.com';
@@ -104,6 +107,7 @@ export interface BackendStatus {
   supabaseLastError?: string;
   supabaseProjectRef?: string;
   resetEpoch?: string;
+  resetDateIST?: string;
   cloudinary?: CloudinaryStatusInfo;
   error?: string;
 }
@@ -124,6 +128,7 @@ function mapHealthResponse(data: any, resolvedUrl: string): BackendStatus {
     supabaseLastError: data.db?.supabaseLastError,
     supabaseProjectRef: data.db?.supabaseProjectRef,
     resetEpoch: data.db?.resetEpoch,
+    resetDateIST: data.db?.resetDateIST,
     cloudinary: data.db?.cloudinary,
   };
 }
@@ -223,33 +228,76 @@ export function removePendingSyncKey(key: string) {
   }
 }
 
-// Fetch all records and merge safely with local cache by lastModified timestamp
-export async function apiFetchRecords(protectedKeys?: Set<string>): Promise<Record<string, DayRecord>> {
+export interface FetchRecordsWithMetaResult {
+  records: Record<string, DayRecord>;
+  resetEpoch?: string;
+  resetDateIST?: string;
+  epochResetTriggered: boolean;
+  fromRemote: boolean;
+}
+
+export async function apiFetchRecordsWithMeta(
+  protectedKeys?: Set<string>
+): Promise<FetchRecordsWithMetaResult> {
   const base = getApiBaseUrl();
-  const local = loadLocalRecords();
+  const localEpoch = getLocalResetEpoch();
+  const localResetDate = getLocalResetDateIST();
+  const local = prunePreResetRecords(loadLocalRecords(), localEpoch, localResetDate);
+
   try {
     const res = await fetch(`${base}/api/records`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
-        if (json.resetEpoch && getLocalResetEpoch() !== json.resetEpoch) {
-          clearAllLocalStockStorage(json.resetEpoch);
+        const remoteEpoch: string | undefined = json.resetEpoch;
+        const remoteResetDate: string | undefined = json.resetDateIST;
+
+        if (remoteEpoch && localEpoch !== remoteEpoch) {
+          clearAllLocalStockStorage(remoteEpoch, remoteResetDate);
           saveLocalRecords(json.data);
-          return json.data;
+          return {
+            records: json.data,
+            resetEpoch: remoteEpoch,
+            resetDateIST: remoteResetDate,
+            epochResetTriggered: true,
+            fromRemote: true,
+          };
         }
+
+        const effectiveEpoch = remoteEpoch || localEpoch;
+        const effectiveDateIST = remoteResetDate || localResetDate;
+        const prunedLocal = prunePreResetRecords(local, effectiveEpoch, effectiveDateIST);
         const combinedProtected = new Set([
           ...getPendingSyncKeys(),
           ...(protectedKeys ? Array.from(protectedKeys) : []),
         ]);
-        const { merged } = mergeRecordsByTimestamp(local, json.data, combinedProtected);
+        const { merged } = mergeRecordsByTimestamp(prunedLocal, json.data, combinedProtected);
         saveLocalRecords(merged);
-        return merged;
+        return {
+          records: merged,
+          resetEpoch: remoteEpoch,
+          resetDateIST: remoteResetDate,
+          epochResetTriggered: false,
+          fromRemote: true,
+        };
       }
     }
   } catch (err) {
     console.warn('[API] Could not fetch remote records, using local cache:', err);
   }
-  return local;
+  return {
+    records: local,
+    resetEpoch: localEpoch || undefined,
+    resetDateIST: localResetDate || undefined,
+    epochResetTriggered: false,
+    fromRemote: false,
+  };
+}
+
+// Fetch all records and merge safely with local cache by lastModified timestamp
+export async function apiFetchRecords(protectedKeys?: Set<string>): Promise<Record<string, DayRecord>> {
+  const res = await apiFetchRecordsWithMeta(protectedKeys);
+  return res.records;
 }
 
 export interface SaveRecordResponse {
@@ -536,17 +584,31 @@ export async function apiFetchSerials(
   protectedKeys?: Set<string>
 ): Promise<Record<string, BatterySerialItem>> {
   const base = getApiBaseUrl();
-  const local = loadLocalSerials();
+  const localEpoch = getLocalResetEpoch();
+  const localResetDate = getLocalResetDateIST();
+  const local = prunePreResetSerials(loadLocalSerials(), localEpoch, localResetDate);
+
   try {
     const res = await fetch(`${base}/api/serials`, { cache: 'no-store' });
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
+        const remoteEpoch: string | undefined = json.resetEpoch;
+        const remoteResetDate: string | undefined = json.resetDateIST;
+        if (remoteEpoch && localEpoch !== remoteEpoch) {
+          saveLocalSerials(json.data);
+          return json.data;
+        }
+        const prunedLocal = prunePreResetSerials(
+          local,
+          remoteEpoch || localEpoch,
+          remoteResetDate || localResetDate
+        );
         const combinedProtected = new Set([
           ...getPendingSerialSyncKeys(),
           ...(protectedKeys ? Array.from(protectedKeys) : []),
         ]);
-        const { merged } = mergeSerialsByHistory(local, json.data, combinedProtected);
+        const { merged } = mergeSerialsByHistory(prunedLocal, json.data, combinedProtected);
         saveLocalSerials(merged);
         return merged;
       }
@@ -879,7 +941,7 @@ export async function apiFactoryReset(adminToken?: string | null): Promise<{
       return { success: false, unauthorized: true, error: json?.error || 'Admin authentication required' };
     }
     if (res.ok && json.success) {
-      clearAllLocalStockStorage(json.resetEpoch);
+      clearAllLocalStockStorage(json.resetEpoch, json.todayIST);
     }
     return json;
   } catch (err: any) {
@@ -1559,10 +1621,10 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
         }
         break;
       case 'PERMANENT_SYNC_COMPLETE':
-        // Full sync refreshed
+        callbacks.onReconnected?.();
         break;
       case 'FACTORY_RESET':
-        clearAllLocalStockStorage(payload?.resetEpoch);
+        clearAllLocalStockStorage(payload?.resetEpoch, payload?.todayIST);
         callbacks.onFactoryReset?.(payload || {});
         break;
     }

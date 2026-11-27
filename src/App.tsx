@@ -35,10 +35,13 @@ import {
   cascadeBranchOpeningStock,
   syncTodayOpeningFromLastEntry,
   getLocalResetEpoch,
+  getLocalResetDateIST,
   clearAllLocalStockStorage,
+  prunePreResetRecords,
+  prunePreResetSerials,
 } from './utils/storage';
 import {
-  apiFetchRecords,
+  apiFetchRecordsWithMeta,
   apiSaveRecordWithMeta,
   flushPendingRecordsToServer,
   getPendingSyncKeys,
@@ -205,13 +208,19 @@ export default function App() {
     return localStorage.getItem('active_branch_id') || DEFAULT_BRANCH_ID;
   });
   const [records, setRecords] = useState<Record<string, DayRecord>>(() => {
-    const loaded = loadRecords();
+    const loaded = prunePreResetRecords(
+      loadRecords(),
+      getLocalResetEpoch(),
+      getLocalResetDateIST()
+    );
     const cols = loadColumns();
     const initialBranch = localStorage.getItem('active_branch_id') || DEFAULT_BRANCH_ID;
     return ensureTodayLedger(loaded, cols, false, initialBranch);
   });
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
-  const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() => loadLocalSerials());
+  const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() =>
+    prunePreResetSerials(loadLocalSerials(), getLocalResetEpoch(), getLocalResetDateIST())
+  );
   const [chargerRecords, setChargerRecords] = useState<Record<string, any>>(() => loadLocalChargers());
   const [vehicleRecords, setVehicleRecords] = useState<Record<string, any>>(() => loadLocalVehicles());
   const [transfers, setTransfers] = useState<BranchTransfer[]>(() => loadLocalTransfers());
@@ -426,6 +435,7 @@ export default function App() {
   const [isCloudSpaceBackingUp, setIsCloudSpaceBackingUp] = useState<boolean>(false);
 
   const isSyncingRef = useRef(false);
+  const hasCompletedInitialSyncRef = useRef(false);
   const inFlightRecordKeysRef = useRef<Set<string>>(new Set());
   const inFlightSerialKeysRef = useRef<Set<string>>(new Set());
   const recordsRef = useRef(records);
@@ -449,44 +459,52 @@ export default function App() {
     if (isSyncingRef.current && !forceReplace) return;
     isSyncingRef.current = true;
     try {
+      const initialEpochBeforeSync = getLocalResetEpoch();
       const health = await checkBackendHealth();
       setBackendStatus(health);
 
-      // If the server was factory reset since this browser last synced, wipe stale local cache before merging
-      const epochChanged =
+      // If the server was factory reset since this browser last synced (or browser has never completed an authoritative sync),
+      // wipe stale local cache and treat cloud state as authoritative so pre-reset stock ("11") can never resurrect.
+      const healthEpochChanged =
         forceReplace ||
-        Boolean(health.online && health.resetEpoch && getLocalResetEpoch() !== health.resetEpoch);
-      if (epochChanged && health.resetEpoch) {
-        clearAllLocalStockStorage(health.resetEpoch);
+        Boolean(health.online && health.resetEpoch && initialEpochBeforeSync !== health.resetEpoch) ||
+        Boolean(health.online && !initialEpochBeforeSync && !hasCompletedInitialSyncRef.current);
+
+      if (healthEpochChanged && health.resetEpoch) {
+        clearAllLocalStockStorage(health.resetEpoch, health.resetDateIST);
         inFlightRecordKeysRef.current.clear();
         inFlightSerialKeysRef.current.clear();
-      } else if (!epochChanged) {
+      } else if (!healthEpochChanged && (initialEpochBeforeSync || hasCompletedInitialSyncRef.current)) {
         if (getPendingSyncKeys().length > 0) {
           // Push any queued offline/failed local record edits up to the server first
-          await flushPendingRecordsToServer(recordsRef.current);
+          await flushPendingRecordsToServer(
+            prunePreResetRecords(recordsRef.current, health.resetEpoch || initialEpochBeforeSync, health.resetDateIST || getLocalResetDateIST())
+          );
         }
         if (getPendingSerialSyncKeys().length > 0) {
-          await flushPendingSerialsToServer(serialsRef.current);
+          await flushPendingSerialsToServer(
+            prunePreResetSerials(serialsRef.current, health.resetEpoch || initialEpochBeforeSync, health.resetDateIST || getLocalResetDateIST())
+          );
         }
       }
 
-      const protectedKeys = epochChanged
+      const protectedKeys = healthEpochChanged
         ? new Set<string>()
         : new Set<string>([
             ...getPendingSyncKeys(),
             ...Array.from(inFlightRecordKeysRef.current),
           ]);
 
-      const protectedSerialKeys = epochChanged
+      const protectedSerialKeys = healthEpochChanged
         ? new Set<string>()
         : new Set<string>([
             ...getPendingSerialSyncKeys(),
             ...Array.from(inFlightSerialKeysRef.current),
           ]);
 
-      const [remoteRecords, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteVehicles, remoteTransfers] =
+      const [recordsMeta, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteVehicles, remoteTransfers] =
         await Promise.all([
-          apiFetchRecords(protectedKeys),
+          apiFetchRecordsWithMeta(protectedKeys),
           apiFetchColumns(),
           apiFetchTeam(),
           apiFetchSerials(protectedSerialKeys),
@@ -495,9 +513,27 @@ export default function App() {
           apiFetchTransfers(),
         ]);
 
+      const remoteRecords = recordsMeta.records;
+      const effectiveEpoch = health.resetEpoch || recordsMeta.resetEpoch || getLocalResetEpoch();
+      const effectiveDateIST = health.resetDateIST || recordsMeta.resetDateIST || getLocalResetDateIST();
+      const epochChanged =
+        healthEpochChanged ||
+        recordsMeta.epochResetTriggered ||
+        Boolean(recordsMeta.resetEpoch && initialEpochBeforeSync !== recordsMeta.resetEpoch);
+
+      if (health.online || recordsMeta.fromRemote) {
+        hasCompletedInitialSyncRef.current = true;
+      }
+
       const activeCols = remoteCols && remoteCols.length > 0 ? remoteCols : columnsRef.current;
 
       if (epochChanged) {
+        if (effectiveEpoch) {
+          clearAllLocalStockStorage(effectiveEpoch, effectiveDateIST || undefined);
+        }
+        inFlightRecordKeysRef.current.clear();
+        inFlightSerialKeysRef.current.clear();
+
         const cleanWithToday = ensureTodayLedger(
           remoteRecords || {},
           activeCols,
@@ -516,6 +552,9 @@ export default function App() {
         saveLocalVehicles(remoteVehicles || {});
         setTransfers(Array.isArray(remoteTransfers) ? remoteTransfers : []);
         saveLocalTransfers(Array.isArray(remoteTransfers) ? remoteTransfers : []);
+        setSelectedSerialHistory(null);
+        setAssignModal((prev) => ({ ...prev, isOpen: false }));
+        setReceiveModalState({ isOpen: false, items: [] });
         setCurrentDate(getIndianTodayDate());
         setPendingSyncCount(0);
         setSaveState('saved');
@@ -528,8 +567,13 @@ export default function App() {
           ...getPendingSyncKeys(),
           ...Array.from(inFlightRecordKeysRef.current),
         ]);
-        const { merged, localNewerKeys } = mergeRecordsByTimestamp(
+        const prunedCurrent = prunePreResetRecords(
           recordsRef.current,
+          effectiveEpoch,
+          effectiveDateIST
+        );
+        const { merged, localNewerKeys } = mergeRecordsByTimestamp(
+          prunedCurrent,
           remoteRecords,
           latestProtected
         );
@@ -568,8 +612,13 @@ export default function App() {
           ...getPendingSerialSyncKeys(),
           ...Array.from(inFlightSerialKeysRef.current),
         ]);
-        const { merged: mergedSerials, localNewerSerials } = mergeSerialsByHistory(
+        const prunedSerials = prunePreResetSerials(
           serialsRef.current,
+          effectiveEpoch,
+          effectiveDateIST
+        );
+        const { merged: mergedSerials, localNewerSerials } = mergeSerialsByHistory(
+          prunedSerials,
           remoteSerials,
           latestProtectedSerials
         );
@@ -727,6 +776,9 @@ export default function App() {
       onFactoryReset: () => {
         inFlightRecordKeysRef.current.clear();
         inFlightSerialKeysRef.current.clear();
+        setSelectedSerialHistory(null);
+        setAssignModal((prev) => ({ ...prev, isOpen: false }));
+        setReceiveModalState({ isOpen: false, items: [] });
         setPendingSyncCount(0);
         setSaveState('saved');
         syncWithCloudBackend(true);

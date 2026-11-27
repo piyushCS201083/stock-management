@@ -56,11 +56,13 @@ interface DatabaseState {
   vehicleRecords?: Record<string, any>;
   branchTransfers?: BranchTransfer[];
   resetEpoch?: string;
+  resetDateIST?: string;
   adminCredentials?: AdminCredentialsRecord;
   logs: any[];
 }
 
 let currentResetEpoch: string | null = null;
+let currentResetDateIST: string | null = null;
 
 function getIndianTodayDateServer(): string {
   const formatter = new Intl.DateTimeFormat('en-GB', {
@@ -120,6 +122,31 @@ export function getResetEpoch(): string | undefined {
       if (parsed?.resetEpoch) {
         currentResetEpoch = parsed.resetEpoch;
         return currentResetEpoch || undefined;
+      }
+    }
+  } catch {}
+  return undefined;
+}
+
+export function getResetDateIST(): string | undefined {
+  if (currentResetDateIST) return currentResetDateIST;
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+      if (parsed?.resetDateIST) {
+        currentResetDateIST = parsed.resetDateIST;
+        return currentResetDateIST || undefined;
+      }
+      if (parsed?.resetEpoch) {
+        const formatter = new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Kolkata',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+        });
+        const parts = formatter.format(new Date(parsed.resetEpoch)).split('/');
+        currentResetDateIST = `${parts[0]}-${parts[1]}-${parts[2]}`;
+        return currentResetDateIST;
       }
     }
   } catch {}
@@ -221,6 +248,9 @@ function readLocalFile(): DatabaseState {
         if (parsed.resetEpoch && !currentResetEpoch) {
           currentResetEpoch = parsed.resetEpoch;
         }
+        if (parsed.resetDateIST && !currentResetDateIST) {
+          currentResetDateIST = parsed.resetDateIST;
+        }
         const removedIds = ['luvkush', 'sonu_bhaiya', 'nikhil', 'reena_ent', 'store_staff'];
         if (Array.isArray(parsed.teamMembers)) {
           const nextTeam = parsed.teamMembers
@@ -260,6 +290,7 @@ function readLocalFile(): DatabaseState {
     );
   }
   currentResetEpoch = currentResetEpoch || now;
+  currentResetDateIST = currentResetDateIST || todayIST;
 
   const initialState: DatabaseState = {
     records: freshRecords,
@@ -270,6 +301,7 @@ function readLocalFile(): DatabaseState {
     vehicleRecords: {},
     branchTransfers: [],
     resetEpoch: currentResetEpoch,
+    resetDateIST: currentResetDateIST,
     logs: [
       {
         action: 'INITIALIZED_FRESH',
@@ -347,8 +379,12 @@ async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
       typeof metaRow?.data === 'string' ? JSON.parse(metaRow.data) : metaRow?.data;
     if (metaData?.resetEpoch) {
       currentResetEpoch = metaData.resetEpoch;
+      currentResetDateIST = metaData.resetDateIST || currentResetDateIST;
       if (local.resetEpoch !== metaData.resetEpoch) {
         local.resetEpoch = metaData.resetEpoch;
+        if (metaData.resetDateIST) {
+          local.resetDateIST = metaData.resetDateIST;
+        }
         writeLocalFile(local);
       }
     }
@@ -568,6 +604,13 @@ export async function initDb(): Promise<{
               : metaRes.rows[0].data;
           if (parsedMeta?.resetEpoch) {
             currentResetEpoch = parsedMeta.resetEpoch;
+            currentResetDateIST = parsedMeta.resetDateIST || currentResetDateIST;
+            mirrorToLocalFile((local) => {
+              local.resetEpoch = parsedMeta.resetEpoch;
+              if (parsedMeta.resetDateIST) {
+                local.resetDateIST = parsedMeta.resetDateIST;
+              }
+            });
           }
         }
 
@@ -853,6 +896,7 @@ export function getDbStatus() {
       supabaseProjectRef || parseSupabaseProjectRef(supabaseUrl) || 'anaibpuhnxlwfeypprlb',
     storageLocation,
     resetEpoch: getResetEpoch(),
+    resetDateIST: getResetDateIST(),
     cloudinary: getCloudinaryStatus(),
   };
 }
@@ -2248,6 +2292,7 @@ export async function factoryResetAllData(): Promise<{
   const todayIST = getIndianTodayDateServer();
   const resetEpoch = new Date().toISOString();
   currentResetEpoch = resetEpoch;
+  currentResetDateIST = todayIST;
 
   const freshRecords: Record<string, DayRecord> = {};
   for (const branch of BRANCHES) {
@@ -2267,6 +2312,7 @@ export async function factoryResetAllData(): Promise<{
     vehicleRecords: {},
     branchTransfers: [],
     resetEpoch,
+    resetDateIST: todayIST,
     adminCredentials: prevLocal.adminCredentials,
     logs: [
       {

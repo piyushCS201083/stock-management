@@ -590,7 +590,7 @@ export async function purgeAndResetCloudSpace(
         resources.forEach((r: any) => {
           if (r?.public_id) params.append('public_ids[]', r.public_id);
         });
-        await fetch(
+        const delRes = await fetch(
           `https://api.cloudinary.com/v1_1/${encodeURIComponent(
             cfg.cloudName
           )}/resources/raw/upload?${params.toString()}`,
@@ -599,6 +599,10 @@ export async function purgeAndResetCloudSpace(
             headers: { Authorization: `Basic ${auth}` },
           }
         );
+        if (!delRes.ok) {
+          const delTxt = await delRes.text();
+          console.warn(`[Cloudinary] Delete batch returned HTTP ${delRes.status}:`, delTxt.slice(0, 160));
+        }
 
         nextCursor = listJson?.next_cursor;
         if (!nextCursor) break;
