@@ -1108,6 +1108,16 @@ export interface BackendAnalyticsSnapshot {
   };
 }
 
+async function safeParseJsonResponse(res: Response): Promise<any | null> {
+  try {
+    const text = await res.text();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 export async function apiGetAdminStatus(adminToken?: string | null): Promise<AdminStatusResponse> {
   const base = getApiBaseUrl();
   try {
@@ -1116,7 +1126,10 @@ export async function apiGetAdminStatus(adminToken?: string | null): Promise<Adm
       headers: buildAdminHeaders(adminToken),
     });
     if (res.ok) {
-      return await res.json();
+      const parsed = await safeParseJsonResponse(res);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
     }
   } catch {}
   return {
@@ -1140,21 +1153,34 @@ export async function apiClaimAdminPassword(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password, adminLabel }),
     });
-    return await res.json();
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed) return parsed;
+    return {
+      success: false,
+      error: `Backend admin service unavailable (HTTP ${res.status}).`,
+    };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Admin setup request failed' };
   }
 }
 
-export async function apiAdminLogin(password: string): Promise<AdminAuthResult> {
+export async function apiAdminLogin(
+  password: string,
+  options?: { silent?: boolean }
+): Promise<AdminAuthResult> {
   const base = getApiBaseUrl();
   try {
     const res = await fetch(`${base}/api/admin/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, silent: Boolean(options?.silent) }),
     });
-    return await res.json();
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed) return parsed;
+    return {
+      success: false,
+      error: `Backend admin service unavailable (HTTP ${res.status}).`,
+    };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Admin login request failed' };
   }
@@ -1182,7 +1208,9 @@ export async function apiChangeAdminPassword(
       headers: buildAdminHeaders(adminToken, true),
       body: JSON.stringify({ currentPassword, newPassword }),
     });
-    return await res.json();
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed) return parsed;
+    return { success: false, error: `Password update failed (HTTP ${res.status})` };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Password update failed' };
   }

@@ -370,7 +370,7 @@ app.post('/api/admin/claim', async (req, res) => {
 
 app.post('/api/admin/login', async (req, res) => {
   try {
-    const { password } = req.body || {};
+    const { password, silent } = req.body || {};
     const status = await getAdminConfigStatus();
     if (!status.configuredViaEnv && !status.claimed) {
       return res.status(409).json({
@@ -382,9 +382,11 @@ app.post('/api/admin/login', async (req, res) => {
 
     const verification = await verifyAdminPassword(typeof password === 'string' ? password : '');
     if (!verification.valid) {
-      await logAudit('ADMIN_LOGIN_FAILED', {
-        timestamp: new Date().toISOString(),
-      });
+      if (!silent) {
+        await logAudit('ADMIN_LOGIN_FAILED', {
+          timestamp: new Date().toISOString(),
+        });
+      }
       return res.status(401).json({
         success: false,
         error: 'Invalid admin password.',

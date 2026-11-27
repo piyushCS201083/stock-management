@@ -202,6 +202,33 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     }
   };
 
+  // Immediately unlock & open the Admin Panel as soon as the entered password matches on the server
+  useEffect(() => {
+    const isAuth = Boolean(adminToken);
+    const isClaimMode = Boolean(
+      adminStatus && adminStatus.success && !adminStatus.configuredViaEnv && !adminStatus.claimed
+    );
+    if (!isOpen || isAuth || isClaimMode || authSubmitting) return;
+    if (password.length < 8) return;
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const res = await apiAdminLogin(password, { silent: true });
+      if (cancelled) return;
+      if (res.success && res.token && res.admin) {
+        setPassword('');
+        setAuthError(null);
+        onAuthenticated(res.token, res.admin);
+        onShowToast('Signed in as Admin.');
+      }
+    }, 220);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isOpen, adminToken, adminStatus, password, authSubmitting]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
@@ -389,7 +416,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
 
   const isAuthenticated = Boolean(adminToken);
   const needsFirstRunClaim = Boolean(
-    adminStatus && !adminStatus.configuredViaEnv && !adminStatus.claimed
+    adminStatus && adminStatus.success && !adminStatus.configuredViaEnv && !adminStatus.claimed
   );
 
   const tabItems: Array<{ id: AdminTabId; label: string; icon: React.ReactNode }> = [
@@ -448,7 +475,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
               </div>
             )}
 
-            {statusLoading ? (
+            {statusLoading && !adminStatus ? (
               <div className="py-8 text-center text-slate-500 space-y-2">
                 <RefreshCw className="w-5 h-5 animate-spin mx-auto text-slate-400" />
                 <div>Checking admin security configuration...</div>
@@ -555,8 +582,15 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                       type={showPassword ? 'text' : 'password'}
                       required
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        if (authError) setAuthError(null);
+                      }}
                       placeholder="Enter admin password"
+                      autoComplete="current-password"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       autoFocus
                       className="w-full pl-3 pr-9 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
                     />

@@ -616,6 +616,7 @@ export async function initDb(): Promise<{
 
         pgPool = pool;
         isPostgresConnected = true;
+        await syncEnvAdminPasscodeToDb();
         console.log('[DBMS] Successfully connected to PostgreSQL database!');
         scheduleStartupCloudBackupIfNeeded();
         return { type: 'postgresql', ready: true };
@@ -736,6 +737,7 @@ export async function initDb(): Promise<{
             supabaseNeedsSchema = false;
             supabaseNeedsServiceKey = false;
             supabaseLastError = '';
+            await syncEnvAdminPasscodeToDb();
             console.log(
               `[DBMS] Connected to Supabase HTTPS REST API (${candidate.mode}):`,
               supabaseUrl
@@ -836,6 +838,7 @@ export async function initDb(): Promise<{
 
   // Tier 3: Persistent local JSON file fallback
   readLocalFile();
+  await syncEnvAdminPasscodeToDb();
   console.log('[DBMS] Using persistent Local File DBMS at:', DATA_FILE);
   return { type: 'file_dbms', ready: true, error: supabaseLastError || undefined };
   };
@@ -2545,6 +2548,41 @@ async function persistAdminCredentials(creds: AdminCredentialsRecord): Promise<v
     } catch (err) {
       console.error('[DBMS] Supabase persistAdminCredentials error:', err);
     }
+  }
+}
+
+async function syncEnvAdminPasscodeToDb(): Promise<void> {
+  try {
+    const envPasscode = cleanEnvValue(process.env.ADMIN_PASSCODE);
+    if (!envPasscode) return;
+
+    const existing = await getStoredAdminCredentials();
+    if (existing?.passwordHash && existing?.salt) {
+      const computedHash = hashPasswordWithScrypt(envPasscode, existing.salt);
+      const bufA = Buffer.from(computedHash, 'hex');
+      const bufB = Buffer.from(existing.passwordHash, 'hex');
+      if (bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)) {
+        // Ensure local mirror also holds the DB credential
+        mirrorToLocalFile((local) => {
+          local.adminCredentials = existing;
+        });
+        return;
+      }
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = hashPasswordWithScrypt(envPasscode, salt);
+    const creds: AdminCredentialsRecord = {
+      passwordHash,
+      salt,
+      adminLabel: existing?.adminLabel || 'Piyush Shivhare (Owner & Admin)',
+      claimedAt: existing?.claimedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await persistAdminCredentials(creds);
+    console.log('[DBMS] Synced scrypt-hashed admin credentials to database');
+  } catch (err: any) {
+    console.warn('[DBMS] Could not sync env admin credentials to DB:', err?.message || err);
   }
 }
 
