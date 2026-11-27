@@ -7,6 +7,7 @@ import {
   apiListCloudinaryBackups,
   apiTriggerCloudinaryBackup,
   apiRestoreCloudinaryBackup,
+  apiFactoryReset,
   CloudBackupSnapshotMeta,
   BackendStatus,
 } from '../services/api';
@@ -48,6 +49,7 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
   const [backups, setBackups] = useState<CloudBackupSnapshotMeta[]>([]);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoringId, setIsRestoringId] = useState<string | null>(null);
+  const [isResettingAll, setIsResettingAll] = useState(false);
   const [cloudSpaceMessage, setCloudSpaceMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -117,6 +119,30 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
       setCloudSpaceMessage(`⚠ Restore failed: ${res.error || 'Unknown error'}`);
     }
     setIsRestoringId(null);
+  };
+
+  const handleFactoryResetAll = async () => {
+    if (
+      !window.confirm(
+        'Factory reset ALL stock records, serial numbers, chargers, vehicles, transfers, audit logs, and Cloudinary/disk backup history? Everything will restart cleanly from today with 0 stock.'
+      )
+    ) {
+      return;
+    }
+    setIsResettingAll(true);
+    setCloudSpaceMessage(null);
+    const res = await apiFactoryReset();
+    if (res.success) {
+      setCloudSpaceMessage(
+        `✓ Factory reset complete! All history cleared — starting fresh from ${res.todayIST}.`
+      );
+      await loadBackups();
+      await handleCheck();
+      onDataReload();
+    } else {
+      setCloudSpaceMessage(`⚠ Factory reset failed: ${res.error || 'Unknown error'}`);
+    }
+    setIsResettingAll(false);
   };
 
   const handleSaveUrl = (e: React.FormEvent) => {
@@ -478,6 +504,29 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Factory Reset Section */}
+          <div className="p-4 rounded-lg border border-rose-200 bg-rose-50/50 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <span className="font-bold text-rose-950 text-sm block">
+                  Factory Reset All Data & History
+                </span>
+                <span className="text-[11px] text-rose-800 block">
+                  Wipes all prior battery/charger/vehicle records, serial history, transfers, and old backups so you can feed fresh data from today onwards.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleFactoryResetAll}
+                disabled={isResettingAll}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer shrink-0 shadow-2xs"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${isResettingAll ? 'animate-spin' : ''}`} />
+                <span>{isResettingAll ? 'Resetting...' : 'Factory Reset Everything'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Backend URL Configuration for Render & Vercel */}

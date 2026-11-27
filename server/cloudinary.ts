@@ -539,3 +539,78 @@ export async function readCloudSpaceSnapshot(input: {
   }
   return res.json();
 }
+
+export async function purgeAndResetCloudSpace(
+  freshSnapshot: any,
+  freshExcelBuffer?: Buffer,
+  freshSerialExcelBuffer?: Buffer
+): Promise<CloudinaryBackupResult> {
+  // 1. Delete all old local disk backup files
+  try {
+    const files = fs.readdirSync(LOCAL_BACKUP_DIR);
+    for (const file of files) {
+      const fullPath = path.join(LOCAL_BACKUP_DIR, file);
+      try {
+        if (fs.statSync(fullPath).isFile()) {
+          fs.unlinkSync(fullPath);
+        }
+      } catch {}
+    }
+  } catch (err) {
+    console.warn('[CloudSpace] Local backup cleanup warning:', err);
+  }
+
+  lastBackupUrl = null;
+  lastExcelUrl = null;
+  lastSerialExcelUrl = null;
+  lastBackupError = null;
+  lastVersionedArchiveMs = 0;
+
+  // 2. Delete all existing raw backup files in Cloudinary folder
+  const cfg = getCloudinaryConfig();
+  if (cfg.configured) {
+    try {
+      const auth = Buffer.from(`${cfg.apiKey}:${cfg.apiSecret}`).toString('base64');
+      let nextCursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const listUrl = `https://api.cloudinary.com/v1_1/${encodeURIComponent(
+          cfg.cloudName
+        )}/resources/raw?type=upload&prefix=${encodeURIComponent(cfg.folder + '/')}&max_results=100${
+          nextCursor ? `&next_cursor=${encodeURIComponent(nextCursor)}` : ''
+        }`;
+        const listRes = await fetch(listUrl, {
+          headers: { Authorization: `Basic ${auth}` },
+        });
+        if (!listRes.ok) break;
+        const listJson: any = await listRes.json();
+        const resources = Array.isArray(listJson?.resources) ? listJson.resources : [];
+        if (resources.length === 0) break;
+
+        const params = new URLSearchParams();
+        resources.forEach((r: any) => {
+          if (r?.public_id) params.append('public_ids[]', r.public_id);
+        });
+        await fetch(
+          `https://api.cloudinary.com/v1_1/${encodeURIComponent(
+            cfg.cloudName
+          )}/resources/raw/upload?${params.toString()}`,
+          {
+            method: 'DELETE',
+            headers: { Authorization: `Basic ${auth}` },
+          }
+        );
+
+        nextCursor = listJson?.next_cursor;
+        if (!nextCursor) break;
+      }
+    } catch (err: any) {
+      console.warn('[Cloudinary] Cleanup warning during factory reset:', err?.message || err);
+    }
+  }
+
+  // 3. Upload clean fresh empty snapshot & Excels
+  return uploadSnapshotToCloudSpace(freshSnapshot, freshExcelBuffer, {
+    archiveVersioned: false,
+    serialExcelBuffer: freshSerialExcelBuffer,
+  });
+}

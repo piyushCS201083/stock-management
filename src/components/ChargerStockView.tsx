@@ -14,19 +14,21 @@ import {
 } from 'lucide-react';
 import { getIndianCurrentTime } from '../utils/date';
 
-const DEFAULT_CHARGER_BASELINE: Record<string, {
-  opening: number;
-  inward: number;
-  inCause: string;
-  outward: number;
-  outCause: string;
-}> = {
-  '48v_15a_smart': { opening: 8, inward: 2, inCause: 'Direct factory receipt', outward: -1, outCause: 'Issued to e-rickshaw dealer' },
-  '60v_20a_fast': { opening: 5, inward: 0, inCause: '', outward: -2, outCause: 'Dispatched to customer' },
-  '72v_25a_heavy': { opening: 4, inward: 1, inCause: 'Vendor shipment', outward: 0, outCause: '' },
-  '48_60v_universal': { opening: 6, inward: 0, inCause: '', outward: -1, outCause: 'Replacement issued' },
-  '72v_30a_lithium': { opening: 3, inward: 0, inCause: '', outward: 0, outCause: '' },
-  'old_charger_repair': { opening: 2, inward: 1, inCause: 'Received burnt fan unit', outward: 0, outCause: '' },
+const buildEmptyChargerRecord = (cols: BatteryColumn[]) => {
+  const init: Record<
+    string,
+    {
+      opening: number;
+      inward: number;
+      inCause: string;
+      outward: number;
+      outCause: string;
+    }
+  > = {};
+  cols.forEach((col) => {
+    init[col.id] = { opening: 0, inward: 0, inCause: '', outward: 0, outCause: '' };
+  });
+  return init;
 };
 
 interface ChargerStockViewProps {
@@ -58,7 +60,7 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
     outCause: string;
   }>>(() => {
     const remote = remoteChargerRecords?.[compositeKey]?.items;
-    return remote || DEFAULT_CHARGER_BASELINE;
+    return remote || buildEmptyChargerRecord(DEFAULT_CHARGER_COLUMNS);
   });
 
   const [toast, setToast] = useState<string | null>(null);
@@ -95,7 +97,7 @@ export const ChargerStockView: React.FC<ChargerStockViewProps> = ({
       }
     }
 
-    setChargerRecord(DEFAULT_CHARGER_BASELINE);
+    setChargerRecord(buildEmptyChargerRecord(columns));
   }, [compositeKey, remoteChargerRecords, branch.id, columns]);
 
   const showToast = (msg: string) => {

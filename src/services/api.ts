@@ -5,7 +5,6 @@ import {
   DayRecord,
   DEFAULT_BRANCH_ID,
   TeamMember,
-  INITIAL_BASELINE_SERIALS,
   getBatteryRecordKey,
 } from '../types/stock';
 import {
@@ -16,6 +15,8 @@ import {
   loadTeamMembers as loadLocalTeamMembers,
   saveTeamMembers as saveLocalTeamMembers,
   mergeRecordsByTimestamp,
+  getLocalResetEpoch,
+  clearAllLocalStockStorage,
 } from '../utils/storage';
 
 export const DEFAULT_RENDER_BACKEND_URL = 'https://stock-management-hbuv.onrender.com';
@@ -101,6 +102,7 @@ export interface BackendStatus {
   supabaseJwksConfigured?: boolean;
   supabaseLastError?: string;
   supabaseProjectRef?: string;
+  resetEpoch?: string;
   cloudinary?: CloudinaryStatusInfo;
   error?: string;
 }
@@ -120,6 +122,7 @@ function mapHealthResponse(data: any, resolvedUrl: string): BackendStatus {
     supabaseJwksConfigured: data.db?.supabaseJwksConfigured,
     supabaseLastError: data.db?.supabaseLastError,
     supabaseProjectRef: data.db?.supabaseProjectRef,
+    resetEpoch: data.db?.resetEpoch,
     cloudinary: data.db?.cloudinary,
   };
 }
@@ -228,6 +231,11 @@ export async function apiFetchRecords(protectedKeys?: Set<string>): Promise<Reco
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
+        if (json.resetEpoch && getLocalResetEpoch() !== json.resetEpoch) {
+          clearAllLocalStockStorage(json.resetEpoch);
+          saveLocalRecords(json.data);
+          return json.data;
+        }
         const combinedProtected = new Set([
           ...getPendingSyncKeys(),
           ...(protectedKeys ? Array.from(protectedKeys) : []),
@@ -469,16 +477,14 @@ export function loadLocalSerials(): Record<string, BatterySerialItem> {
     const raw = localStorage.getItem(STORAGE_KEY_SERIALS);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Object.keys(parsed).length > 0) {
+      if (parsed && typeof parsed === 'object') {
         return parsed;
       }
     }
   } catch (e) {
     console.error('Failed to load local serials', e);
   }
-  // Default to verified 31-10-2026 baseline serials
-  saveLocalSerials(INITIAL_BASELINE_SERIALS);
-  return INITIAL_BASELINE_SERIALS;
+  return {};
 }
 
 export function saveLocalSerials(serials: Record<string, BatterySerialItem>) {
@@ -683,6 +689,29 @@ export async function apiRestoreCloudinaryBackup(payload: {
     return await res.json();
   } catch (err: any) {
     return { success: false, error: err?.message || 'Restore failed' };
+  }
+}
+
+export async function apiFactoryReset(): Promise<{
+  success: boolean;
+  resetEpoch?: string;
+  todayIST?: string;
+  branchesInitialized?: number;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/system/factory-reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const json = await res.json();
+    if (res.ok && json.success) {
+      clearAllLocalStockStorage();
+    }
+    return json;
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Factory reset failed' };
   }
 }
 
@@ -926,6 +955,7 @@ export interface RealtimeSyncCallbacks {
   onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
   onVehicleUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
   onTransfersUpdated?: (transfers: BranchTransfer[]) => void;
+  onFactoryReset?: (payload: { resetEpoch?: string; todayIST?: string }) => void;
   onConnectionChange?: (connected: boolean) => void;
   onReconnected?: () => void;
 }
@@ -1051,6 +1081,10 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
         break;
       case 'PERMANENT_SYNC_COMPLETE':
         // Full sync refreshed
+        break;
+      case 'FACTORY_RESET':
+        clearAllLocalStockStorage(payload?.resetEpoch);
+        callbacks.onFactoryReset?.(payload || {});
         break;
     }
   }

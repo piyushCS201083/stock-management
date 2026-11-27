@@ -39,6 +39,8 @@ import {
   exportFullSerialHistoryExcelBuffer,
   triggerCloudSpaceBackupNow,
   restoreFullDatabaseSnapshot,
+  getResetEpoch,
+  factoryResetAllData,
 } from './server/db.ts';
 import {
   getCloudinaryStatus,
@@ -209,7 +211,7 @@ app.get('/api/auth/verify', async (req, res) => {
 app.get('/api/records', async (req, res) => {
   try {
     const records = await getAllRecords();
-    res.json({ success: true, data: records });
+    res.json({ success: true, data: records, resetEpoch: getResetEpoch() });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -599,6 +601,20 @@ app.post('/api/cloud/cloudinary/restore', async (req, res) => {
     });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Factory Reset All Stock Data, Serials, Transfers, History & Cloud Space
+app.post('/api/system/factory-reset', async (req, res) => {
+  try {
+    const result = await factoryResetAllData();
+    broadcastRealtime('FACTORY_RESET', {
+      resetEpoch: result.resetEpoch,
+      todayIST: result.todayIST,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

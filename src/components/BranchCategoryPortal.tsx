@@ -251,7 +251,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                   <ArrowRight className="w-4 h-4 text-blue-600 group-hover:translate-x-1 transition-transform" />
                 </h3>
                 <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
-                  Daily battery spreadsheet, verified 31-10-2026 photo baseline, live inward/outward causes, individual serial tracker, ZXing barcode scanner, and automated WhatsApp dispatch.
+                  Daily battery spreadsheet with automatic carryover, live inward/outward causes, individual serial tracker, ZXing barcode scanner, and automated WhatsApp dispatch.
                 </p>
 
                 <div className="mt-4 flex flex-wrap gap-1.5 text-[11px] font-mono text-slate-600">

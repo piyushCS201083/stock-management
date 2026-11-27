@@ -4,7 +4,6 @@ import {
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_BRANCH_ID,
   DEFAULT_TEAM_MEMBERS,
-  INITIAL_RECORD_31_10_2026,
   TeamMember,
   getBatteryRecordKey,
   parseBatteryRecordKey,
@@ -17,6 +16,43 @@ const STORAGE_KEYS = {
   TEAM: 'battery_stock_team_v3',
   SELECTED_DATE: 'battery_stock_selected_date_v3',
 };
+
+export const STORAGE_KEY_RESET_EPOCH = 'battery_app_reset_epoch';
+
+export function getLocalResetEpoch(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY_RESET_EPOCH);
+  } catch {
+    return null;
+  }
+}
+
+export function setLocalResetEpoch(epoch: string) {
+  try {
+    localStorage.setItem(STORAGE_KEY_RESET_EPOCH, epoch);
+  } catch {}
+}
+
+export function clearAllLocalStockStorage(resetEpoch?: string) {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.RECORDS);
+    localStorage.removeItem(STORAGE_KEYS.COLUMNS);
+    localStorage.removeItem(STORAGE_KEYS.TEAM);
+    localStorage.removeItem(STORAGE_KEYS.SELECTED_DATE);
+    localStorage.removeItem('battery_stock_serials_v3');
+    localStorage.removeItem('charger_stock_records_v1');
+    localStorage.removeItem('vehicle_stock_records_v1');
+    localStorage.removeItem('battery_branch_transfers_v1');
+    localStorage.removeItem('battery_pending_sync_keys_v1');
+    if (resetEpoch) {
+      localStorage.setItem(STORAGE_KEY_RESET_EPOCH, resetEpoch);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_RESET_EPOCH);
+    }
+  } catch (e) {
+    console.error('Failed to clear local stock storage', e);
+  }
+}
 
 // Calculate summary totals for a day's record
 export function calculateRecordTotals(record: DayRecord, columns: BatteryColumn[]) {
@@ -96,13 +132,13 @@ export function generateAutoCausesSummary(record: DayRecord, columns: BatteryCol
   return causes.map((c, i) => `${i + 1}. ${c}`).join('\n');
 }
 
-// Load records from LocalStorage (with clean 31-10-2026 baseline)
+// Load records from LocalStorage (clean start with no legacy baseline data)
 export function loadRecords(): Record<string, DayRecord> {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.RECORDS);
     if (data) {
       const parsed = JSON.parse(data);
-      if (parsed && Object.keys(parsed).length > 0) {
+      if (parsed && typeof parsed === 'object') {
         return parsed;
       }
     }
@@ -110,12 +146,7 @@ export function loadRecords(): Record<string, DayRecord> {
     console.error('Failed to load records from storage', e);
   }
 
-  // Seed with 31-10-2026 official photo baseline
-  const initialMap: Record<string, DayRecord> = {
-    [INITIAL_RECORD_31_10_2026.date]: INITIAL_RECORD_31_10_2026,
-  };
-  saveRecords(initialMap);
-  return initialMap;
+  return {};
 }
 
 export function saveRecords(records: Record<string, DayRecord>) {
