@@ -24,6 +24,7 @@ interface AssignSerialModalProps {
   currentStock: number;
   existingSerials: BatterySerialItem[];
   activeDate: string;
+  initialTab?: 'assign_missing' | 'manage_existing';
   onSaveSerials: (items: BatterySerialItem[]) => void;
   onUpdateSerial: (item: BatterySerialItem) => void;
 }
@@ -36,6 +37,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
   currentStock,
   existingSerials,
   activeDate,
+  initialTab,
   onSaveSerials,
   onUpdateSerial,
 }) => {
@@ -104,27 +106,26 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       if (missingCount > 0) {
-        setActiveTab('assign_missing');
-        // Clean model code prefix for quick serial helper
         const cleanPrefix = modelName
           .replace(/[×x\s]/g, '')
           .replace(/[^A-Za-z0-9]/g, '')
           .toUpperCase()
           .slice(0, 6);
-        
+
         const initialRows = Array.from({ length: Math.min(missingCount, 10) }, (_, i) => ({
           serialNo: `BAT-${cleanPrefix}-${String(existingSerials.length + i + 1).padStart(3, '0')}`,
           inwardPartner: '',
           inwardCause: 'Current stock inventory baseline',
         }));
         setNewSerials(initialRows);
+        setActiveTab(initialTab || 'assign_missing');
       } else {
-        setActiveTab('manage_existing');
+        setActiveTab(initialTab || 'manage_existing');
         setNewSerials([]);
       }
       setEditingSerial(null);
     }
-  }, [isOpen, missingCount, modelId, modelName]);
+  }, [isOpen, missingCount, modelId, modelName, initialTab]);
 
   const handleAddRow = () => {
     const cleanPrefix = modelName
@@ -242,11 +243,11 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-3xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10 animate-in fade-in zoom-in-95"
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-3xl flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10 animate-in fade-in zoom-in-95"
         style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
+        <div className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl shadow-sm">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
               <Barcode className="w-5 h-5" />
@@ -274,7 +275,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
         </div>
 
         {/* Stock Status Bar */}
-        <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 shrink-0 flex items-center justify-between flex-wrap gap-2 text-xs">
+        <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2 text-xs">
           <div className="flex items-center gap-4">
             <div>
               <span className="text-slate-500">Total Stock in Sheet:</span>{' '}
@@ -329,7 +330,32 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 p-6 space-y-4">
+          {/* Always show currently in-stock serial numbers right at top when available */}
+          {inStockSerials.length > 0 && !editingSerial && (
+            <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-emerald-900 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  Currently In-Stock Serial Numbers ({inStockSerials.length})
+                </span>
+                <span className="text-[11px] text-emerald-700">Click any serial to view/edit</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {inStockSerials.map((s) => (
+                  <button
+                    key={s.serialNo}
+                    type="button"
+                    onClick={() => startEdit(s)}
+                    className="px-2 py-1 rounded bg-white hover:bg-emerald-100 border border-emerald-300 font-mono font-bold text-[11px] text-emerald-900 cursor-pointer shadow-2xs"
+                  >
+                    {s.serialNo}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* TAB 1: Assign Missing Serials */}
           {activeTab === 'assign_missing' && !editingSerial && (
             <form onSubmit={handleSaveNewSerials} className="space-y-4">
@@ -371,7 +397,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
                   </div>
                 </div>
 
-                <div className="space-y-2 max-h-[42vh] overflow-y-auto pr-1">
+                <div className="space-y-2">
                   {newSerials.map((row, idx) => (
                     <div
                       key={idx}
@@ -481,7 +507,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
                   No serial numbers have been recorded for this model yet.
                 </div>
               ) : (
-                <div className="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100 max-h-[50vh] overflow-y-auto">
+                <div className="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100">
                   {existingSerials.map((item) => (
                     <div
                       key={item.serialNo}

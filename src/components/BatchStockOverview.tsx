@@ -22,6 +22,7 @@ import {
   Edit2,
   List,
   LayoutGrid,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 interface BatchStockOverviewProps {
@@ -30,8 +31,16 @@ interface BatchStockOverviewProps {
   serials: Record<string, BatterySerialItem>;
   closingStock: Record<string, number>;
   activeBranchId?: string;
-  onOpenAssignModal: (modelId: string, modelName: string, currentStock: number) => void;
-  onOpenSerialTrackerModal: () => void;
+  onOpenAssignModal: (
+    modelId: string,
+    modelName: string,
+    currentStock: number,
+    initialTab?: 'assign_missing' | 'manage_existing'
+  ) => void;
+  onOpenSerialTrackerModal: (
+    initialFilter?: 'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'
+  ) => void;
+  onDownloadSerialExcel?: () => void;
   onUpdateSerial: (item: BatterySerialItem) => void;
   onSelectSerialHistory: (item: BatterySerialItem) => void;
 }
@@ -44,6 +53,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
   activeBranchId = 'chandravadni_naka',
   onOpenAssignModal,
   onOpenSerialTrackerModal,
+  onDownloadSerialExcel,
   onUpdateSerial,
   onSelectSerialHistory,
 }) => {
@@ -93,6 +103,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
       return {
         ...batch,
         stock,
+        inStockSerials,
         totalSerials: matchingSerials.length,
         inStockCount: inStockSerials.length,
         dispatchedCount: dispatchedSerials.length,
@@ -112,16 +123,28 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
     return batchStats.reduce((sum, b) => sum + b.missingCount, 0);
   }, [batchStats]);
 
-  const totalTrackedInStock = useMemo(() => {
-    return serialList.filter((s) => s.status === 'in_stock').length;
-  }, [serialList]);
+  const branchInStockCount = useMemo(() => {
+    return branchSerialList.filter((s) => s.status === 'in_stock').length;
+  }, [branchSerialList]);
 
-  // Search results across serial numbers, customer vehicle, dealer, and model
+  // Search results across serial numbers, customer vehicle, dealer, model, and quick filter status
+  const isFilterPanelOpen =
+    searchQuery.trim().length > 0 ||
+    selectedQuickFilter === 'in_stock' ||
+    selectedQuickFilter === 'dispatched';
+
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return [];
+    if (!q && selectedQuickFilter !== 'in_stock' && selectedQuickFilter !== 'dispatched') {
+      return [];
+    }
 
     return serialList.filter((item) => {
+      if (selectedQuickFilter === 'in_stock' && item.status !== 'in_stock') return false;
+      if (selectedQuickFilter === 'dispatched' && item.status !== 'dispatched') return false;
+
+      if (!q) return true;
+
       const matchSerial = item.serialNo.toLowerCase().includes(q);
       const matchModel = item.modelName.toLowerCase().includes(q);
       const matchBatch = item.batchNo && item.batchNo.toLowerCase().includes(q);
@@ -144,7 +167,7 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
         matchOutDate
       );
     });
-  }, [serialList, searchQuery]);
+  }, [serialList, searchQuery, selectedQuickFilter]);
 
   const handleCopySerial = (s: string) => {
     navigator.clipboard.writeText(s);
@@ -181,11 +204,12 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
             </div>
 
             <button
-              onClick={onOpenSerialTrackerModal}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors cursor-pointer self-start sm:self-auto shrink-0"
+              onClick={() => onOpenSerialTrackerModal('in_stock')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors cursor-pointer self-start sm:self-auto shrink-0 shadow-xs"
+              title="View all in-stock battery serial numbers, past outward history, and download Serial Excel"
             >
               <Barcode className="w-3.5 h-3.5" />
-              <span>Full Serial Database ({serialList.length})</span>
+              <span>In-Stock Serials ({branchInStockCount}) & History ({serialList.length})</span>
             </button>
           </div>
 
@@ -210,69 +234,87 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
             )}
           </div>
 
-          {/* Quick Filter Pills */}
-          <div className="flex items-center gap-2 mt-2.5 flex-wrap text-[11px]">
-            <span className="text-slate-400">Quick Filters:</span>
-            {[
-              { id: 'all', label: `All Serials (${serialList.length})` },
-              {
-                id: 'in_stock',
-                label: `In Stock (${serialList.filter((s) => s.status === 'in_stock').length})`,
-              },
-              {
-                id: 'dispatched',
-                label: `Dispatched to Vehicle/Dealer (${
-                  serialList.filter((s) => s.status === 'dispatched').length
-                })`,
-              },
-              {
-                id: 'missing',
-                label: `Missing Serials (${totalMissingSerials})`,
-                alert: totalMissingSerials > 0,
-              },
-            ].map((pill) => (
+          {/* Quick Filter Pills + Serial Excel Download */}
+          <div className="flex items-center justify-between gap-2 mt-2.5 flex-wrap text-[11px]">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-400">Quick Filters:</span>
+              {[
+                { id: 'all', label: `All Serials (${serialList.length})` },
+                {
+                  id: 'in_stock',
+                  label: `In Stock (${serialList.filter((s) => s.status === 'in_stock').length})`,
+                },
+                {
+                  id: 'dispatched',
+                  label: `Dispatched / Past Out (${
+                    serialList.filter((s) => s.status === 'dispatched').length
+                  })`,
+                },
+                {
+                  id: 'missing',
+                  label: `Missing Serials (${totalMissingSerials})`,
+                  alert: totalMissingSerials > 0,
+                },
+              ].map((pill) => (
+                <button
+                  key={pill.id}
+                  onClick={() => {
+                    if (pill.id === 'missing') {
+                      setIsBatchCardsExpanded(true);
+                      setDetailedViewMode('batch');
+                    }
+                    setSelectedQuickFilter(pill.id as any);
+                    if (pill.id === 'all') {
+                      setSearchQuery('');
+                    }
+                  }}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    pill.alert
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                      : selectedQuickFilter === pill.id
+                      ? 'bg-amber-400 text-slate-950 font-bold border border-amber-300'
+                      : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'
+                  }`}
+                >
+                  {pill.label}
+                </button>
+              ))}
+            </div>
+
+            {onDownloadSerialExcel && (
               <button
-                key={pill.id}
-                onClick={() => {
-                  if (pill.id === 'missing') {
-                    // Scroll to or highlight batchwise cards
-                    setIsBatchCardsExpanded(true);
-                    setDetailedViewMode('batch');
-                  }
-                  setSelectedQuickFilter(pill.id as any);
-                  if (pill.id !== 'all' && pill.id !== 'missing') {
-                    setSearchQuery(pill.id === 'in_stock' ? 'in_stock' : 'dispatched');
-                  } else if (pill.id === 'all') {
-                    setSearchQuery('');
-                  }
-                }}
-                className={`px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
-                  pill.alert
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
-                    : selectedQuickFilter === pill.id
-                    ? 'bg-white/20 text-white border border-white/30'
-                    : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'
-                }`}
+                type="button"
+                onClick={onDownloadSerialExcel}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 transition-colors cursor-pointer"
+                title="Download Excel 2: All Battery Serial Numbers + Past/Dispatched Movement History (.xlsx)"
               >
-                {pill.label}
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Download Serials & History Excel (.xlsx)</span>
               </button>
-            ))}
+            )}
           </div>
         </div>
 
         {/* Live Search Results / Traced Battery History Card */}
-        {searchQuery.trim().length > 0 && (
+        {isFilterPanelOpen && (
           <div className="p-4 bg-slate-50 border-t border-slate-200">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                 <History className="w-3.5 h-3.5 text-blue-600" />
-                Found {searchResults.length} matching battery record(s) in database for "{searchQuery}"
+                {searchQuery.trim()
+                  ? `Found ${searchResults.length} matching battery record(s) for "${searchQuery}"`
+                  : selectedQuickFilter === 'in_stock'
+                  ? `Showing ${searchResults.length} Batteries Currently In Stock with Serial Numbers`
+                  : `Showing ${searchResults.length} Dispatched / Past Out Serial Records`}
               </span>
               <button
-                onClick={() => setSearchQuery('')}
-                className="text-xs text-slate-500 hover:text-slate-800 font-medium"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedQuickFilter('all');
+                }}
+                className="text-xs text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
               >
-                Close Search Results
+                Close Filter Results
               </button>
             </div>
 
@@ -598,19 +640,60 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                         </div>
 
                         <div className="mt-2 flex items-baseline justify-between">
-                          <div>
-                            <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenAssignModal(
+                                batch.id,
+                                batch.name,
+                                batch.stock,
+                                batch.inStockSerials.length > 0 ? 'manage_existing' : undefined
+                              )
+                            }
+                            className="text-left group cursor-pointer"
+                            title="Click to inspect serial numbers in stock for this battery model"
+                          >
+                            <span className="text-2xl font-extrabold text-slate-900 group-hover:text-blue-700 tabular-nums transition-colors">
                               {batch.stock}
                             </span>
-                            <span className="text-[11px] font-medium text-slate-500 ml-1">in stock</span>
-                          </div>
+                            <span className="text-[11px] font-medium text-slate-500 group-hover:text-blue-600 ml-1 underline decoration-dotted">
+                              in stock
+                            </span>
+                          </button>
                         </div>
 
                         <div className="mt-2 pt-2 border-t border-slate-100 space-y-1 text-[11px]">
                           <div className="flex items-center justify-between text-slate-600">
-                            <span>Serials Assigned:</span>
+                            <span>Serials In Stock:</span>
                             <strong className="font-mono text-slate-800">{batch.inStockCount}</strong>
                           </div>
+
+                          {batch.inStockSerials.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-1">
+                              {batch.inStockSerials.slice(0, 3).map((s) => (
+                                <button
+                                  key={s.serialNo}
+                                  type="button"
+                                  onClick={() => onSelectSerialHistory(s)}
+                                  className="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 font-mono font-bold text-[10px] text-blue-800 cursor-pointer"
+                                  title="Click to view full serial history"
+                                >
+                                  {s.serialNo}
+                                </button>
+                              ))}
+                              {batch.inStockSerials.length > 3 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onOpenAssignModal(batch.id, batch.name, batch.stock, 'manage_existing')
+                                  }
+                                  className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-[10px] font-semibold text-slate-700 cursor-pointer"
+                                >
+                                  +{batch.inStockSerials.length - 3} more
+                                </button>
+                              )}
+                            </div>
+                          )}
 
                           {hasMissing ? (
                             <div className="flex items-center gap-1 font-bold text-amber-700">
@@ -628,10 +711,25 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                         </div>
                       </div>
 
-                      <div className="mt-3 pt-2">
+                      <div className="mt-3 pt-2 space-y-1.5">
+                        {batch.inStockSerials.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenAssignModal(batch.id, batch.name, batch.stock, 'manage_existing')
+                            }
+                            className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1 text-xs font-bold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+                            title="View all in-stock serial numbers for this battery"
+                          >
+                            <Barcode className="w-3 h-3" />
+                            <span>View Serials ({batch.inStockSerials.length})</span>
+                          </button>
+                        )}
                         {hasMissing ? (
                           <button
-                            onClick={() => onOpenAssignModal(batch.id, batch.name, batch.stock)}
+                            onClick={() =>
+                              onOpenAssignModal(batch.id, batch.name, batch.stock, 'assign_missing')
+                            }
                             className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg shadow-2xs transition-colors cursor-pointer ring-1 ring-amber-400/50"
                             title="Assign serial numbers to stock batteries without serial numbers"
                           >
@@ -639,16 +737,20 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                             <span>Assign Serial No.</span>
                           </button>
                         ) : (
-                          <button
-                            onClick={() => onOpenAssignModal(batch.id, batch.name, batch.stock)}
-                            className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-                            title="View or update serial numbers for this battery model"
-                          >
-                            <Edit2 className="w-3 h-3 text-slate-500" />
-                            <span>
-                              {batch.totalSerials > 0 ? `Update Serials (${batch.totalSerials})` : 'Manage'}
-                            </span>
-                          </button>
+                          batch.inStockSerials.length === 0 && (
+                            <button
+                              onClick={() =>
+                                onOpenAssignModal(batch.id, batch.name, batch.stock, 'manage_existing')
+                              }
+                              className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                              title="View or update serial numbers for this battery model"
+                            >
+                              <Edit2 className="w-3 h-3 text-slate-500" />
+                              <span>
+                                {batch.totalSerials > 0 ? `History (${batch.totalSerials})` : 'Manage'}
+                              </span>
+                            </button>
+                          )
                         )}
                       </div>
                     </div>

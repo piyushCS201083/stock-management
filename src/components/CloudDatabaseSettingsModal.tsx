@@ -24,6 +24,7 @@ import {
   X,
   RotateCcw,
   HardDrive,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 interface CloudDatabaseSettingsModalProps {
@@ -79,11 +80,11 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
     const res = await apiTriggerCloudinaryBackup(undefined, undefined, 'settings_modal');
     if (res.uploadedToCloudinary) {
       setCloudSpaceMessage(
-        `✓ Backed up ${res.recordCount || 0} records & ${res.serialCount || 0} serials to Cloudinary (${res.cloudName})`
+        `✓ Backed up both Quantity & Serial History Excels (.xlsx) + DB snapshot (${res.recordCount || 0} ledgers, ${res.serialCount || 0} serials) to Cloudinary (${res.cloudName})`
       );
     } else if (res.success && !res.cloudinaryConfigured) {
       setCloudSpaceMessage(
-        `✓ Saved snapshot to server disk (${res.recordCount || 0} records). Add CLOUDINARY_* secrets to upload to Cloudinary.`
+        `✓ Saved both Excels & JSON snapshot to server disk (${res.recordCount || 0} records). Add CLOUDINARY_* secrets to upload to Cloudinary.`
       );
     } else {
       setCloudSpaceMessage(`⚠ Backup warning: ${res.error || 'Could not reach Cloudinary'}`);
@@ -138,11 +139,11 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-2xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-2xl flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10"
         style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
+        <div className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-blue-600/30 flex items-center justify-center text-blue-400">
               <Database className="w-4 h-4" />
@@ -163,7 +164,7 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-5 flex-1 min-h-0 overflow-y-auto text-xs">
+        <div className="p-6 space-y-5 flex-1 text-xs">
           {/* Live Status Card */}
           <div className="p-4 rounded-lg border border-slate-200 bg-slate-50 space-y-3">
             <div className="flex items-center justify-between">
@@ -350,7 +351,7 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
             </div>
 
             <p className="text-slate-600 text-[11px]">
-              Every stock edit automatically creates a point-in-time JSON snapshot on server disk and uploads it to your Cloudinary Cloud Space (<code className="bg-white px-1 rounded font-mono">stock-register-backups/</code>) so old transactions never get lost.
+              Every stock edit automatically exports the live <strong>Stock Register Excel (.xlsx)</strong> and full database JSON snapshot to server disk and uploads both to your Cloudinary Cloud Space (<code className="bg-white px-1 rounded font-mono">stock-register-backups/</code>) so Excel records are never lost.
             </p>
 
             {!status?.cloudinary?.configured && (
@@ -373,15 +374,31 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer shadow-2xs"
               >
                 <Upload className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-bounce' : ''}`} />
-                <span>{isBackingUp ? 'Backing up...' : 'Backup Now to Cloud Space'}</span>
+                <span>{isBackingUp ? 'Backing up Excel + DB...' : 'Backup Excel + DB to Cloudinary'}</span>
               </button>
+
+              <a
+                href={`${getApiBaseUrl()}/api/cloud/excel/export`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Quantity Excel (.xlsx)</span>
+              </a>
+
+              <a
+                href={`${getApiBaseUrl()}/api/cloud/excel/serials/export`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-300 rounded-lg transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-700" />
+                <span>Serials & History Excel (.xlsx)</span>
+              </a>
 
               <a
                 href={`${getApiBaseUrl()}/api/cloud/snapshot/export`}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>Download Full Backup (.json)</span>
+                <span>Download JSON (.json)</span>
               </a>
             </div>
 
@@ -394,38 +411,70 @@ export const CloudDatabaseSettingsModal: React.FC<CloudDatabaseSettingsModalProp
             {backups.length > 0 && (
               <div className="space-y-1.5 pt-1">
                 <span className="text-[11px] font-bold text-slate-700 block">
-                  Recent Saved Snapshots ({backups.length}):
+                  Recent Cloudinary & Disk Backups ({backups.length}):
                 </span>
-                <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
-                  {backups.slice(0, 8).map((snap) => (
-                    <div
-                      key={snap.id}
-                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded text-[11px]"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {snap.source === 'cloudinary' ? (
-                          <Cloud className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                        ) : (
-                          <HardDrive className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                        )}
-                        <div className="truncate">
-                          <span className="font-mono font-semibold text-slate-800">{snap.fileName}</span>
-                          <span className="text-slate-400 ml-2">
-                            {new Date(snap.createdAt).toLocaleString()}
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRestoreSnapshot(snap)}
-                        disabled={isRestoringId === snap.id}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded cursor-pointer shrink-0"
+                <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                  {backups.slice(0, 12).map((snap) => {
+                    const isExcel = snap.format === 'xlsx' || snap.fileName.endsWith('.xlsx');
+                    return (
+                      <div
+                        key={snap.id}
+                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded text-[11px]"
                       >
-                        <RotateCcw className="w-3 h-3" />
-                        <span>{isRestoringId === snap.id ? 'Restoring...' : 'Restore'}</span>
-                      </button>
-                    </div>
-                  ))}
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isExcel ? (
+                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          ) : snap.source === 'cloudinary' ? (
+                            <Cloud className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          ) : (
+                            <HardDrive className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                          )}
+                          <div className="truncate">
+                            <span className="font-mono font-semibold text-slate-800">{snap.fileName}</span>
+                            <span
+                              className={`ml-1.5 px-1 py-0.2 rounded text-[9px] font-bold uppercase ${
+                                snap.source === 'cloudinary'
+                                  ? 'bg-indigo-50 text-indigo-700'
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}
+                            >
+                              {snap.source === 'cloudinary' ? 'Cloudinary' : 'Disk'}
+                            </span>
+                            <span className="text-slate-400 ml-2">
+                              {new Date(snap.createdAt).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        {isExcel ? (
+                          <a
+                            href={
+                              snap.source === 'cloudinary' && snap.secureUrl
+                                ? snap.secureUrl
+                                : snap.fileName.includes('serial')
+                                ? `${getApiBaseUrl()}/api/cloud/excel/serials/export`
+                                : `${getApiBaseUrl()}/api/cloud/excel/export`
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded cursor-pointer shrink-0"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Download .xlsx</span>
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreSnapshot(snap)}
+                            disabled={isRestoringId === snap.id}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded cursor-pointer shrink-0"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>{isRestoringId === snap.id ? 'Restoring...' : 'Restore'}</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

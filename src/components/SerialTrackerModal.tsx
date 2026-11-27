@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { BatteryColumn, BatterySerialItem, BatteryMovementEvent } from '../types/stock';
 import {
   Search,
@@ -27,6 +27,8 @@ interface SerialTrackerModalProps {
   serials: Record<string, BatterySerialItem>;
   columns: BatteryColumn[];
   onSaveSerial: (item: BatterySerialItem) => void;
+  initialStatusFilter?: 'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby';
+  onDownloadSerialExcel?: () => void;
 }
 
 export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
@@ -35,13 +37,21 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   serials,
   columns,
   onSaveSerial,
+  initialStatusFilter = 'all',
+  onDownloadSerialExcel,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'>(initialStatusFilter);
   const [modelFilter, setModelFilter] = useState<string>('all');
   const [batchFilter, setBatchFilter] = useState<string>('all');
   const [selectedSerial, setSelectedSerial] = useState<BatterySerialItem | null>(null);
   const [copiedSerial, setCopiedSerial] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setStatusFilter(initialStatusFilter);
+    }
+  }, [isOpen, initialStatusFilter]);
 
   // New Serial Quick Add Form
   const [showAddModal, setShowAddModal] = useState(false);
@@ -186,11 +196,11 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-5xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-5xl flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10"
         style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
+        <div className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl shadow-sm">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-blue-600/30 flex items-center justify-center text-blue-400">
               <Barcode className="w-5 h-5" />
@@ -208,7 +218,18 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {onDownloadSerialExcel && (
+              <button
+                type="button"
+                onClick={onDownloadSerialExcel}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors cursor-pointer shadow-xs"
+                title="Download Excel 2 containing all serial numbers in stock and past outward history"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Download Serials & History Excel (.xlsx)</span>
+              </button>
+            )}
             <button
               onClick={() => setShowAddModal(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
@@ -218,7 +239,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
             </button>
             <button
               onClick={onClose}
-              className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors"
+              className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -226,7 +247,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         </div>
 
         {/* Batch-wise Stock Summary Strip */}
-        <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 shrink-0">
+        <div className="px-6 py-3 bg-slate-50 border-b border-slate-200">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
               <Tag className="w-3.5 h-3.5 text-blue-600" />
@@ -269,7 +290,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         </div>
 
         {/* Filters & Search Toolbar */}
-        <div className="p-4 sm:px-6 bg-white border-b border-slate-200 shrink-0 space-y-3">
+        <div className="p-4 sm:px-6 bg-white border-b border-slate-200 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             {/* Search Input */}
             <div className="relative flex-1 max-w-md flex items-center">
@@ -365,7 +386,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         </div>
 
         {/* Results Table View */}
-        <div className="flex-1 overflow-auto p-4 sm:p-6">
+        <div className="flex-1 p-4 sm:p-6">
           {filteredSerials.length === 0 ? (
             <div className="py-12 text-center space-y-3">
               <Barcode className="w-10 h-10 text-slate-300 mx-auto" />
@@ -382,7 +403,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
               </button>
             </div>
           ) : (
-            <div className="border border-slate-200 rounded-lg overflow-hidden shadow-2xs bg-white">
+            <div className="border border-slate-200 rounded-lg overflow-x-auto shadow-2xs bg-white">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
@@ -530,9 +551,12 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
 
       {/* Battery Complete Lifecycle History Modal */}
       {selectedSerial && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white">
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+          <div
+            className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-lg flex flex-col overflow-y-auto overscroll-contain my-auto animate-in fade-in zoom-in-95"
+            style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+          >
+            <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-xl">
               <div className="flex items-center gap-2">
                 <Barcode className="w-5 h-5 text-blue-400" />
                 <div>
@@ -548,7 +572,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
               </button>
             </div>
 
-            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto text-xs">
+            <div className="p-6 space-y-4 text-xs">
               {/* Quick Status Pill */}
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between">
                 <div>
@@ -655,9 +679,12 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
 
       {/* Manual Add Battery Serial Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white">
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+          <div
+            className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-md flex flex-col overflow-y-auto overscroll-contain my-auto animate-in fade-in zoom-in-95"
+            style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
+          >
+            <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-xl">
               <div className="flex items-center gap-2">
                 <Plus className="w-5 h-5 text-blue-400" />
                 <h3 className="text-sm font-bold">Register Battery Serial</h3>

@@ -1,8 +1,8 @@
 {
   "version": 1,
   "app": "battery-stock-register",
-  "reason": "verification_check",
-  "exportedAt": "2026-11-27T11:13:41.094Z",
+  "reason": "dual_excel_verify",
+  "exportedAt": "2026-11-27T11:57:25.385Z",
   "stats": {
     "records": 4,
     "serials": 5,
@@ -59,7 +59,8 @@
         "totalInCause": "",
         "repairInCause": "",
         "totalOutCause": "",
-        "repairOutCause": ""
+        "repairOutCause": "",
+        "branchId": "chandravadni_naka"
       },
       "23-11-2026": {
         "date": "23-11-2026",
@@ -111,7 +112,8 @@
         "totalInCause": "60×24 OLD: \n60×24 OLD: ",
         "repairInCause": "",
         "totalOutCause": "",
-        "repairOutCause": ""
+        "repairOutCause": "",
+        "branchId": "chandravadni_naka"
       },
       "31-10-2026": {
         "date": "31-10-2026",
@@ -164,7 +166,8 @@
         "totalInCause": "1.60-24 flat -service\ncenter\n2.60-24 flat -service\ncenter",
         "repairInCause": "48-30\nMAA SATI SE",
         "totalOutCause": "",
-        "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE"
+        "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE",
+        "branchId": "chandravadni_naka"
       },
       "27-10-2026": {
         "date": "27-10-2026",
@@ -220,7 +223,8 @@
         "totalInCause": "1. 60-30-morar\n2. 60-36old-return",
         "repairInCause": "48-30\nMAA SATI SE",
         "totalOutCause": "1. aman wadhwani\n2. reena enterprises",
-        "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE"
+        "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE",
+        "branchId": "chandravadni_naka"
       }
     },
     "columns": [

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BatteryColumn, DayRecord } from '../types/stock';
+import { BatteryColumn, BatterySerialItem, DayRecord, DEFAULT_BRANCH_ID } from '../types/stock';
 import { calculateRecordTotals } from '../utils/storage';
 import { Edit3, Check, RotateCcw, Plus, Trash2, ArrowUpDown } from 'lucide-react';
 
@@ -11,6 +11,9 @@ interface ExcelGridProps {
   onRemoveColumn?: (id: string) => void;
   isCapturing?: boolean; // When capturing image, keep full crisp dimensions and no temporary edit borders
   tableRef?: React.RefObject<HTMLDivElement | null>;
+  serials?: Record<string, BatterySerialItem>;
+  activeBranchId?: string;
+  onInspectModelSerials?: (modelId: string, modelName: string, currentStock: number) => void;
 }
 
 export const ExcelGrid: React.FC<ExcelGridProps> = ({
@@ -21,6 +24,9 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
   onRemoveColumn,
   isCapturing = false,
   tableRef,
+  serials,
+  activeBranchId = DEFAULT_BRANCH_ID,
+  onInspectModelSerials,
 }) => {
   const totals = calculateRecordTotals(record, columns);
   const [editingCell, setEditingCell] = useState<{ row: string; colId: string } | null>(null);
@@ -328,13 +334,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Old Battery for repair Stock */}
                 <td
-                  onClick={() => startEdit('stock', 'repair', record.stock['repair'] || 0)}
+                  onClick={() =>
+                    !(editingCell?.row === 'stock' && editingCell?.colId === 'repair') &&
+                    startEdit('stock', 'repair', record.stock['repair'] || 0)
+                  }
                   className="border border-slate-400 text-center font-bold text-slate-900 py-2 px-1 tabular-nums cursor-pointer hover:bg-blue-100/50"
                 >
                   {editingCell?.row === 'stock' && editingCell?.colId === 'repair' ? (
                     <input
                       type="number"
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -348,13 +358,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Service Battery Total Stock */}
                 <td
-                  onClick={() => startEdit('stock', 'service', record.stock['service'] || 0)}
+                  onClick={() =>
+                    !(editingCell?.row === 'stock' && editingCell?.colId === 'service') &&
+                    startEdit('stock', 'service', record.stock['service'] || 0)
+                  }
                   className="border border-slate-400 text-center font-bold text-slate-900 py-2 px-1 tabular-nums cursor-pointer hover:bg-blue-100/50"
                 >
                   {editingCell?.row === 'stock' && editingCell?.colId === 'service' ? (
                     <input
                       type="number"
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -409,13 +423,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* In Stock Repair */}
                 <td
-                  onClick={() => startEdit('inStock', 'repair', record.inStock['repair'] || 0)}
+                  onClick={() =>
+                    !(editingCell?.row === 'inStock' && editingCell?.colId === 'repair') &&
+                    startEdit('inStock', 'repair', record.inStock['repair'] || 0)
+                  }
                   className="border border-slate-400 text-center font-bold text-emerald-700 py-2 px-1 tabular-nums cursor-pointer hover:bg-amber-100/60"
                 >
                   {editingCell?.row === 'inStock' && editingCell?.colId === 'repair' ? (
                     <input
                       type="number"
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -429,13 +447,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* In Stock Service */}
                 <td
-                  onClick={() => startEdit('inStock', 'service', record.inStock['service'] || 0)}
+                  onClick={() =>
+                    !(editingCell?.row === 'inStock' && editingCell?.colId === 'service') &&
+                    startEdit('inStock', 'service', record.inStock['service'] || 0)
+                  }
                   className="border border-slate-400 text-center font-bold text-emerald-700 py-2 px-1 tabular-nums cursor-pointer hover:bg-amber-100/60"
                 >
                   {editingCell?.row === 'inStock' && editingCell?.colId === 'service' ? (
                     <input
                       type="number"
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -485,12 +507,16 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Total Inward Cause */}
                 <td
-                  onClick={() => startEdit('inCause', 'total', record.totalInCause || '')}
+                  onClick={() =>
+                    !(editingCell?.row === 'inCause' && editingCell?.colId === 'total') &&
+                    startEdit('inCause', 'total', record.totalInCause || '')
+                  }
                   className="border border-slate-400 p-1.5 align-middle text-center cursor-pointer hover:bg-amber-100/60 bg-[#fff2ba]"
                 >
                   {editingCell?.row === 'inCause' && editingCell?.colId === 'total' ? (
                     <textarea
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -507,12 +533,16 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Repair Inward Cause */}
                 <td
-                  onClick={() => startEdit('inCause', 'repair', record.repairInCause || '')}
+                  onClick={() =>
+                    !(editingCell?.row === 'inCause' && editingCell?.colId === 'repair') &&
+                    startEdit('inCause', 'repair', record.repairInCause || '')
+                  }
                   className="border border-slate-400 p-1.5 align-middle text-center cursor-pointer hover:bg-amber-100/60"
                 >
                   {editingCell?.row === 'inCause' && editingCell?.colId === 'repair' ? (
                     <textarea
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -575,13 +605,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Out Stock Repair */}
                 <td
-                  onClick={() => startEdit('outStock', 'repair', record.outStock['repair'] || 0)}
+                  onClick={() =>
+                    !(editingCell?.row === 'outStock' && editingCell?.colId === 'repair') &&
+                    startEdit('outStock', 'repair', record.outStock['repair'] || 0)
+                  }
                   className="border border-slate-400 text-center font-bold text-rose-700 py-2 px-1 tabular-nums cursor-pointer hover:bg-rose-100/60"
                 >
                   {editingCell?.row === 'outStock' && editingCell?.colId === 'repair' ? (
                     <input
                       type="number"
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -595,13 +629,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Out Stock Service */}
                 <td
-                  onClick={() => startEdit('outStock', 'service', record.outStock['service'] || 0)}
+                  onClick={() =>
+                    !(editingCell?.row === 'outStock' && editingCell?.colId === 'service') &&
+                    startEdit('outStock', 'service', record.outStock['service'] || 0)
+                  }
                   className="border border-slate-400 text-center font-bold text-rose-700 py-2 px-1 tabular-nums cursor-pointer hover:bg-rose-100/60"
                 >
                   {editingCell?.row === 'outStock' && editingCell?.colId === 'service' ? (
                     <input
                       type="number"
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -651,12 +689,16 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Total Outward Cause */}
                 <td
-                  onClick={() => startEdit('outCause', 'total', record.totalOutCause || '')}
+                  onClick={() =>
+                    !(editingCell?.row === 'outCause' && editingCell?.colId === 'total') &&
+                    startEdit('outCause', 'total', record.totalOutCause || '')
+                  }
                   className="border border-slate-400 p-1.5 align-middle text-center cursor-pointer hover:bg-rose-100/60 bg-[#fddad2]"
                 >
                   {editingCell?.row === 'outCause' && editingCell?.colId === 'total' ? (
                     <textarea
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -673,12 +715,16 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {/* Repair Outward Cause */}
                 <td
-                  onClick={() => startEdit('outCause', 'repair', record.repairOutCause || '')}
+                  onClick={() =>
+                    !(editingCell?.row === 'outCause' && editingCell?.colId === 'repair') &&
+                    startEdit('outCause', 'repair', record.repairOutCause || '')
+                  }
                   className="border border-slate-400 p-1.5 align-middle text-center cursor-pointer hover:bg-rose-100/60"
                 >
                   {editingCell?.row === 'outCause' && editingCell?.colId === 'repair' ? (
                     <textarea
                       value={tempValue}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => updateTempValue(e.target.value)}
                       onBlur={commitEdit}
                       onKeyDown={handleKeyDown}
@@ -711,12 +757,36 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
 
                 {columns.map((col) => {
                   const closing = totals.closingStock[col.id] || 0;
+                  const inStockSerialCount = serials
+                    ? Object.values(serials).filter(
+                        (s) =>
+                          (s.branchId || DEFAULT_BRANCH_ID) === activeBranchId &&
+                          s.status === 'in_stock' &&
+                          (s.modelId === col.id || s.modelName === col.name || s.batchNo === col.name)
+                      ).length
+                    : 0;
+                  const isInteractive = !isCapturing && Boolean(onInspectModelSerials);
                   return (
                     <td
                       key={col.id}
-                      className="border border-slate-400 text-center py-2.5 px-1 font-extrabold text-slate-900 tabular-nums text-[13px]"
+                      onClick={() => isInteractive && onInspectModelSerials?.(col.id, col.name, closing)}
+                      title={
+                        isInteractive
+                          ? `Click to view serial numbers in stock for ${col.name}`
+                          : undefined
+                      }
+                      className={`border border-slate-400 text-center py-2 px-1 font-extrabold text-slate-900 tabular-nums text-[13px] ${
+                        isInteractive
+                          ? 'cursor-pointer hover:bg-[#cde4c2] transition-colors'
+                          : ''
+                      }`}
                     >
-                      {closing}
+                      <div>{closing}</div>
+                      {isInteractive && (closing > 0 || inStockSerialCount > 0) && (
+                        <div className="text-[9px] font-bold text-emerald-800 underline decoration-dotted leading-tight mt-0.5">
+                          {inStockSerialCount > 0 ? `${inStockSerialCount} serials` : 'View serials'}
+                        </div>
+                      )}
                     </td>
                   );
                 })}
@@ -727,14 +797,68 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                 </td>
 
                 {/* Today's Repair Stock */}
-                <td className="border border-slate-400 text-center font-extrabold text-slate-900 py-2.5 px-1 tabular-nums text-[13px]">
-                  {totals.repair.closing}
-                </td>
+                {(() => {
+                  const repairSerialCount = serials
+                    ? Object.values(serials).filter(
+                        (s) =>
+                          (s.branchId || DEFAULT_BRANCH_ID) === activeBranchId &&
+                          (s.status === 'in_stock' || s.status === 'in_repair') &&
+                          s.modelId === 'repair'
+                      ).length
+                    : 0;
+                  const isInteractive = !isCapturing && Boolean(onInspectModelSerials);
+                  return (
+                    <td
+                      onClick={() =>
+                        isInteractive &&
+                        onInspectModelSerials?.('repair', 'OLD BATTERY FOR REPAIR', totals.repair.closing)
+                      }
+                      title={isInteractive ? 'Click to view serial numbers for repair batteries' : undefined}
+                      className={`border border-slate-400 text-center font-extrabold text-slate-900 py-2 px-1 tabular-nums text-[13px] ${
+                        isInteractive ? 'cursor-pointer hover:bg-[#cde4c2] transition-colors' : ''
+                      }`}
+                    >
+                      <div>{totals.repair.closing}</div>
+                      {isInteractive && (totals.repair.closing > 0 || repairSerialCount > 0) && (
+                        <div className="text-[9px] font-bold text-emerald-800 underline decoration-dotted leading-tight mt-0.5">
+                          {repairSerialCount > 0 ? `${repairSerialCount} serials` : 'View serials'}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })()}
 
                 {/* Today's Service Stock */}
-                <td className="border border-slate-400 text-center font-extrabold text-slate-900 py-2.5 px-1 tabular-nums text-[13px]">
-                  {totals.service.closing}
-                </td>
+                {(() => {
+                  const serviceSerialCount = serials
+                    ? Object.values(serials).filter(
+                        (s) =>
+                          (s.branchId || DEFAULT_BRANCH_ID) === activeBranchId &&
+                          (s.status === 'in_stock' || s.status === 'service_standby') &&
+                          s.modelId === 'service'
+                      ).length
+                    : 0;
+                  const isInteractive = !isCapturing && Boolean(onInspectModelSerials);
+                  return (
+                    <td
+                      onClick={() =>
+                        isInteractive &&
+                        onInspectModelSerials?.('service', 'SERVICE BATTERY TOTAL', totals.service.closing)
+                      }
+                      title={isInteractive ? 'Click to view serial numbers for service batteries' : undefined}
+                      className={`border border-slate-400 text-center font-extrabold text-slate-900 py-2 px-1 tabular-nums text-[13px] ${
+                        isInteractive ? 'cursor-pointer hover:bg-[#cde4c2] transition-colors' : ''
+                      }`}
+                    >
+                      <div>{totals.service.closing}</div>
+                      {isInteractive && (totals.service.closing > 0 || serviceSerialCount > 0) && (
+                        <div className="text-[9px] font-bold text-emerald-800 underline decoration-dotted leading-tight mt-0.5">
+                          {serviceSerialCount > 0 ? `${serviceSerialCount} serials` : 'View serials'}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })()}
               </tr>
             </tbody>
           </table>

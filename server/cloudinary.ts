@@ -14,6 +14,7 @@ export interface CloudBackupSnapshotMeta {
   id: string;
   publicId: string;
   fileName: string;
+  format: 'json' | 'xlsx';
   source: 'cloudinary' | 'local_disk';
   createdAt: string;
   bytes?: number;
@@ -24,17 +25,26 @@ export interface CloudinaryBackupResult {
   success: boolean;
   cloudinaryConfigured: boolean;
   uploadedToCloudinary: boolean;
+  uploadedExcelToCloudinary: boolean;
+  uploadedSerialExcelToCloudinary?: boolean;
   cloudName?: string;
   secureUrl?: string;
   latestUrl?: string;
+  latestExcelUrl?: string;
+  excelSecureUrl?: string;
+  latestSerialExcelUrl?: string;
+  serialExcelSecureUrl?: string;
   publicId?: string;
   localBackupPath: string;
+  localExcelPath?: string;
+  localSerialExcelPath?: string;
   timestamp: string;
   error?: string;
 }
 
 const CLOUDINARY_FOLDER = 'stock-register-backups';
 const LOCAL_BACKUP_DIR = path.resolve(process.cwd(), 'data', 'backups');
+const EXCEL_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 if (!fs.existsSync(LOCAL_BACKUP_DIR)) {
   fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true });
@@ -42,8 +52,11 @@ if (!fs.existsSync(LOCAL_BACKUP_DIR)) {
 
 let lastBackupAt: string | null = null;
 let lastBackupUrl: string | null = null;
+let lastExcelUrl: string | null = null;
+let lastSerialExcelUrl: string | null = null;
 let lastBackupError: string | null = null;
 let lastBackupSource: 'cloudinary' | 'local_disk' | null = null;
+let lastVersionedArchiveMs = 0;
 
 function cleanEnvValue(raw?: string): string {
   if (!raw) return '';
@@ -124,6 +137,8 @@ export function getCloudinaryStatus() {
     folder: cfg.folder,
     lastBackupAt: lastBackupAt || undefined,
     lastBackupUrl: lastBackupUrl || undefined,
+    lastExcelUrl: lastExcelUrl || undefined,
+    lastSerialExcelUrl: lastSerialExcelUrl || undefined,
     lastBackupSource: lastBackupSource || undefined,
     lastError: lastBackupError || undefined,
   };
@@ -141,7 +156,8 @@ function signCloudinaryParams(params: Record<string, string>, apiSecret: string)
 
 async function uploadRawToCloudinary(
   cfg: CloudinaryConfig,
-  jsonContent: string,
+  content: string | Buffer,
+  mimeType: string,
   publicId: string,
   overwrite: boolean
 ): Promise<{ secure_url: string; public_id: string; bytes: number; created_at: string }> {
@@ -155,7 +171,9 @@ async function uploadRawToCloudinary(
   const signature = signCloudinaryParams(signParams, cfg.apiSecret);
 
   const form = new FormData();
-  const blob = new Blob([jsonContent], { type: 'application/json' });
+  const payloadBytes =
+    typeof content === 'string' ? content : new Uint8Array(content);
+  const blob = new Blob([payloadBytes], { type: mimeType });
   form.append('file', blob, path.basename(publicId));
   form.append('api_key', cfg.apiKey);
   form.append('timestamp', timestamp);
@@ -186,34 +204,93 @@ async function uploadRawToCloudinary(
   return parsed;
 }
 
-function writeLocalBackupSnapshot(jsonContent: string, timestampSlug: string): string {
-  const latestPath = path.join(LOCAL_BACKUP_DIR, 'latest_snapshot.json');
-  const historyPath = path.join(LOCAL_BACKUP_DIR, `snapshot_${timestampSlug}.json`);
-  fs.writeFileSync(latestPath, jsonContent, 'utf-8');
-  fs.writeFileSync(historyPath, jsonContent, 'utf-8');
+function writeLocalBackupFiles(
+  jsonContent: string,
+  excelBuffer: Buffer | undefined,
+  serialExcelBuffer: Buffer | undefined,
+  timestampSlug: string,
+  writeArchive: boolean
+): { jsonPath: string; excelPath?: string; serialExcelPath?: string } {
+  const latestJsonPath = path.join(LOCAL_BACKUP_DIR, 'latest_snapshot.json');
+  fs.writeFileSync(latestJsonPath, jsonContent, 'utf-8');
 
-  // Keep most recent 15 timestamped local snapshots to bound disk growth
+  let jsonArchivePath = latestJsonPath;
+  if (writeArchive) {
+    jsonArchivePath = path.join(LOCAL_BACKUP_DIR, `snapshot_${timestampSlug}.json`);
+    fs.writeFileSync(jsonArchivePath, jsonContent, 'utf-8');
+  }
+
+  let excelPath: string | undefined;
+  if (excelBuffer && excelBuffer.length > 0) {
+    const latestExcelPath = path.join(LOCAL_BACKUP_DIR, 'latest_stock_register.xlsx');
+    fs.writeFileSync(latestExcelPath, excelBuffer);
+    excelPath = latestExcelPath;
+    if (writeArchive) {
+      const archiveExcelPath = path.join(LOCAL_BACKUP_DIR, `stock_register_${timestampSlug}.xlsx`);
+      fs.writeFileSync(archiveExcelPath, excelBuffer);
+      excelPath = archiveExcelPath;
+    }
+  }
+
+  let serialExcelPath: string | undefined;
+  if (serialExcelBuffer && serialExcelBuffer.length > 0) {
+    const latestSerialExcelPath = path.join(LOCAL_BACKUP_DIR, 'latest_serial_history.xlsx');
+    fs.writeFileSync(latestSerialExcelPath, serialExcelBuffer);
+    serialExcelPath = latestSerialExcelPath;
+    if (writeArchive) {
+      const archiveSerialExcelPath = path.join(LOCAL_BACKUP_DIR, `serial_history_${timestampSlug}.xlsx`);
+      fs.writeFileSync(archiveSerialExcelPath, serialExcelBuffer);
+      serialExcelPath = archiveSerialExcelPath;
+    }
+  }
+
+  // Keep most recent 15 timestamped local archives per format
   try {
-    const files = fs
-      .readdirSync(LOCAL_BACKUP_DIR)
-      .filter((f) => f.startsWith('snapshot_') && f.endsWith('.json'))
-      .sort()
-      .reverse();
-    files.slice(15).forEach((oldFile) => {
-      try {
-        fs.unlinkSync(path.join(LOCAL_BACKUP_DIR, oldFile));
-      } catch {}
-    });
+    const prunePrefix = (prefix: string, ext: string) => {
+      const files = fs
+        .readdirSync(LOCAL_BACKUP_DIR)
+        .filter((f) => f.startsWith(prefix) && f.endsWith(ext))
+        .sort()
+        .reverse();
+      files.slice(15).forEach((oldFile) => {
+        try {
+          fs.unlinkSync(path.join(LOCAL_BACKUP_DIR, oldFile));
+        } catch {}
+      });
+    };
+    prunePrefix('snapshot_', '.json');
+    prunePrefix('stock_register_', '.xlsx');
+    prunePrefix('serial_history_', '.xlsx');
   } catch {}
 
-  return historyPath;
+  return { jsonPath: jsonArchivePath, excelPath, serialExcelPath };
 }
 
-export async function uploadSnapshotToCloudSpace(snapshotPayload: any): Promise<CloudinaryBackupResult> {
-  const now = new Date().toISOString();
+export async function uploadSnapshotToCloudSpace(
+  snapshotPayload: any,
+  excelBuffer?: Buffer,
+  options?: { archiveVersioned?: boolean; serialExcelBuffer?: Buffer }
+): Promise<CloudinaryBackupResult> {
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
   const timestampSlug = now.replace(/[:.]/g, '-');
   const jsonContent = JSON.stringify(snapshotPayload, null, 2);
-  const localBackupPath = writeLocalBackupSnapshot(jsonContent, timestampSlug);
+  const serialExcelBuffer = options?.serialExcelBuffer;
+
+  // Create versioned snapshot on explicit request or at most every 5 minutes automatically
+  const shouldArchive =
+    Boolean(options?.archiveVersioned) || nowMs - lastVersionedArchiveMs >= 5 * 60 * 1000;
+  if (shouldArchive) {
+    lastVersionedArchiveMs = nowMs;
+  }
+
+  const localFiles = writeLocalBackupFiles(
+    jsonContent,
+    excelBuffer,
+    serialExcelBuffer,
+    timestampSlug,
+    shouldArchive
+  );
 
   const cfg = getCloudinaryConfig();
   if (!cfg.configured) {
@@ -224,22 +301,72 @@ export async function uploadSnapshotToCloudSpace(snapshotPayload: any): Promise<
       success: true,
       cloudinaryConfigured: false,
       uploadedToCloudinary: false,
-      localBackupPath,
+      uploadedExcelToCloudinary: false,
+      uploadedSerialExcelToCloudinary: false,
+      localBackupPath: localFiles.jsonPath,
+      localExcelPath: localFiles.excelPath,
+      localSerialExcelPath: localFiles.serialExcelPath,
       timestamp: now,
     };
   }
 
   try {
-    const versionedPublicId = `${cfg.folder}/snapshot_${timestampSlug}.json`;
-    const latestPublicId = `${cfg.folder}/latest_snapshot.json`;
+    const latestJsonId = `${cfg.folder}/latest_snapshot.json`;
+    const uploads: Array<Promise<any>> = [
+      uploadRawToCloudinary(cfg, jsonContent, 'application/json', latestJsonId, true),
+    ];
 
-    const [versionedRes, latestRes] = await Promise.all([
-      uploadRawToCloudinary(cfg, jsonContent, versionedPublicId, false),
-      uploadRawToCloudinary(cfg, jsonContent, latestPublicId, true),
-    ]);
+    if (shouldArchive) {
+      const versionedJsonId = `${cfg.folder}/snapshot_${timestampSlug}.json`;
+      uploads.push(uploadRawToCloudinary(cfg, jsonContent, 'application/json', versionedJsonId, false));
+    } else {
+      uploads.push(Promise.resolve(null));
+    }
+
+    if (excelBuffer && excelBuffer.length > 0) {
+      const latestExcelId = `${cfg.folder}/latest_stock_register.xlsx`;
+      uploads.push(uploadRawToCloudinary(cfg, excelBuffer, EXCEL_MIME, latestExcelId, true));
+      if (shouldArchive) {
+        const versionedExcelId = `${cfg.folder}/stock_register_${timestampSlug}.xlsx`;
+        uploads.push(uploadRawToCloudinary(cfg, excelBuffer, EXCEL_MIME, versionedExcelId, false));
+      } else {
+        uploads.push(Promise.resolve(null));
+      }
+    } else {
+      uploads.push(Promise.resolve(null), Promise.resolve(null));
+    }
+
+    if (serialExcelBuffer && serialExcelBuffer.length > 0) {
+      const latestSerialExcelId = `${cfg.folder}/latest_serial_history.xlsx`;
+      uploads.push(uploadRawToCloudinary(cfg, serialExcelBuffer, EXCEL_MIME, latestSerialExcelId, true));
+      if (shouldArchive) {
+        const versionedSerialExcelId = `${cfg.folder}/serial_history_${timestampSlug}.xlsx`;
+        uploads.push(
+          uploadRawToCloudinary(cfg, serialExcelBuffer, EXCEL_MIME, versionedSerialExcelId, false)
+        );
+      } else {
+        uploads.push(Promise.resolve(null));
+      }
+    } else {
+      uploads.push(Promise.resolve(null), Promise.resolve(null));
+    }
+
+    const [
+      latestJsonRes,
+      versionedJsonRes,
+      latestExcelRes,
+      versionedExcelRes,
+      latestSerialExcelRes,
+      versionedSerialExcelRes,
+    ] = await Promise.all(uploads);
 
     lastBackupAt = now;
-    lastBackupUrl = latestRes.secure_url || versionedRes.secure_url;
+    lastBackupUrl = latestJsonRes?.secure_url || versionedJsonRes?.secure_url || lastBackupUrl;
+    lastExcelUrl = latestExcelRes?.secure_url || versionedExcelRes?.secure_url || lastExcelUrl;
+    lastSerialExcelUrl =
+      latestSerialExcelRes?.secure_url ||
+      versionedSerialExcelRes?.secure_url ||
+      lastSerialExcelUrl;
     lastBackupSource = 'cloudinary';
     lastBackupError = null;
 
@@ -247,11 +374,20 @@ export async function uploadSnapshotToCloudSpace(snapshotPayload: any): Promise<
       success: true,
       cloudinaryConfigured: true,
       uploadedToCloudinary: true,
+      uploadedExcelToCloudinary: Boolean(latestExcelRes?.secure_url),
+      uploadedSerialExcelToCloudinary: Boolean(latestSerialExcelRes?.secure_url),
       cloudName: cfg.cloudName,
-      secureUrl: versionedRes.secure_url,
-      latestUrl: latestRes.secure_url,
-      publicId: versionedRes.public_id,
-      localBackupPath,
+      secureUrl: versionedJsonRes?.secure_url || latestJsonRes?.secure_url,
+      latestUrl: latestJsonRes?.secure_url,
+      latestExcelUrl: latestExcelRes?.secure_url,
+      excelSecureUrl: versionedExcelRes?.secure_url || latestExcelRes?.secure_url,
+      latestSerialExcelUrl: latestSerialExcelRes?.secure_url,
+      serialExcelSecureUrl:
+        versionedSerialExcelRes?.secure_url || latestSerialExcelRes?.secure_url,
+      publicId: versionedJsonRes?.public_id || latestJsonRes?.public_id,
+      localBackupPath: localFiles.jsonPath,
+      localExcelPath: localFiles.excelPath,
+      localSerialExcelPath: localFiles.serialExcelPath,
       timestamp: now,
     };
   } catch (err: any) {
@@ -263,8 +399,12 @@ export async function uploadSnapshotToCloudSpace(snapshotPayload: any): Promise<
       success: false,
       cloudinaryConfigured: true,
       uploadedToCloudinary: false,
+      uploadedExcelToCloudinary: false,
+      uploadedSerialExcelToCloudinary: false,
       cloudName: cfg.cloudName,
-      localBackupPath,
+      localBackupPath: localFiles.jsonPath,
+      localExcelPath: localFiles.excelPath,
+      localSerialExcelPath: localFiles.serialExcelPath,
       timestamp: now,
       error: errMsg,
     };
@@ -286,7 +426,7 @@ export async function listCloudSpaceBackups(): Promise<{
       const auth = Buffer.from(`${cfg.apiKey}:${cfg.apiSecret}`).toString('base64');
       const url = `https://api.cloudinary.com/v1_1/${encodeURIComponent(
         cfg.cloudName
-      )}/resources/raw?type=upload&prefix=${encodeURIComponent(cfg.folder + '/')}&max_results=30`;
+      )}/resources/raw?type=upload&prefix=${encodeURIComponent(cfg.folder + '/')}&max_results=50`;
 
       const res = await fetch(url, {
         headers: {
@@ -301,10 +441,22 @@ export async function listCloudSpaceBackups(): Promise<{
             String(b.created_at || '').localeCompare(String(a.created_at || ''))
           )
           .forEach((r: any) => {
+            const name = path.basename(r.public_id || 'snapshot.json');
+            const format: 'json' | 'xlsx' = name.endsWith('.xlsx') ? 'xlsx' : 'json';
+            if (name === 'latest_snapshot.json' && r.secure_url) {
+              lastBackupUrl = r.secure_url;
+            }
+            if (name === 'latest_stock_register.xlsx' && r.secure_url) {
+              lastExcelUrl = r.secure_url;
+            }
+            if (name === 'latest_serial_history.xlsx' && r.secure_url) {
+              lastSerialExcelUrl = r.secure_url;
+            }
             backups.push({
               id: r.asset_id || r.public_id,
               publicId: r.public_id,
-              fileName: path.basename(r.public_id || 'snapshot.json'),
+              fileName: name,
+              format,
               source: 'cloudinary',
               createdAt: r.created_at || new Date().toISOString(),
               bytes: r.bytes,
@@ -324,17 +476,19 @@ export async function listCloudSpaceBackups(): Promise<{
   try {
     const localFiles = fs
       .readdirSync(LOCAL_BACKUP_DIR)
-      .filter((f) => f.endsWith('.json'))
+      .filter((f) => f.endsWith('.json') || f.endsWith('.xlsx'))
       .sort()
       .reverse()
-      .slice(0, 15);
+      .slice(0, 20);
     localFiles.forEach((file) => {
       const fullPath = path.join(LOCAL_BACKUP_DIR, file);
       const stat = fs.statSync(fullPath);
+      const format: 'json' | 'xlsx' = file.endsWith('.xlsx') ? 'xlsx' : 'json';
       backups.push({
         id: `local_${file}`,
         publicId: `local/${file}`,
         fileName: file,
+        format,
         source: 'local_disk',
         createdAt: stat.mtime.toISOString(),
         bytes: stat.size,
@@ -360,8 +514,8 @@ export async function readCloudSpaceSnapshot(input: {
     if (!safeName.endsWith('.json')) {
       throw new Error('Invalid snapshot filename');
     }
-    const targetPath = path.join(LOCAL_BACKUP_DIR, safeName);
-    if (!fs.existsSync(targetPath)) {
+    const targetPath = path.resolve(LOCAL_BACKUP_DIR, safeName);
+    if (!targetPath.startsWith(LOCAL_BACKUP_DIR + path.sep) || !fs.existsSync(targetPath)) {
       throw new Error('Local backup snapshot not found');
     }
     const raw = fs.readFileSync(targetPath, 'utf-8');

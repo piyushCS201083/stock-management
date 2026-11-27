@@ -267,11 +267,11 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-4xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-4xl flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10"
         style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-emerald-600 text-white shrink-0 rounded-t-2xl">
+        <div className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-emerald-600 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-white/20 flex items-center justify-center shadow-xs">
               <MessageSquare className="w-6 h-6 text-white" />
@@ -292,7 +292,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1">
+        <div className="p-6 space-y-6 flex-1">
           {/* Top Quick Actions Banner */}
           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>

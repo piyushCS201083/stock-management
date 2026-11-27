@@ -10,13 +10,14 @@ import {
   ArrowRight,
   Barcode,
   Loader2,
+  Pencil,
 } from 'lucide-react';
 
 interface ReceiveGoodsBannerProps {
   activeBranch: BranchInfo;
   transfers: BranchTransfer[];
   isReceiving?: boolean;
-  onReceiveSelected: (selections: Array<{ transferId: string; itemIds: string[] }>) => Promise<void>;
+  onReceiveSelected: (selections: Array<{ transferId: string; itemIds: string[] }>) => void;
 }
 
 interface PendingRow {
@@ -51,7 +52,6 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
 
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set());
 
-  // Clean up stale checked keys when pendingRows change
   useEffect(() => {
     const valid = new Set(pendingRows.map((r) => r.key));
     setCheckedKeys((prev) => {
@@ -61,6 +61,22 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
       });
       return next;
     });
+  }, [pendingRows]);
+
+  // Summarize incoming batteries by sender branch (e.g. "3 - Yard City Center sent you 1 battery (60×24 FLAT)")
+  const senderSummaries = useMemo(() => {
+    const bySender = new Map<string, { senderName: string; totalUnits: number; labels: string[] }>();
+    pendingRows.forEach(({ transfer, item }) => {
+      const current = bySender.get(transfer.fromBranchId) || {
+        senderName: transfer.fromBranchName,
+        totalUnits: 0,
+        labels: [],
+      };
+      current.totalUnits += item.quantity || 1;
+      current.labels.push(`${item.quantity}× ${item.modelName}`);
+      bySender.set(transfer.fromBranchId, current);
+    });
+    return Array.from(bySender.values());
   }, [pendingRows]);
 
   if (pendingRows.length === 0) return null;
@@ -100,19 +116,31 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
     }));
   };
 
-  const handleReceiveChecked = async () => {
-    if (checkedRows.length === 0 || isReceiving) return;
-    await onReceiveSelected(buildSelections(checkedRows));
+  const handleReceiveSingle = (row: PendingRow) => {
+    if (isReceiving) return;
+    onReceiveSelected(buildSelections([row]));
   };
 
-  const handleCheckAndReceiveAll = async () => {
+  const handleReceiveChecked = () => {
+    if (checkedRows.length === 0 || isReceiving) return;
+    onReceiveSelected(buildSelections(checkedRows));
+  };
+
+  const handleCheckAndReceiveAll = () => {
     if (pendingRows.length === 0 || isReceiving) return;
     setCheckedKeys(new Set(pendingRows.map((r) => r.key)));
-    await onReceiveSelected(buildSelections(pendingRows));
+    onReceiveSelected(buildSelections(pendingRows));
   };
 
+  const headlineSummary = senderSummaries
+    .map(
+      (s) =>
+        `${s.senderName} sent you ${s.totalUnits} batter${s.totalUnits === 1 ? 'y' : 'ies'} (${s.labels.join(', ')})`
+    )
+    .join(' · ');
+
   return (
-    <div className="bg-amber-50/90 border-2 border-amber-400 rounded-xl shadow-sm overflow-hidden">
+    <div className="bg-amber-50/95 border-2 border-amber-400 rounded-xl shadow-md overflow-hidden">
       {/* Notification Header */}
       <div className="px-4 sm:px-5 py-3.5 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-start sm:items-center gap-3">
@@ -122,14 +150,14 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-black tracking-tight">
-                Receive Goods Notification — {activeBranch.name}
+                {headlineSummary}
               </h3>
               <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-slate-950 text-amber-300">
                 {pendingRows.length} Pending · {totalPendingUnits} Unit{totalPendingUnits === 1 ? '' : 's'}
               </span>
             </div>
             <p className="text-xs font-semibold text-slate-900/90 mt-0.5">
-              Incoming stock dispatched from another branch. Check items after physical verification and receive into {activeBranch.shortName} stock.
+              Click <strong>Receive</strong> to review or edit battery details and automatically add to {activeBranch.shortName} stock.
             </p>
           </div>
         </div>
@@ -145,12 +173,12 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
           ) : (
             <PackageCheck className="w-4 h-4" />
           )}
-          <span>Check All & Receive All ({totalPendingUnits})</span>
+          <span>Receive All & Review ({totalPendingUnits})</span>
         </button>
       </div>
 
       {/* Checklist Rows */}
-      <div className="p-3 sm:p-4 space-y-2.5 bg-white/80">
+      <div className="p-3 sm:p-4 space-y-2.5 bg-white/90">
         <div className="flex items-center justify-between px-2 py-1 text-xs border-b border-amber-200 pb-2">
           <button
             type="button"
@@ -172,22 +200,22 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
         </div>
 
         <div className="space-y-2">
-          {pendingRows.map(({ key, transfer, item }) => {
+          {pendingRows.map((row) => {
+            const { key, transfer, item } = row;
             const isChecked = checkedKeys.has(key);
             return (
-              <label
+              <div
                 key={key}
-                onClick={(e) => {
-                  e.preventDefault();
-                  toggleRow(key);
-                }}
-                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border transition-all cursor-pointer select-none ${
+                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border transition-all ${
                   isChecked
                     ? 'bg-emerald-50/90 border-emerald-400 ring-1 ring-emerald-400/50 shadow-2xs'
                     : 'bg-white border-amber-200 hover:border-amber-400'
                 }`}
               >
-                <div className="flex items-start gap-3">
+                <div
+                  onClick={() => toggleRow(key)}
+                  className="flex items-start gap-3 flex-1 cursor-pointer select-none"
+                >
                   <div className="pt-0.5 shrink-0">
                     {isChecked ? (
                       <CheckSquare className="w-5 h-5 text-emerald-600" />
@@ -202,7 +230,7 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
                         {item.modelName}
                       </span>
                       <span className="text-xs font-black text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300">
-                        +{item.quantity} Unit{item.quantity === 1 ? '' : 's'}
+                        +{item.quantity} Batter{item.quantity === 1 ? 'y' : 'ies'}
                       </span>
                       <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-900 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
                         <Truck className="w-3 h-3 text-blue-600" />
@@ -244,19 +272,19 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-end sm:shrink-0 pl-8 sm:pl-0">
-                  <span
-                    className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg border ${
-                      isChecked
-                        ? 'bg-emerald-600 text-white border-emerald-700'
-                        : 'bg-amber-100 text-amber-900 border-amber-300'
-                    }`}
+                <div className="flex items-center justify-end gap-2 sm:shrink-0 pl-8 sm:pl-0">
+                  <button
+                    type="button"
+                    onClick={() => handleReceiveSingle(row)}
+                    disabled={isReceiving}
+                    className="inline-flex items-center gap-1.5 text-xs font-extrabold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
+                    title="Review / Edit details and receive into stock"
                   >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>{isChecked ? 'Checked to Receive' : 'Tap to Check'}</span>
-                  </span>
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>Receive Battery</span>
+                  </button>
                 </div>
-              </label>
+              </div>
             );
           })}
         </div>
@@ -264,7 +292,7 @@ export const ReceiveGoodsBanner: React.FC<ReceiveGoodsBannerProps> = ({
         {/* Bottom Action Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-amber-200">
           <span className="text-[11px] text-slate-600 font-medium">
-            Receiving goods automatically adds the inward quantity to <strong>{activeBranch.name}</strong> stock and syncs live to Supabase.
+            Clicking Receive opens the battery details so you can verify or edit before saving into <strong>{activeBranch.name}</strong> stock.
           </span>
 
           <div className="flex items-center gap-2 shrink-0">

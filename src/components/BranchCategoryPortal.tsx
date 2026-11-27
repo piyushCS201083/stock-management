@@ -319,7 +319,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
   if (isModal) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/80 backdrop-blur-xs overflow-y-auto">
-        <div className="bg-slate-50 rounded-2xl shadow-2xl border border-slate-300 w-full max-w-4xl max-h-[92vh] overflow-y-auto p-4 sm:p-6 relative">
+        <div className="bg-slate-50 rounded-2xl shadow-2xl border border-slate-300 w-full max-w-4xl max-h-[92vh] overflow-y-auto overscroll-contain my-auto p-4 sm:p-6 relative">
           {onClose && (
             <button
               onClick={onClose}

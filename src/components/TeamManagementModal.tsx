@@ -64,11 +64,11 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-lg flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-lg flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10"
         style={{ maxHeight: 'min(90vh, calc(100% - 2rem))' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
+        <div className="sticky top-0 z-20 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-2xl">
           <div className="flex items-center gap-2">
             <Users className="w-5 h-5 text-emerald-400" />
             <h2 className="text-base font-bold">Manage WhatsApp Team Members</h2>
@@ -82,7 +82,7 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto">
+        <div className="p-6 space-y-4 flex-1">
           <div className="flex items-center justify-between">
             <p className="text-xs text-slate-600">
               Team members receive daily stock confirmations and sheet photos via WhatsApp.

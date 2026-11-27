@@ -81,6 +81,8 @@ export interface CloudinaryStatusInfo {
   folder?: string;
   lastBackupAt?: string;
   lastBackupUrl?: string;
+  lastExcelUrl?: string;
+  lastSerialExcelUrl?: string;
   lastBackupSource?: 'cloudinary' | 'local_disk';
   lastError?: string;
 }
@@ -589,6 +591,7 @@ export interface CloudBackupSnapshotMeta {
   id: string;
   publicId: string;
   fileName: string;
+  format?: 'json' | 'xlsx';
   source: 'cloudinary' | 'local_disk';
   createdAt: string;
   bytes?: number;
@@ -614,9 +617,15 @@ export async function apiTriggerCloudinaryBackup(
   success: boolean;
   cloudinaryConfigured: boolean;
   uploadedToCloudinary: boolean;
+  uploadedExcelToCloudinary?: boolean;
+  uploadedSerialExcelToCloudinary?: boolean;
   cloudName?: string;
   secureUrl?: string;
   latestUrl?: string;
+  latestExcelUrl?: string;
+  excelSecureUrl?: string;
+  latestSerialExcelUrl?: string;
+  serialExcelSecureUrl?: string;
   recordCount?: number;
   serialCount?: number;
   timestamp?: string;

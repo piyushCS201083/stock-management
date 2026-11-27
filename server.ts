@@ -33,6 +33,8 @@ import {
   deleteBranchTransfer,
   backupPermanentCodebase,
   exportFullDatabaseSnapshot,
+  exportFullDatabaseExcelBuffer,
+  exportFullSerialHistoryExcelBuffer,
   triggerCloudSpaceBackupNow,
   restoreFullDatabaseSnapshot,
 } from './server/db.ts';
@@ -490,7 +492,12 @@ app.post('/api/backup-permanent', async (req, res) => {
   try {
     const { records, serials } = req.body || {};
     const result = await backupPermanentCodebase(records, serials);
-    const cloudSpace = await triggerCloudSpaceBackupNow(undefined, undefined, 'permanent_sync');
+    const cloudSpace = await triggerCloudSpaceBackupNow(
+      undefined,
+      undefined,
+      'permanent_sync',
+      { archiveVersioned: true }
+    );
     const storage = getActiveStorageTarget();
     broadcastRealtime('PERMANENT_SYNC_COMPLETE', result);
     res.json({
@@ -530,7 +537,8 @@ app.post('/api/cloud/cloudinary/backup', async (req, res) => {
     const result = await triggerCloudSpaceBackupNow(
       records,
       serials,
-      typeof reason === 'string' && reason.trim() ? reason.trim() : 'manual_ui'
+      typeof reason === 'string' && reason.trim() ? reason.trim() : 'manual_ui',
+      { archiveVersioned: true }
     );
     const storage = getActiveStorageTarget();
     res.json({
@@ -571,6 +579,40 @@ app.get('/api/cloud/snapshot/export', async (req, res) => {
       `attachment; filename="battery-stock-backup-${new Date().toISOString().slice(0, 10)}.json"`
     );
     res.send(JSON.stringify(snapshot, null, 2));
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/cloud/excel/export', async (req, res) => {
+  try {
+    const excelBuffer = await exportFullDatabaseExcelBuffer();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Battery_Quantity_Stock_${new Date().toISOString().slice(0, 10)}.xlsx"`
+    );
+    res.send(excelBuffer);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/cloud/excel/serials/export', async (req, res) => {
+  try {
+    const excelBuffer = await exportFullSerialHistoryExcelBuffer();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Battery_Serials_And_History_${new Date().toISOString().slice(0, 10)}.xlsx"`
+    );
+    res.send(excelBuffer);
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

@@ -1,0 +1,390 @@
+{
+  "version": 1,
+  "app": "battery-stock-register",
+  "reason": "dual_excel_verify",
+  "exportedAt": "2026-11-27T11:57:25.385Z",
+  "stats": {
+    "records": 4,
+    "serials": 5,
+    "chargers": 0,
+    "transfers": 0
+  },
+  "state": {
+    "records": {
+      "27-11-2026": {
+        "date": "27-11-2026",
+        "notes": "Auto-created for Today (27-11-2026) carrying forward closing stock from 23-11-2026",
+        "stock": {
+          "repair": 0,
+          "service": 2,
+          "48x30_old": 1,
+          "60x24_old": 4,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 1,
+          "60x30_flat": 2,
+          "60x36_flat": 2,
+          "60x45_flat": 1,
+          "60x38_magnus": 0
+        },
+        "inCause": {},
+        "inStock": {
+          "repair": 0,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 0,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "outCause": {},
+        "outStock": {
+          "repair": 0,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 0,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "lastModified": "2026-11-27T10:38:00.982Z",
+        "totalInCause": "",
+        "repairInCause": "",
+        "totalOutCause": "",
+        "repairOutCause": "",
+        "branchId": "chandravadni_naka"
+      },
+      "23-11-2026": {
+        "date": "23-11-2026",
+        "notes": "Auto-created for Today (23-11-2026) carrying forward closing stock from 31-10-2026",
+        "stock": {
+          "repair": 0,
+          "service": 2,
+          "48x30_old": 1,
+          "60x24_old": 2,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 1,
+          "60x30_flat": 2,
+          "60x36_flat": 2,
+          "60x45_flat": 1,
+          "60x38_magnus": 0
+        },
+        "inCause": {
+          "60x24_old": ""
+        },
+        "inStock": {
+          "repair": 0,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 2,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 0,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "outCause": {},
+        "outStock": {
+          "repair": 0,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 0,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "lastModified": "2026-11-22T19:28:58.598Z",
+        "totalInCause": "60×24 OLD: \n60×24 OLD: ",
+        "repairInCause": "",
+        "totalOutCause": "",
+        "repairOutCause": "",
+        "branchId": "chandravadni_naka"
+      },
+      "31-10-2026": {
+        "date": "31-10-2026",
+        "notes": "Official live baseline from verified Excel photo dated 31-10-2026",
+        "stock": {
+          "repair": 0,
+          "service": 2,
+          "48x30_old": 1,
+          "60x24_old": 2,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 0,
+          "60x30_flat": 1,
+          "60x36_flat": 2,
+          "60x45_flat": 1,
+          "60x38_magnus": 0
+        },
+        "inCause": {
+          "60x24_flat": "Service center\nse, luvkush le\nkar aaya",
+          "60x30_flat": "Service center\nse, luvkush le\nkar aaya"
+        },
+        "inStock": {
+          "repair": 1,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 1,
+          "60x30_flat": 1,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "outCause": {},
+        "outStock": {
+          "repair": -1,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": 0,
+          "60x36_old": 0,
+          "60x24_flat": 0,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "lastModified": "2026-10-31T17:22:46.790Z",
+        "totalInCause": "1.60-24 flat -service\ncenter\n2.60-24 flat -service\ncenter",
+        "repairInCause": "48-30\nMAA SATI SE",
+        "totalOutCause": "",
+        "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE",
+        "branchId": "chandravadni_naka"
+      },
+      "27-10-2026": {
+        "date": "27-10-2026",
+        "notes": "Regular daily ledger entry matching WhatsApp sheet photo",
+        "stock": {
+          "repair": 0,
+          "service": 2,
+          "48x30_old": 1,
+          "60x24_old": 2,
+          "60x30_old": 1,
+          "60x36_old": 1,
+          "60x24_flat": 1,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 1,
+          "60x38_magnus": 1
+        },
+        "inCause": {
+          "60x36_old": "wapas aai - exchange Reena ent see",
+          "60x30_flat": "Nikhil leke aaya morar se"
+        },
+        "inStock": {
+          "repair": 1,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": 0,
+          "60x36_old": 1,
+          "60x24_flat": 0,
+          "60x30_flat": 1,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "outCause": {
+          "60x30_old": "dealer ko , reena enterprises",
+          "60x24_flat": "gaadi mai lagi , aman wadhwani"
+        },
+        "outStock": {
+          "repair": -1,
+          "service": 0,
+          "48x30_old": 0,
+          "60x24_old": 0,
+          "60x30_old": -1,
+          "60x36_old": 0,
+          "60x24_flat": -1,
+          "60x30_flat": 0,
+          "60x36_flat": 0,
+          "60x45_flat": 0,
+          "60x38_magnus": 0
+        },
+        "lastModified": "2026-10-27T18:30:00.000Z",
+        "totalInCause": "1. 60-30-morar\n2. 60-36old-return",
+        "repairInCause": "48-30\nMAA SATI SE",
+        "totalOutCause": "1. aman wadhwani\n2. reena enterprises",
+        "repairOutCause": "48-30\nMORAR BHEJHI\nSONU BHAIYA\nLEKE GYE",
+        "branchId": "chandravadni_naka"
+      }
+    },
+    "columns": [
+      {
+        "id": "60x24_old",
+        "name": "60×24 OLD"
+      },
+      {
+        "id": "60x24_flat",
+        "name": "60×24 FLAT"
+      },
+      {
+        "id": "60x30_old",
+        "name": "60×30 OLD"
+      },
+      {
+        "id": "60x30_flat",
+        "name": "60×30 FLAT"
+      },
+      {
+        "id": "60x36_old",
+        "name": "60×36 OLD"
+      },
+      {
+        "id": "60x36_flat",
+        "name": "60×36 FLAT"
+      },
+      {
+        "id": "60x38_magnus",
+        "name": "60×38 MAGNUS"
+      },
+      {
+        "id": "48x30_old",
+        "name": "48×30 Old"
+      },
+      {
+        "id": "60x45_flat",
+        "name": "60×45 Flat"
+      }
+    ],
+    "teamMembers": [
+      {
+        "id": "piyush_shivhare",
+        "name": "Piyush Shivhare",
+        "role": "Owner & Admin",
+        "phone": "9009156696",
+        "active": true
+      }
+    ],
+    "serials": {
+      "BAT-6024OL-8147": {
+        "status": "in_stock",
+        "batchNo": "60×24 OLD",
+        "history": [
+          {
+            "id": "evt_1795375739212_wfm6",
+            "date": "23-11-2026",
+            "type": "in",
+            "cause": "",
+            "timestamp": "2026-11-22T19:28:59.212Z"
+          }
+        ],
+        "modelId": "60x24_old",
+        "serialNo": "BAT-6024OL-8147",
+        "modelName": "60×24 OLD",
+        "inwardDate": "23-11-2026",
+        "inwardCause": ""
+      },
+      "BAT-6024OL-7746": {
+        "status": "in_stock",
+        "batchNo": "60×24 OLD",
+        "history": [
+          {
+            "id": "evt_1795375731584_wgzz",
+            "date": "23-11-2026",
+            "type": "in",
+            "cause": "",
+            "timestamp": "2026-11-22T19:28:51.584Z"
+          }
+        ],
+        "modelId": "60x24_old",
+        "serialNo": "BAT-6024OL-7746",
+        "modelName": "60×24 OLD",
+        "inwardDate": "23-11-2026",
+        "inwardCause": ""
+      },
+      "BAT-6024F-101": {
+        "status": "in_stock",
+        "batchNo": "60×24 FLAT",
+        "history": [
+          {
+            "id": "evt_1",
+            "date": "31-10-2026",
+            "type": "in",
+            "cause": "Service center se, luvkush le kar aaya",
+            "partner": "Luvkush (Service Center)",
+            "timestamp": "2026-10-31T09:30:00.000Z"
+          }
+        ],
+        "modelId": "60x24_flat",
+        "serialNo": "BAT-6024F-101",
+        "modelName": "60×24 FLAT",
+        "inwardDate": "31-10-2026",
+        "inwardCause": "Service center se, luvkush le kar aaya",
+        "inwardPartner": "Luvkush (Service Center)"
+      },
+      "BAT-6030F-201": {
+        "status": "in_stock",
+        "batchNo": "60×30 FLAT",
+        "history": [
+          {
+            "id": "evt_2",
+            "date": "31-10-2026",
+            "type": "in",
+            "cause": "Service center se, luvkush le kar aaya",
+            "partner": "Luvkush (Service Center)",
+            "timestamp": "2026-10-31T09:45:00.000Z"
+          }
+        ],
+        "modelId": "60x30_flat",
+        "serialNo": "BAT-6030F-201",
+        "modelName": "60×30 FLAT",
+        "inwardDate": "31-10-2026",
+        "inwardCause": "Service center se, luvkush le kar aaya",
+        "inwardPartner": "Luvkush (Service Center)"
+      },
+      "BAT-4830O-REP1": {
+        "status": "dispatched",
+        "batchNo": "48×30 Old",
+        "history": [
+          {
+            "id": "evt_3a",
+            "date": "31-10-2026",
+            "type": "repair_in",
+            "cause": "48-30 MAA SATI SE",
+            "partner": "Maa Sati Transport",
+            "timestamp": "2026-10-31T08:15:00.000Z"
+          },
+          {
+            "id": "evt_3b",
+            "date": "31-10-2026",
+            "type": "out",
+            "cause": "48-30 MORAR BHEJHI SONU BHAIYA LEKE GYE",
+            "partner": "Sonu Bhaiya",
+            "timestamp": "2026-10-31T11:00:00.000Z",
+            "vehicleOrLocation": "Morar Hub Vehicle"
+          }
+        ],
+        "modelId": "repair",
+        "serialNo": "BAT-4830O-REP1",
+        "modelName": "OLD BATTERY FOR REPAIR",
+        "inwardDate": "31-10-2026",
+        "inwardCause": "48-30 MAA SATI SE",
+        "outwardDate": "31-10-2026",
+        "outwardCause": "48-30 MORAR BHEJHI SONU BHAIYA LEKE GYE",
+        "inwardPartner": "Maa Sati Transport",
+        "outwardPartner": "Sonu Bhaiya (Morar Dealer / Vehicle)"
+      }
+    },
+    "chargerRecords": {},
+    "branchTransfers": []
+  }
+}

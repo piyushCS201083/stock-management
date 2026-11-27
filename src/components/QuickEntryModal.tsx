@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { BatteryColumn, BRANCHES, BranchInfo, DayRecord } from '../types/stock';
+import React, { useState, useEffect, useMemo } from 'react';
+import { BatteryColumn, BatterySerialItem, BRANCHES, BranchInfo, DayRecord, DEFAULT_BRANCH_ID } from '../types/stock';
 import {
   PlusCircle,
   MinusCircle,
@@ -29,7 +29,7 @@ import {
   isAfterTodayIST,
 } from '../utils/date';
 
-export type QuickEntryType = 'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service';
+export type QuickEntryType = 'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service' | 'transfer';
 
 export interface SerialEntryPayload {
   serialNo: string;
@@ -71,6 +71,7 @@ interface QuickEntryModalProps {
   onCreateBranchTransfer?: (transfer: BranchTransferDispatchPayload) => Promise<void> | void;
   recordedDates?: string[];
   onSelectDate?: (date: string) => void;
+  serials?: Record<string, BatterySerialItem>;
 }
 
 export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
@@ -83,8 +84,11 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   onSaveRecord,
   onCreateBranchTransfer,
   onSelectDate,
+  serials = {},
 }) => {
-  const [entryType, setEntryType] = useState<QuickEntryType>(initialEntryType);
+  const [entryType, setEntryType] = useState<'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service'>(
+    initialEntryType === 'transfer' ? 'out' : initialEntryType
+  );
 
   // Primary fields (used for IN / OUT / Repair / Service, and as OUT side when entryType === 'both')
   const [selectedColId, setSelectedColId] = useState<string>(columns[0]?.id || '60x24_old');
@@ -110,16 +114,46 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
   const [lastScannedSerial, setLastScannedSerial] = useState<string | null>(null);
 
+  const otherBranches = BRANCHES.filter((b) => b.id !== activeBranch.id);
+
   useEffect(() => {
     if (isOpen) {
-      setEntryType(initialEntryType || 'in');
+      if (initialEntryType === 'transfer') {
+        setEntryType('out');
+        setTargetBranchId((prev) => prev || otherBranches[0]?.id || '');
+      } else {
+        setEntryType(initialEntryType || 'in');
+        setTargetBranchId('');
+      }
     }
   }, [isOpen, initialEntryType]);
 
+  const inStockSerialsForOutModel = useMemo(() => {
+    const col = columns.find((c) => c.id === selectedColId);
+    return Object.values(serials).filter(
+      (s) =>
+        s.status === 'in_stock' &&
+        (s.branchId || DEFAULT_BRANCH_ID) === activeBranch.id &&
+        (s.modelId === selectedColId ||
+          (col && (s.modelName === col.name || s.batchNo === col.name)))
+    );
+  }, [serials, activeBranch.id, selectedColId, columns]);
+
+  const toggleOutSerialChip = (sn: string) => {
+    setSerialInput((prev) => {
+      const list = prev
+        .split(/[\n,;]+/)
+        .map((x) => x.trim().toUpperCase())
+        .filter(Boolean);
+      if (list.includes(sn)) {
+        return list.filter((x) => x !== sn).join(', ');
+      }
+      return [...list, sn].join(', ');
+    });
+  };
+
   const todayIST = getIndianTodayDate();
   const todayISO = getIndianTodayISODate();
-
-  const otherBranches = BRANCHES.filter((b) => b.id !== activeBranch.id);
 
   const handleScanComplete = (scannedSerial: string, detectedBatch?: string) => {
     const trimmed = scannedSerial.trim();
@@ -434,11 +468,11 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-2xl flex flex-col overflow-hidden my-auto ring-1 ring-slate-900/10"
+        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-2xl flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10"
         style={{ maxHeight: 'min(92vh, calc(100% - 2rem))' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 sm:px-6 py-3.5 bg-slate-900 text-white shrink-0 rounded-t-2xl gap-3">
+        <div className="sticky top-0 z-20 flex items-center justify-between px-5 sm:px-6 py-3.5 bg-slate-900 text-white shrink-0 rounded-t-2xl gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-sm sm:text-base font-bold whitespace-nowrap">
               Log Battery IN / OUT ({activeBranch.shortName})
@@ -482,16 +516,19 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-3.5 overscroll-contain">
+        <div className="flex-1 p-4 sm:p-5 space-y-3.5">
           {/* Movement Type Selector */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-2">
               Transaction Category:
             </label>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               <button
                 type="button"
-                onClick={() => setEntryType('in')}
+                onClick={() => {
+                  setEntryType('in');
+                  setTargetBranchId('');
+                }}
                 className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
                   entryType === 'in'
                     ? 'border-emerald-500 bg-emerald-50 text-emerald-800 shadow-xs ring-1 ring-emerald-500/30'
@@ -505,16 +542,38 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setEntryType('out')}
+                onClick={() => {
+                  setEntryType('out');
+                  setTargetBranchId('');
+                }}
                 className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
-                  entryType === 'out'
+                  entryType === 'out' && !targetBranchId
                     ? 'border-rose-500 bg-rose-50 text-rose-800 shadow-xs ring-1 ring-rose-500/30'
                     : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                 }`}
               >
                 <MinusCircle className="w-5 h-5 text-rose-600 mb-1" />
                 <span>Out Stock</span>
-                <span className="text-[10px] text-rose-600 font-normal">Send / Transfer (-)</span>
+                <span className="text-[10px] text-rose-600 font-normal">Customer / Dealer</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEntryType('out');
+                  if (!targetBranchId && otherBranches[0]?.id) {
+                    setTargetBranchId(otherBranches[0].id);
+                  }
+                }}
+                className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                  entryType === 'out' && Boolean(targetBranchId)
+                    ? 'border-amber-500 bg-amber-50 text-amber-950 shadow-xs ring-2 ring-amber-400/50'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-amber-50/40'
+                }`}
+              >
+                <Building2 className="w-5 h-5 text-amber-600 mb-1" />
+                <span>Send to Branch</span>
+                <span className="text-[10px] text-amber-700 font-normal">Notify Receiver</span>
               </button>
 
               <button
@@ -533,7 +592,10 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setEntryType('repair_in')}
+                onClick={() => {
+                  setEntryType('repair_in');
+                  setTargetBranchId('');
+                }}
                 className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
                   entryType === 'repair_in' || entryType === 'repair_out'
                     ? 'border-amber-500 bg-amber-50 text-amber-800 shadow-xs'
@@ -547,7 +609,10 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setEntryType('service')}
+                onClick={() => {
+                  setEntryType('service');
+                  setTargetBranchId('');
+                }}
                 className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
                   entryType === 'service'
                     ? 'border-blue-500 bg-blue-50 text-blue-800 shadow-xs'
@@ -1091,6 +1156,36 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     <span className="text-[10px] text-emerald-700 font-sans font-normal">
                       Ready for next or Save
                     </span>
+                  </div>
+                )}
+
+                {entryType === 'out' && inStockSerialsForOutModel.length > 0 && (
+                  <div className="p-2 bg-white border border-blue-200 rounded-lg space-y-1.5">
+                    <span className="text-[11px] font-bold text-slate-700 block">
+                      Tap In-Stock Serial from {activeBranch.shortName} ({selectedCol?.name}) to attach:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {inStockSerialsForOutModel.slice(0, 12).map((s) => {
+                        const isPicked = serialInput
+                          .split(/[\n,;]+/)
+                          .map((x) => x.trim().toUpperCase())
+                          .includes(s.serialNo.toUpperCase());
+                        return (
+                          <button
+                            key={s.serialNo}
+                            type="button"
+                            onClick={() => toggleOutSerialChip(s.serialNo)}
+                            className={`px-2 py-0.5 rounded font-mono text-[11px] font-bold border transition-colors cursor-pointer ${
+                              isPicked
+                                ? 'bg-blue-600 text-white border-blue-700'
+                                : 'bg-blue-50 text-blue-900 border-blue-200 hover:bg-blue-100'
+                            }`}
+                          >
+                            {isPicked ? `✓ ${s.serialNo}` : s.serialNo}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
