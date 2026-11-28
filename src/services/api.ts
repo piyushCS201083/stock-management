@@ -1,6 +1,8 @@
 import {
   BatteryColumn,
   BatterySerialItem,
+  BranchAuthSession,
+  BranchCredentialSummary,
   BranchTransfer,
   DayRecord,
   DEFAULT_BRANCH_ID,
@@ -77,6 +79,39 @@ export function setCustomBackendUrl(url: string) {
     } else {
       localStorage.removeItem('battery_custom_backend_url');
     }
+  }
+}
+
+// Strictly in-memory session token for Branch / Master access (never written to localStorage)
+let activeBranchToken: string | null = null;
+let onBranchUnauthorizedCallback: (() => void) | null = null;
+
+export function setApiBranchToken(token: string | null) {
+  activeBranchToken = token && token.trim() ? token.trim() : null;
+}
+
+export function getApiBranchToken(): string | null {
+  return activeBranchToken;
+}
+
+export function setOnBranchUnauthorized(cb: (() => void) | null) {
+  onBranchUnauthorizedCallback = cb;
+}
+
+export function buildBranchHeaders(includeJson = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (activeBranchToken) {
+    headers['Authorization'] = `Bearer ${activeBranchToken}`;
+  }
+  return headers;
+}
+
+function handleMaybeUnauthorized(res: Response) {
+  if (res.status === 401 && activeBranchToken) {
+    onBranchUnauthorizedCallback?.();
   }
 }
 
@@ -245,7 +280,11 @@ export async function apiFetchRecordsWithMeta(
   const local = prunePreResetRecords(loadLocalRecords(), localEpoch, localResetDate);
 
   try {
-    const res = await fetch(`${base}/api/records`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/records`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -327,9 +366,10 @@ export async function apiSaveRecordWithMeta(record: DayRecord): Promise<SaveReco
   try {
     const res = await fetch(`${base}/api/records`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(recordWithBranch),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -416,7 +456,9 @@ export async function apiDeleteRecord(recordKey: string): Promise<boolean> {
   try {
     const res = await fetch(`${base}/api/records/${encodeURIComponent(recordKey)}`, {
       method: 'DELETE',
+      headers: buildBranchHeaders(),
     });
+    handleMaybeUnauthorized(res);
     return res.ok;
   } catch (err) {
     return false;
@@ -427,7 +469,11 @@ export async function apiDeleteRecord(recordKey: string): Promise<boolean> {
 export async function apiFetchColumns(): Promise<BatteryColumn[]> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/columns`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/columns`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -448,9 +494,10 @@ export async function apiSaveColumns(columns: BatteryColumn[]): Promise<BatteryC
   try {
     const res = await fetch(`${base}/api/columns`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(columns),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) return json.data;
@@ -465,7 +512,11 @@ export async function apiSaveColumns(columns: BatteryColumn[]): Promise<BatteryC
 export async function apiFetchTeam(): Promise<TeamMember[]> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/team`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/team`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -486,9 +537,10 @@ export async function apiSaveTeam(team: TeamMember[]): Promise<TeamMember[]> {
   try {
     const res = await fetch(`${base}/api/team`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(team),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) return json.data;
@@ -508,11 +560,12 @@ export async function apiLogWhatsAppDispatch(payload: {
 }) {
   const base = getApiBaseUrl();
   try {
-    await fetch(`${base}/api/whatsapp/dispatch`, {
+    const res = await fetch(`${base}/api/whatsapp/dispatch`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(payload),
     });
+    handleMaybeUnauthorized(res);
   } catch (err) {
     console.warn('[API] WhatsApp log deferred:', err);
   }
@@ -589,7 +642,11 @@ export async function apiFetchSerials(
   const local = prunePreResetSerials(loadLocalSerials(), localEpoch, localResetDate);
 
   try {
-    const res = await fetch(`${base}/api/serials`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/serials`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -634,9 +691,10 @@ export async function apiSaveSerial(item: BatterySerialItem): Promise<BatterySer
   try {
     const res = await fetch(`${base}/api/serials`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(normalized),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -667,9 +725,10 @@ export async function apiBulkSaveSerials(items: BatterySerialItem[]): Promise<Ba
   try {
     const res = await fetch(`${base}/api/serials/bulk`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(normalizedItems),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -698,9 +757,10 @@ export async function flushPendingSerialsToServer(
   try {
     const res = await fetch(`${base}/api/serials/bulk`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(items),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success) {
@@ -730,7 +790,9 @@ export async function apiDeleteSerial(serialNo: string): Promise<boolean> {
   try {
     const res = await fetch(`${base}/api/serials/${encodeURIComponent(clean)}`, {
       method: 'DELETE',
+      headers: buildBranchHeaders(),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       return Boolean(json.success);
@@ -760,9 +822,10 @@ export async function apiBackupPermanentCodebase(
   try {
     const res = await fetch(`${base}/api/backup-permanent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify({ records, serials }),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       return await res.json();
     }
@@ -1284,6 +1347,166 @@ export async function apiDownloadAdminFile(
   }
 }
 
+// =========================================================================
+// Branch / Master Access Login & Real-Time Admin Password Manager APIs
+// =========================================================================
+
+export interface BranchLoginResult {
+  success: boolean;
+  token?: string;
+  session?: BranchAuthSession;
+  error?: string;
+}
+
+export interface GitHubSyncStatusInfo {
+  configured: boolean;
+  repo: string | null;
+  branch: string;
+}
+
+export interface GitHubCommitOutcome {
+  configured: boolean;
+  synced: boolean;
+  repo?: string;
+  branch?: string;
+  commitSha?: string;
+  commitUrl?: string;
+  message: string;
+}
+
+export interface BranchCredentialsListResponse {
+  success: boolean;
+  credentials?: BranchCredentialSummary[];
+  githubStatus?: GitHubSyncStatusInfo;
+  unauthorized?: boolean;
+  error?: string;
+}
+
+export async function apiBranchLogin(loginId: string, password: string): Promise<BranchLoginResult> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/auth/branch-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginId, password }),
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed) return parsed;
+    return {
+      success: false,
+      error: `Authentication service unavailable (HTTP ${res.status})`,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Login request failed' };
+  }
+}
+
+export async function apiGetBranchSession(token: string): Promise<{
+  success: boolean;
+  authenticated: boolean;
+  session: BranchAuthSession | null;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/auth/branch-session`, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return { success: false, authenticated: false, session: null };
+}
+
+export async function apiBranchLogout(token: string | null): Promise<void> {
+  if (!token) return;
+  const base = getApiBaseUrl();
+  try {
+    await fetch(`${base}/api/auth/branch-logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {}
+}
+
+export async function apiFetchBranchCredentials(
+  adminToken: string
+): Promise<BranchCredentialsListResponse> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/branch-credentials`, {
+      cache: 'no-store',
+      headers: buildAdminHeaders(adminToken),
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: parsed?.error || 'Session expired' };
+    }
+    if (parsed) return parsed;
+    return { success: false, error: `Failed to fetch credentials (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to fetch credentials' };
+  }
+}
+
+export async function apiUpdateBranchPassword(
+  loginId: string,
+  newPassword: string,
+  adminToken: string
+): Promise<{
+  success: boolean;
+  credential?: BranchCredentialSummary;
+  githubSync?: GitHubCommitOutcome;
+  unauthorized?: boolean;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/branch-credentials/update`, {
+      method: 'POST',
+      headers: buildAdminHeaders(adminToken, true),
+      body: JSON.stringify({ loginId, newPassword }),
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: parsed?.error || 'Session expired' };
+    }
+    if (parsed) return parsed;
+    return { success: false, error: `Password update failed (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Password update failed' };
+  }
+}
+
+export async function apiBulkUpdateBranchPasswords(
+  updates: Array<{ loginId: string; newPassword: string }>,
+  adminToken: string
+): Promise<{
+  success: boolean;
+  updatedIds?: string[];
+  credentials?: BranchCredentialSummary[];
+  githubSync?: GitHubCommitOutcome;
+  unauthorized?: boolean;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/branch-credentials/bulk-update`, {
+      method: 'POST',
+      headers: buildAdminHeaders(adminToken, true),
+      body: JSON.stringify({ updates }),
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: parsed?.error || 'Session expired' };
+    }
+    if (parsed) return parsed;
+    return { success: false, error: `Bulk password update failed (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Bulk password update failed' };
+  }
+}
+
 const STORAGE_KEY_CHARGERS = 'charger_stock_records_v1';
 
 export function loadLocalChargers(): Record<string, any> {
@@ -1303,7 +1526,11 @@ export function saveLocalChargers(data: Record<string, any>) {
 export async function apiFetchChargers(): Promise<Record<string, any>> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/chargers`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/chargers`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -1337,9 +1564,10 @@ export async function apiSaveChargerRecord(
   try {
     const res = await fetch(`${base}/api/chargers`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify({ branchId, date, record }),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) return json.data;
@@ -1369,7 +1597,11 @@ export function saveLocalVehicles(data: Record<string, any>) {
 export async function apiFetchVehicles(): Promise<Record<string, any>> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/vehicles`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/vehicles`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -1403,9 +1635,10 @@ export async function apiSaveVehicleRecord(
   try {
     const res = await fetch(`${base}/api/vehicles`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify({ branchId, date, record }),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) return json.data;
@@ -1439,7 +1672,11 @@ export function saveLocalTransfers(transfers: BranchTransfer[]) {
 export async function apiFetchTransfers(): Promise<BranchTransfer[]> {
   const base = getApiBaseUrl();
   try {
-    const res = await fetch(`${base}/api/transfers`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/transfers`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
@@ -1472,9 +1709,10 @@ export async function apiCreateTransfer(payload: {
   try {
     const res = await fetch(`${base}/api/transfers`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify(payload),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.transfers)) {
@@ -1496,9 +1734,10 @@ export async function apiReceiveTransfers(
   try {
     const res = await fetch(`${base}/api/transfers/receive`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildBranchHeaders(true),
       body: JSON.stringify({ selections, receivedBy }),
     });
+    handleMaybeUnauthorized(res);
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
@@ -1514,6 +1753,7 @@ export async function apiReceiveTransfers(
 
 // Real-Time Cloud Synchronization Callback Interface
 export interface RealtimeSyncCallbacks {
+  branchToken?: string | null;
   onRecordUpdated?: (record: DayRecord) => void;
   onRecordDeleted?: (date: string) => void;
   onSerialUpdated?: (serial: BatterySerialItem) => void;
@@ -1524,6 +1764,7 @@ export interface RealtimeSyncCallbacks {
   onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
   onVehicleUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
   onTransfersUpdated?: (transfers: BranchTransfer[]) => void;
+  onBranchCredentialsUpdated?: (payload: { loginId: string; version: number }) => void;
   onFactoryReset?: (payload: { resetEpoch?: string; todayIST?: string }) => void;
   onConnectionChange?: (connected: boolean) => void;
   onReconnected?: () => void;
@@ -1648,6 +1889,11 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
           callbacks.onTransfersUpdated?.(payload);
         }
         break;
+      case 'BRANCH_CREDENTIALS_UPDATED':
+        if (payload?.loginId) {
+          callbacks.onBranchCredentialsUpdated?.(payload);
+        }
+        break;
       case 'PERMANENT_SYNC_COMPLETE':
         callbacks.onReconnected?.();
         break;
@@ -1661,8 +1907,10 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
   // 2. Connect to Server-Sent Events stream from Cloud backend
   function connectSSE() {
     if (isClosed) return;
+    const token = callbacks.branchToken ?? activeBranchToken;
+    if (!token) return;
     try {
-      const url = `${base}/api/realtime`;
+      const url = `${base}/api/realtime?branchToken=${encodeURIComponent(token)}`;
       eventSource = new EventSource(url);
 
       eventSource.onopen = () => {

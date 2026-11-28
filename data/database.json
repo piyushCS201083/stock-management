@@ -312,7 +312,7 @@
   "chargerRecords": {},
   "vehicleRecords": {},
   "branchTransfers": [],
-  "resetEpoch": "2026-11-27T17:30:51.853Z",
+  "resetEpoch": "2026-11-27T14:00:12.202Z",
   "resetDateIST": "27-11-2026",
   "logs": [
     {
@@ -320,5 +320,61 @@
       "timestamp": "2026-11-27T17:30:51.853Z",
       "details": "Factory reset all stock data and history; starting fresh from 27-11-2026"
     }
-  ]
+  ],
+  "adminCredentials": {
+    "salt": "8ebb4a037a9abe7ddf9e8feb9fd889bb",
+    "claimedAt": "2026-11-27T17:10:48.200Z",
+    "adminLabel": "Piyush Shivhare (Owner & Admin)",
+    "passwordHash": "5ff559e8c62e7ff6e676becef577943d7a8d8dde0420182fbd30138aa930639ea361b424791ef4e586611edb81924590c53e41786236b7963ece7face6d84429"
+  },
+  "branchCredentials": {
+    "administrator": {
+      "loginId": "administrator",
+      "passwordHash": "1c000d14d10b880496ac67484b68f00fe80e8915a616ab6eff8b6372cc45a7c9a33b5f142f1657f5e249749a26b9e9117d519c21a48b1c5ba38e1e94ccda1b91",
+      "salt": "919a77eaf71f7b810f6065f4c2c6ee1c",
+      "isCustomPassword": false,
+      "version": 1,
+      "updatedAt": "2026-11-28T08:23:51.256Z"
+    },
+    "c": {
+      "loginId": "c",
+      "passwordHash": "1267834b2d6d880aab3079da0ad585f04617cdd1612f85ad42008424a21577b3e658040c3fb1e8d47c7e06cde585af2ae1ad33349d4b2c82a44b5d5d7c73fefa",
+      "salt": "78048b34dc8f18ec959ac397455e81c5",
+      "isCustomPassword": false,
+      "version": 1,
+      "updatedAt": "2026-11-28T08:23:51.256Z"
+    },
+    "m": {
+      "loginId": "m",
+      "passwordHash": "61cbd6dd0e2c4948ae7c95112a02cf1b36ef4a085884d7aefb415f3560623371b236c38748f06e95c91ccb8e6893a90fc2d07c7254132679149324063d68b9db",
+      "salt": "b5d89fbb9b187ec2156f9bc5f045f4f1",
+      "isCustomPassword": false,
+      "version": 1,
+      "updatedAt": "2026-11-28T08:23:51.256Z"
+    },
+    "y": {
+      "loginId": "y",
+      "passwordHash": "5a066aebe0ed892756d1407a08b66a8d4da427957e4eac4788f39b79e8392e8c523a4afaeca53becff0584523a09ab1348c35d7f0750cb05e410e01fcc9c190c",
+      "salt": "ad20223ac84d0349e2ba972b0559946f",
+      "isCustomPassword": false,
+      "version": 1,
+      "updatedAt": "2026-11-28T08:23:51.256Z"
+    },
+    "s": {
+      "loginId": "s",
+      "passwordHash": "a4b85f58f80e8a65f618457517eeb2c70fc9bd4a32e629da572cad0af5b0859dbbed111616f3ea1ab751f7af3e262c73810c54bd5ca942876d2d1b57355f1d3b",
+      "salt": "4c2662f72d534a6fdc8ce57b1eb2f494",
+      "isCustomPassword": false,
+      "version": 1,
+      "updatedAt": "2026-11-28T08:23:51.256Z"
+    },
+    "v": {
+      "loginId": "v",
+      "passwordHash": "09e6ca6fb2fcae0f9f8b8f6fc19ec9de96a01a43244256abd6faa407362585bd47d1a396c6fd1cde98f3d37e201319b188e37b3791e1211826ae18a123f2b62a",
+      "salt": "733fe250abc1c33971428d2d18655412",
+      "isCustomPassword": false,
+      "version": 1,
+      "updatedAt": "2026-11-28T08:23:51.256Z"
+    }
+  }
 }

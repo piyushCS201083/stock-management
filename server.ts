@@ -48,7 +48,17 @@ import {
   verifyAdminPassword,
   changeClaimedAdminPassword,
   getBackendAnalyticsSnapshot,
+  verifyBranchLoginPassword,
+  getBranchCredentialsSummary,
+  getBranchCredentialVersion,
+  updateBranchLoginPassword,
+  bulkUpdateBranchLoginPasswords,
 } from './server/db.ts';
+import {
+  BRANCHES,
+  DEFAULT_BRANCH_ID,
+  parseBatteryRecordKey,
+} from './src/types/stock.ts';
 import {
   getCloudinaryStatus,
   listCloudSpaceBackups,
@@ -155,17 +165,174 @@ function requireAdmin(
   next();
 }
 
+// Branch & Master Access Session Tokens
+const BRANCH_SIGNING_SECRET =
+  (process.env.BRANCH_SESSION_SECRET || '').trim() || ADMIN_SIGNING_SECRET;
+const BRANCH_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+const revokedBranchJtis = new Set<string>();
+
+interface BranchTokenClaims {
+  jti: string;
+  loginId: string;
+  role: 'branch' | 'master';
+  branchId: string | null;
+  allowedBranchIds: string[];
+  label: string;
+  credVersion: number;
+  iat: number;
+  exp: number;
+}
+
+export interface BranchAccessContext {
+  loginId: string;
+  role: 'branch' | 'master';
+  branchId: string | null;
+  allowedBranchIds: string[];
+  label: string;
+}
+
+function createBranchToken(
+  payload: Omit<BranchTokenClaims, 'jti' | 'iat' | 'exp'>
+): { token: string; exp: number } {
+  const iat = Date.now();
+  const exp = iat + BRANCH_TOKEN_TTL_MS;
+  const fullClaims: BranchTokenClaims = {
+    jti: crypto.randomBytes(16).toString('hex'),
+    ...payload,
+    iat,
+    exp,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(fullClaims), 'utf-8').toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', BRANCH_SIGNING_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+  return { token: `${payloadB64}.${sig}`, exp };
+}
+
+async function verifyBranchTokenAsync(token?: string): Promise<BranchTokenClaims | null> {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payloadB64, sigB64] = parts;
+  if (!payloadB64 || !sigB64) return null;
+
+  const expectedSig = crypto
+    .createHmac('sha256', BRANCH_SIGNING_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+
+  const bufA = Buffer.from(sigB64, 'utf-8');
+  const bufB = Buffer.from(expectedSig, 'utf-8');
+  if (bufA.length !== bufB.length || !crypto.timingSafeEqual(bufA, bufB)) {
+    return null;
+  }
+
+  try {
+    const claims = JSON.parse(
+      Buffer.from(payloadB64, 'base64url').toString('utf-8')
+    ) as BranchTokenClaims;
+    if (!claims || !claims.loginId || !Array.isArray(claims.allowedBranchIds) || !claims.exp || claims.exp < Date.now()) {
+      return null;
+    }
+    if (claims.jti && revokedBranchJtis.has(claims.jti)) {
+      return null;
+    }
+    const currentVer = await getBranchCredentialVersion(claims.loginId);
+    if (Number(claims.credVersion || 0) < currentVer) {
+      return null;
+    }
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveBranchAccessFromToken(token?: string): Promise<BranchAccessContext | null> {
+  if (!token) return null;
+  const branchClaims = await verifyBranchTokenAsync(token);
+  if (branchClaims) {
+    return {
+      loginId: branchClaims.loginId,
+      role: branchClaims.role,
+      branchId: branchClaims.branchId,
+      allowedBranchIds: branchClaims.allowedBranchIds,
+      label: branchClaims.label,
+    };
+  }
+  const adminClaims = verifyAdminToken(token);
+  if (adminClaims) {
+    return {
+      loginId: 'administrator',
+      role: 'master',
+      branchId: null,
+      allowedBranchIds: BRANCHES.map((b) => b.id),
+      label: adminClaims.sub || 'Admin Master',
+    };
+  }
+  return null;
+}
+
+async function requireBranchAccess(
+  req: express.Request & { branchAccess?: BranchAccessContext },
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const token = extractBearerToken(req);
+  const access = await resolveBranchAccessFromToken(token);
+  if (!access) {
+    return res.status(401).json({
+      success: false,
+      branchAuthRequired: true,
+      error: 'Branch or master login required',
+    });
+  }
+  req.branchAccess = access;
+  next();
+}
+
+function isBranchAllowed(access: BranchAccessContext | undefined, branchId?: string | null): boolean {
+  if (!access) return false;
+  if (access.role === 'master') return true;
+  const target = branchId && branchId.trim() ? branchId.trim() : DEFAULT_BRANCH_ID;
+  return access.allowedBranchIds.includes(target);
+}
+
 // Real-Time Server-Sent Events (SSE) Hub
 interface RealtimeClient {
   id: string;
   res: express.Response;
+  allowedBranchIds: string[];
 }
 const realtimeClients: RealtimeClient[] = [];
 
-function broadcastRealtime(event: string, payload: any) {
-  const message = `data: ${JSON.stringify({ event, payload, timestamp: new Date().toISOString() })}\n\n`;
+function broadcastRealtime(event: string, payload: any, targetBranchIds?: string[]) {
+  const timestamp = new Date().toISOString();
   for (let i = realtimeClients.length - 1; i >= 0; i--) {
     const client = realtimeClients[i];
+    if (
+      targetBranchIds &&
+      targetBranchIds.length > 0 &&
+      !targetBranchIds.some((b) => client.allowedBranchIds.includes(b))
+    ) {
+      continue;
+    }
+
+    let scopedPayload = payload;
+    if (event === 'TRANSFERS_UPDATED' && Array.isArray(payload)) {
+      scopedPayload = payload.filter(
+        (t: any) =>
+          client.allowedBranchIds.includes(t?.fromBranchId) ||
+          client.allowedBranchIds.includes(t?.toBranchId)
+      );
+    } else if (event === 'SERIALS_BULK_UPDATED' && Array.isArray(payload)) {
+      scopedPayload = payload.filter((s: any) =>
+        client.allowedBranchIds.includes(s?.branchId || DEFAULT_BRANCH_ID)
+      );
+      if (scopedPayload.length === 0) continue;
+    }
+
+    const message = `data: ${JSON.stringify({ event, payload: scopedPayload, timestamp })}\n\n`;
     try {
       client.res.write(message);
     } catch {
@@ -214,17 +381,28 @@ initDb().catch((err) => {
   console.error('[Server] DBMS initialization error:', err);
 });
 
-// Real-Time SSE Stream Endpoint
-app.get('/api/realtime', (req, res) => {
+// Real-Time SSE Stream Endpoint (branch-scoped)
+app.get('/api/realtime', async (req, res) => {
+  const queryToken =
+    typeof req.query.branchToken === 'string' ? req.query.branchToken.trim() : undefined;
+  const token = extractBearerToken(req) || queryToken;
+  const access = await resolveBranchAccessFromToken(token);
+  if (!access) {
+    return res.status(401).json({ success: false, error: 'Authentication required for live stream' });
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders?.();
 
   const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-  const client: RealtimeClient = { id: clientId, res };
+  const client: RealtimeClient = {
+    id: clientId,
+    res,
+    allowedBranchIds: access.allowedBranchIds,
+  };
   realtimeClients.push(client);
 
   res.write(
@@ -450,13 +628,163 @@ app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
   }
 });
 
-// Stock Records CRUD
-app.get('/api/records', async (req, res) => {
+// =========================================================================
+// Branch & Master Access Authentication + Password Manager Routes
+// =========================================================================
+
+app.post('/api/auth/branch-login', async (req, res) => {
   try {
-    const records = await getAllRecords();
+    const { loginId, password } = req.body || {};
+    if (typeof loginId !== 'string' || !loginId.trim() || typeof password !== 'string' || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Login ID and password are required.',
+      });
+    }
+
+    const result = await verifyBranchLoginPassword(loginId, password);
+    if (!result.valid || !result.account) {
+      await logAudit('BRANCH_LOGIN_FAILED', {
+        loginId: loginId.trim().toLowerCase(),
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid Login ID or password.',
+      });
+    }
+
+    const { token, exp } = createBranchToken({
+      loginId: result.account.loginId,
+      role: result.account.role,
+      branchId: result.account.branchId,
+      allowedBranchIds: result.account.allowedBranchIds,
+      label: result.account.label,
+      credVersion: result.version || 1,
+    });
+
+    await logAudit('BRANCH_LOGIN_SUCCESS', {
+      loginId: result.account.loginId,
+      role: result.account.role,
+      branchId: result.account.branchId,
+      timestamp: new Date().toISOString(),
+    });
+
     res.json({
       success: true,
-      data: records,
+      token,
+      session: {
+        loginId: result.account.loginId,
+        role: result.account.role,
+        branchId: result.account.branchId,
+        allowedBranchIds: result.account.allowedBranchIds,
+        label: result.account.label,
+        expiresAt: new Date(exp).toISOString(),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/auth/branch-session', async (req, res) => {
+  try {
+    const token = extractBearerToken(req);
+    const claims = await verifyBranchTokenAsync(token);
+    if (!claims) {
+      return res.json({ success: true, authenticated: false, session: null });
+    }
+    res.json({
+      success: true,
+      authenticated: true,
+      session: {
+        loginId: claims.loginId,
+        role: claims.role,
+        branchId: claims.branchId,
+        allowedBranchIds: claims.allowedBranchIds,
+        label: claims.label,
+        expiresAt: new Date(claims.exp).toISOString(),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/branch-logout', async (req, res) => {
+  const token = extractBearerToken(req);
+  const claims = await verifyBranchTokenAsync(token);
+  if (claims?.jti) {
+    revokedBranchJtis.add(claims.jti);
+    if (revokedBranchJtis.size > 2000) {
+      const oldest = revokedBranchJtis.values().next().value;
+      if (oldest) revokedBranchJtis.delete(oldest);
+    }
+  }
+  res.json({ success: true });
+});
+
+app.get('/api/admin/branch-credentials', requireAdmin, async (req, res) => {
+  try {
+    const data = await getBranchCredentialsSummary();
+    res.json({ success: true, ...data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/branch-credentials/update', requireAdmin, async (req, res) => {
+  try {
+    const { loginId, newPassword } = req.body || {};
+    const result = await updateBranchLoginPassword(loginId, newPassword);
+    broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
+      loginId: result.summary.loginId,
+      version: result.summary.version,
+    });
+    res.json({
+      success: true,
+      credential: result.summary,
+      githubSync: result.githubSync,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/branch-credentials/bulk-update', requireAdmin, async (req, res) => {
+  try {
+    const { updates } = req.body || {};
+    const result = await bulkUpdateBranchLoginPasswords(updates);
+    result.updatedIds.forEach((id) => {
+      const summary = result.credentials.find((c) => c.loginId === id);
+      broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
+        loginId: id,
+        version: summary?.version || 1,
+      });
+    });
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Stock Records CRUD (Branch-Scoped)
+app.get('/api/records', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const records = await getAllRecords();
+    const scoped: Record<string, any> = {};
+    Object.entries(records).forEach(([key, rec]) => {
+      const bId = rec?.branchId || parseBatteryRecordKey(key).branchId || DEFAULT_BRANCH_ID;
+      if (isBranchAllowed(req.branchAccess, bId)) {
+        scoped[key] = rec;
+      }
+    });
+    res.json({
+      success: true,
+      data: scoped,
       resetEpoch: getResetEpoch(),
       resetDateIST: getResetDateIST(),
     });
@@ -465,8 +793,12 @@ app.get('/api/records', async (req, res) => {
   }
 });
 
-app.get('/api/records/:date', async (req, res) => {
+app.get('/api/records/:date', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
+    const requestedBranch = parseBatteryRecordKey(req.params.date).branchId;
+    if (!isBranchAllowed(req.branchAccess, requestedBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
     const record = await getRecord(req.params.date);
     if (!record) {
       return res.status(404).json({ success: false, error: 'Record not found' });
@@ -477,15 +809,19 @@ app.get('/api/records/:date', async (req, res) => {
   }
 });
 
-app.post('/api/records', async (req, res) => {
+app.post('/api/records', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const record = req.body;
     if (!record || !record.date) {
       return res.status(400).json({ success: false, error: 'Date is required' });
     }
+    const targetBranch = record.branchId || DEFAULT_BRANCH_ID;
+    if (!isBranchAllowed(req.branchAccess, targetBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
     const result = await saveRecordWithStatus(record);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('RECORD_UPDATED', result.record);
+    broadcastRealtime('RECORD_UPDATED', result.record, [targetBranch]);
     res.json({
       success: true,
       data: result.record,
@@ -498,11 +834,15 @@ app.post('/api/records', async (req, res) => {
   }
 });
 
-app.delete('/api/records/:date', async (req, res) => {
+app.delete('/api/records/:date', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
+    const targetBranch = parseBatteryRecordKey(req.params.date).branchId;
+    if (!isBranchAllowed(req.branchAccess, targetBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
     const success = await deleteRecord(req.params.date);
     if (success) {
-      broadcastRealtime('RECORD_DELETED', { date: req.params.date });
+      broadcastRealtime('RECORD_DELETED', { date: req.params.date }, [targetBranch]);
     }
     res.json({ success });
   } catch (err: any) {
@@ -511,7 +851,7 @@ app.delete('/api/records/:date', async (req, res) => {
 });
 
 // Battery Columns
-app.get('/api/columns', async (req, res) => {
+app.get('/api/columns', requireBranchAccess, async (req, res) => {
   try {
     const columns = await getColumns();
     res.json({ success: true, data: columns });
@@ -520,7 +860,7 @@ app.get('/api/columns', async (req, res) => {
   }
 });
 
-app.post('/api/columns', async (req, res) => {
+app.post('/api/columns', requireBranchAccess, async (req, res) => {
   try {
     const columns = req.body;
     if (!Array.isArray(columns)) {
@@ -541,7 +881,7 @@ app.post('/api/columns', async (req, res) => {
 });
 
 // Team Members
-app.get('/api/team', async (req, res) => {
+app.get('/api/team', requireBranchAccess, async (req, res) => {
   try {
     const team = await getTeamMembers();
     res.json({ success: true, data: team });
@@ -550,7 +890,7 @@ app.get('/api/team', async (req, res) => {
   }
 });
 
-app.post('/api/team', async (req, res) => {
+app.post('/api/team', requireBranchAccess, async (req, res) => {
   try {
     const team = req.body;
     if (!Array.isArray(team)) {
@@ -570,13 +910,20 @@ app.post('/api/team', async (req, res) => {
   }
 });
 
-// Battery Serial & Batch Tracker Routes
-app.get('/api/serials', async (req, res) => {
+// Battery Serial & Batch Tracker Routes (Branch-Scoped)
+app.get('/api/serials', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const serials = await getAllSerials();
+    const scoped: Record<string, any> = {};
+    Object.entries(serials).forEach(([k, item]) => {
+      const bId = item?.branchId || DEFAULT_BRANCH_ID;
+      if (isBranchAllowed(req.branchAccess, bId)) {
+        scoped[k] = item;
+      }
+    });
     res.json({
       success: true,
-      data: serials,
+      data: scoped,
       resetEpoch: getResetEpoch(),
       resetDateIST: getResetDateIST(),
     });
@@ -585,11 +932,14 @@ app.get('/api/serials', async (req, res) => {
   }
 });
 
-app.get('/api/serials/:serialNo', async (req, res) => {
+app.get('/api/serials/:serialNo', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const item = await getSerial(req.params.serialNo);
     if (!item) {
       return res.status(404).json({ success: false, error: 'Serial not found' });
+    }
+    if (!isBranchAllowed(req.branchAccess, item.branchId || DEFAULT_BRANCH_ID)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch serial' });
     }
     res.json({ success: true, data: item });
   } catch (err: any) {
@@ -597,15 +947,19 @@ app.get('/api/serials/:serialNo', async (req, res) => {
   }
 });
 
-app.post('/api/serials', async (req, res) => {
+app.post('/api/serials', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const item = req.body;
     if (!item || !item.serialNo) {
       return res.status(400).json({ success: false, error: 'serialNo is required' });
     }
+    const targetBranch = item.branchId || DEFAULT_BRANCH_ID;
+    if (!isBranchAllowed(req.branchAccess, targetBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
     const saved = await saveSerial(item);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('SERIAL_UPDATED', saved);
+    broadcastRealtime('SERIAL_UPDATED', saved, [targetBranch]);
     res.json({
       success: true,
       data: saved,
@@ -617,15 +971,23 @@ app.post('/api/serials', async (req, res) => {
   }
 });
 
-app.post('/api/serials/bulk', async (req, res) => {
+app.post('/api/serials/bulk', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const items = req.body;
     if (!Array.isArray(items)) {
       return res.status(400).json({ success: false, error: 'Items must be an array' });
     }
+    const targetBranches = new Set<string>();
+    for (const item of items) {
+      const bId = item?.branchId || DEFAULT_BRANCH_ID;
+      if (!isBranchAllowed(req.branchAccess, bId)) {
+        return res.status(403).json({ success: false, error: `Access denied for branch ${bId}` });
+      }
+      targetBranches.add(bId);
+    }
     const saved = await bulkSaveSerials(items);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('SERIALS_BULK_UPDATED', saved);
+    broadcastRealtime('SERIALS_BULK_UPDATED', saved, Array.from(targetBranches));
     res.json({
       success: true,
       data: saved,
@@ -637,11 +999,16 @@ app.post('/api/serials/bulk', async (req, res) => {
   }
 });
 
-app.delete('/api/serials/:serialNo', async (req, res) => {
+app.delete('/api/serials/:serialNo', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
+    const existing = await getSerial(req.params.serialNo);
+    const bId = existing?.branchId || DEFAULT_BRANCH_ID;
+    if (existing && !isBranchAllowed(req.branchAccess, bId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch serial' });
+    }
     const success = await deleteSerial(req.params.serialNo);
     if (success) {
-      broadcastRealtime('SERIAL_DELETED', { serialNo: req.params.serialNo });
+      broadcastRealtime('SERIAL_DELETED', { serialNo: req.params.serialNo }, [bId]);
     }
     res.json({ success });
   } catch (err: any) {
@@ -649,25 +1016,35 @@ app.delete('/api/serials/:serialNo', async (req, res) => {
   }
 });
 
-// Charger Stock Register Routes
-app.get('/api/chargers', async (req, res) => {
+// Charger Stock Register Routes (Branch-Scoped)
+app.get('/api/chargers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const chargers = await getChargerRecords();
-    res.json({ success: true, data: chargers });
+    const scoped: Record<string, any> = {};
+    Object.entries(chargers || {}).forEach(([k, val]: [string, any]) => {
+      const bId = val?.branchId || parseBatteryRecordKey(k).branchId || DEFAULT_BRANCH_ID;
+      if (isBranchAllowed(req.branchAccess, bId)) {
+        scoped[k] = val;
+      }
+    });
+    res.json({ success: true, data: scoped });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-app.post('/api/chargers', async (req, res) => {
+app.post('/api/chargers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const { branchId, date, record } = req.body || {};
     if (!branchId || !date || !record) {
       return res.status(400).json({ success: false, error: 'branchId, date, and record are required' });
+    }
+    if (!isBranchAllowed(req.branchAccess, branchId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
     }
     const saved = await saveChargerRecord(branchId, date, record);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('CHARGER_UPDATED', saved);
+    broadcastRealtime('CHARGER_UPDATED', saved, [branchId]);
     res.json({
       success: true,
       data: saved,
@@ -679,25 +1056,35 @@ app.post('/api/chargers', async (req, res) => {
   }
 });
 
-// Vehicle Stock Register Routes
-app.get('/api/vehicles', async (req, res) => {
+// Vehicle Stock Register Routes (Branch-Scoped)
+app.get('/api/vehicles', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const vehicles = await getVehicleRecords();
-    res.json({ success: true, data: vehicles });
+    const scoped: Record<string, any> = {};
+    Object.entries(vehicles || {}).forEach(([k, val]: [string, any]) => {
+      const bId = val?.branchId || parseBatteryRecordKey(k).branchId || DEFAULT_BRANCH_ID;
+      if (isBranchAllowed(req.branchAccess, bId)) {
+        scoped[k] = val;
+      }
+    });
+    res.json({ success: true, data: scoped });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-app.post('/api/vehicles', async (req, res) => {
+app.post('/api/vehicles', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const { branchId, date, record } = req.body || {};
     if (!branchId || !date || !record) {
       return res.status(400).json({ success: false, error: 'branchId, date, and record are required' });
     }
+    if (!isBranchAllowed(req.branchAccess, branchId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
     const saved = await saveVehicleRecord(branchId, date, record);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('VEHICLE_UPDATED', saved);
+    broadcastRealtime('VEHICLE_UPDATED', saved, [branchId]);
     res.json({
       success: true,
       data: saved,
@@ -709,17 +1096,20 @@ app.post('/api/vehicles', async (req, res) => {
   }
 });
 
-// Inter-Branch Stock Transfers & Receive Goods Notifications
-app.get('/api/transfers', async (req, res) => {
+// Inter-Branch Stock Transfers & Receive Goods Notifications (Branch-Scoped)
+app.get('/api/transfers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const transfers = await getBranchTransfers();
-    res.json({ success: true, data: transfers });
+    const scoped = transfers.filter(
+      (t) => isBranchAllowed(req.branchAccess, t.fromBranchId) || isBranchAllowed(req.branchAccess, t.toBranchId)
+    );
+    res.json({ success: true, data: scoped });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-app.post('/api/transfers', async (req, res) => {
+app.post('/api/transfers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const body = req.body || {};
     if (!body.fromBranchId || !body.toBranchId || !body.date || !Array.isArray(body.items) || body.items.length === 0) {
@@ -728,13 +1118,18 @@ app.post('/api/transfers', async (req, res) => {
         error: 'fromBranchId, toBranchId, date, and non-empty items array are required',
       });
     }
+    if (!isBranchAllowed(req.branchAccess, body.fromBranchId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for sending from this branch' });
+    }
     const result = await createBranchTransfer(body);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('TRANSFERS_UPDATED', result.transfers);
+    broadcastRealtime('TRANSFERS_UPDATED', result.transfers, [body.fromBranchId, body.toBranchId]);
     res.json({
       success: true,
       data: result.created,
-      transfers: result.transfers,
+      transfers: result.transfers.filter(
+        (t) => isBranchAllowed(req.branchAccess, t.fromBranchId) || isBranchAllowed(req.branchAccess, t.toBranchId)
+      ),
       storage,
       persistedToRemote: storage !== 'local_file',
     });
@@ -743,18 +1138,32 @@ app.post('/api/transfers', async (req, res) => {
   }
 });
 
-app.post('/api/transfers/receive', async (req, res) => {
+app.post('/api/transfers/receive', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const { selections, receivedBy } = req.body || {};
     if (!Array.isArray(selections) || selections.length === 0) {
       return res.status(400).json({ success: false, error: 'selections array is required' });
     }
+    const existingTransfers = await getBranchTransfers();
+    for (const sel of selections) {
+      const trf = existingTransfers.find((t) => t.id === sel.transferId);
+      if (trf && !isBranchAllowed(req.branchAccess, trf.toBranchId)) {
+        return res.status(403).json({ success: false, error: 'Only the receiving branch or master can accept this transfer' });
+      }
+    }
     const result = await receiveBranchTransfers(selections, receivedBy);
     const storage = getActiveStorageTarget();
-    broadcastRealtime('TRANSFERS_UPDATED', result.transfers);
+    const affectedBranches = Array.from(
+      new Set(
+        result.newlyReceived.flatMap((n) => [n.transfer.fromBranchId, n.transfer.toBranchId])
+      )
+    );
+    broadcastRealtime('TRANSFERS_UPDATED', result.transfers, affectedBranches);
     res.json({
       success: true,
-      data: result.transfers,
+      data: result.transfers.filter(
+        (t) => isBranchAllowed(req.branchAccess, t.fromBranchId) || isBranchAllowed(req.branchAccess, t.toBranchId)
+      ),
       newlyReceived: result.newlyReceived,
       storage,
       persistedToRemote: storage !== 'local_file',
@@ -764,10 +1173,21 @@ app.post('/api/transfers/receive', async (req, res) => {
   }
 });
 
-app.delete('/api/transfers/:id', async (req, res) => {
+app.delete('/api/transfers/:id', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
+    const existing = await getBranchTransfers();
+    const target = existing.find((t) => t.id === req.params.id);
+    if (
+      target &&
+      !isBranchAllowed(req.branchAccess, target.fromBranchId) &&
+      !isBranchAllowed(req.branchAccess, target.toBranchId)
+    ) {
+      return res.status(403).json({ success: false, error: 'Access denied for this transfer' });
+    }
     const transfers = await deleteBranchTransfer(req.params.id);
-    broadcastRealtime('TRANSFERS_UPDATED', transfers);
+    if (target) {
+      broadcastRealtime('TRANSFERS_UPDATED', transfers, [target.fromBranchId, target.toBranchId]);
+    }
     res.json({ success: true, data: transfers });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -935,7 +1355,7 @@ app.get('/api/cloud/excel/serials/export', requireAdmin, async (req, res) => {
 });
 
 // Automated WhatsApp Dispatch & Audit Log
-app.post('/api/whatsapp/dispatch', async (req, res) => {
+app.post('/api/whatsapp/dispatch', requireBranchAccess, async (req, res) => {
   try {
     const { date, recipients, message, imageDataUrl } = req.body;
 
@@ -962,7 +1382,7 @@ app.post('/api/whatsapp/dispatch', async (req, res) => {
 });
 
 // Battery Barcode & Serial OCR via Gemini Flash / Vision
-app.post('/api/scan-barcode-ocr', async (req, res) => {
+app.post('/api/scan-barcode-ocr', requireBranchAccess, async (req, res) => {
   try {
     const { imageBase64, mimeType = 'image/jpeg' } = req.body;
     if (!imageBase64) {

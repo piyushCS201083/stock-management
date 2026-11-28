@@ -105,6 +105,88 @@ export const DEFAULT_VEHICLE_COLUMNS: BatteryColumn[] = [
 
 export const DEFAULT_BRANCH_ID = 'chandravadni_naka';
 
+export type BranchAccessRole = 'branch' | 'master';
+
+export interface BranchLoginAccountMeta {
+  loginId: string;
+  role: BranchAccessRole;
+  branchId: string | null;
+  allowedBranchIds: string[];
+  label: string;
+  shortLabel: string;
+}
+
+export interface BranchAuthSession {
+  loginId: string;
+  role: BranchAccessRole;
+  branchId: string | null;
+  allowedBranchIds: string[];
+  label: string;
+  expiresAt: string;
+}
+
+export interface BranchCredentialSummary {
+  loginId: string;
+  role: BranchAccessRole;
+  branchId: string | null;
+  allowedBranchIds: string[];
+  label: string;
+  isCustomPassword: boolean;
+  version: number;
+  updatedAt: string;
+}
+
+export const BRANCH_LOGIN_ACCOUNTS: BranchLoginAccountMeta[] = [
+  {
+    loginId: 'administrator',
+    role: 'master',
+    branchId: null,
+    allowedBranchIds: BRANCHES.map((b) => b.id),
+    label: 'Administrator (Master — All 5 Branches)',
+    shortLabel: 'Master (All Branches)',
+  },
+  {
+    loginId: 'c',
+    role: 'branch',
+    branchId: 'chandravadni_naka',
+    allowedBranchIds: ['chandravadni_naka'],
+    label: '1 - Chandravadni Naka',
+    shortLabel: 'Chandravadni Naka',
+  },
+  {
+    loginId: 'm',
+    role: 'branch',
+    branchId: 'morar',
+    allowedBranchIds: ['morar'],
+    label: '2 - Morar Battery Factory',
+    shortLabel: 'Morar Battery Factory',
+  },
+  {
+    loginId: 'y',
+    role: 'branch',
+    branchId: 'yard_city_center',
+    allowedBranchIds: ['yard_city_center'],
+    label: '3 - Yard City Center',
+    shortLabel: 'Yard City Center',
+  },
+  {
+    loginId: 's',
+    role: 'branch',
+    branchId: 'service_center',
+    allowedBranchIds: ['service_center'],
+    label: '4 - Service Center',
+    shortLabel: 'Service Center',
+  },
+  {
+    loginId: 'v',
+    role: 'branch',
+    branchId: 'vehicle_factory',
+    allowedBranchIds: ['vehicle_factory'],
+    label: '5 - Vehicle Manufacturing Factory',
+    shortLabel: 'Vehicle Factory',
+  },
+];
+
 export function getBatteryRecordKey(branchId: string | undefined, date: string): string {
   const normalizedBranch = branchId && branchId.trim() ? branchId.trim() : DEFAULT_BRANCH_ID;
   if (normalizedBranch === DEFAULT_BRANCH_ID) {

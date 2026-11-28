@@ -28,6 +28,7 @@ import {
 interface BranchCategoryPortalProps {
   currentBranchId: string;
   currentCategoryId: StockCategoryId;
+  allowedBranchIds?: string[];
   pendingTransfersByBranch?: Record<string, number>;
   onSelectBranchAndCategory: (branchId: string, categoryId: StockCategoryId) => void;
   onClose?: () => void;
@@ -37,15 +38,43 @@ interface BranchCategoryPortalProps {
 export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
   currentBranchId,
   currentCategoryId,
+  allowedBranchIds,
   pendingTransfersByBranch = {},
   onSelectBranchAndCategory,
   onClose,
   isModal = false,
 }) => {
-  const [selectedBranchId, setSelectedBranchId] = React.useState<string>(currentBranchId || 'chandravadni_naka');
-  const [viewStep, setViewStep] = React.useState<'branches' | 'categories'>('branches');
+  const visibleBranches = React.useMemo(() => {
+    if (allowedBranchIds && allowedBranchIds.length > 0) {
+      const filtered = BRANCHES.filter((b) => allowedBranchIds.includes(b.id));
+      if (filtered.length > 0) return filtered;
+    }
+    return BRANCHES;
+  }, [allowedBranchIds]);
 
-  const selectedBranch = BRANCHES.find((b) => b.id === selectedBranchId) || BRANCHES[0];
+  const isSingleBranchLocked = visibleBranches.length === 1;
+
+  const [selectedBranchId, setSelectedBranchId] = React.useState<string>(
+    () =>
+      visibleBranches.find((b) => b.id === currentBranchId)?.id ||
+      visibleBranches[0]?.id ||
+      'chandravadni_naka'
+  );
+  const [viewStep, setViewStep] = React.useState<'branches' | 'categories'>(() =>
+    isSingleBranchLocked ? 'categories' : 'branches'
+  );
+
+  React.useEffect(() => {
+    if (isSingleBranchLocked && visibleBranches[0]) {
+      setSelectedBranchId(visibleBranches[0].id);
+      setViewStep('categories');
+    } else if (!visibleBranches.some((b) => b.id === selectedBranchId) && visibleBranches[0]) {
+      setSelectedBranchId(visibleBranches[0].id);
+    }
+  }, [visibleBranches, isSingleBranchLocked, selectedBranchId]);
+
+  const selectedBranch =
+    visibleBranches.find((b) => b.id === selectedBranchId) || visibleBranches[0] || BRANCHES[0];
 
   const getBranchIcon = (number: number) => {
     switch (number) {
@@ -94,30 +123,33 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
           </div>
 
           {/* Quick Breadcrumb Switch */}
-          {viewStep === 'categories' && (
+          {viewStep === 'categories' && !isSingleBranchLocked && (
             <button
               onClick={() => setViewStep('branches')}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded-lg transition-colors cursor-pointer self-start md:self-auto"
             >
-              <span>← All 5 Branches</span>
+              <span>← All {visibleBranches.length} Branches</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* STEP 1: Branch Selection Grid (5 Branches) */}
+      {/* STEP 1: Branch Selection Grid */}
       {viewStep === 'branches' ? (
         <div className="space-y-4">
           <div className="flex items-center justify-between px-1">
             <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
               <Layers className="w-4 h-4 text-blue-600" />
-              <span>Available Branches (5 Locations)</span>
+              <span>
+                Available Branches ({visibleBranches.length}{' '}
+                {visibleBranches.length === 1 ? 'Location' : 'Locations'})
+              </span>
             </h2>
             <span className="text-xs text-slate-500 font-medium">Click a branch to view its stock</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {BRANCHES.map((branch) => {
+            {visibleBranches.map((branch) => {
               const isSelected = branch.id === currentBranchId;
               return (
                 <div
@@ -222,12 +254,14 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                 {selectedBranch.name} — Select Inventory Category
               </h2>
             </div>
-            <button
-              onClick={() => setViewStep('branches')}
-              className="text-xs text-blue-600 hover:text-blue-800 font-bold cursor-pointer"
-            >
-              Switch Branch
-            </button>
+            {!isSingleBranchLocked && (
+              <button
+                onClick={() => setViewStep('branches')}
+                className="text-xs text-blue-600 hover:text-blue-800 font-bold cursor-pointer"
+              >
+                Switch Branch
+              </button>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">

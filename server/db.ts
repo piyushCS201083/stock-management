@@ -11,6 +11,8 @@ import {
 import type {
   BatteryColumn,
   BatterySerialItem,
+  BranchCredentialSummary,
+  BranchLoginAccountMeta,
   BranchTransfer,
   BranchTransferItem,
   DayRecord,
@@ -18,6 +20,7 @@ import type {
 } from '../src/types/stock.ts';
 import {
   BRANCHES,
+  BRANCH_LOGIN_ACCOUNTS,
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_BRANCH_ID,
   DEFAULT_TEAM_MEMBERS,
@@ -36,6 +39,11 @@ import {
   buildStockDatabaseExcelBuffer,
   buildSerialHistoryExcelBuffer,
 } from './excelBuilder.ts';
+import {
+  commitHashedCredentialsToGitHub,
+  getGitHubSyncStatus,
+  type GitHubCommitResult,
+} from './githubSync.ts';
 
 const { Pool } = pg;
 
@@ -45,6 +53,15 @@ export interface AdminCredentialsRecord {
   adminLabel: string;
   claimedAt: string;
   updatedAt?: string;
+}
+
+export interface BranchCredentialRecord {
+  loginId: string;
+  passwordHash: string;
+  salt: string;
+  isCustomPassword: boolean;
+  version: number;
+  updatedAt: string;
 }
 
 interface DatabaseState {
@@ -58,6 +75,7 @@ interface DatabaseState {
   resetEpoch?: string;
   resetDateIST?: string;
   adminCredentials?: AdminCredentialsRecord;
+  branchCredentials?: Record<string, BranchCredentialRecord>;
   logs: any[];
 }
 
@@ -172,6 +190,7 @@ let initDbPromise: Promise<{
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
+const BRANCH_CREDENTIALS_FILE = path.join(DATA_DIR, 'branch-credentials.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -2317,6 +2336,7 @@ export async function factoryResetAllData(): Promise<{
     resetEpoch,
     resetDateIST: todayIST,
     adminCredentials: prevLocal.adminCredentials,
+    branchCredentials: prevLocal.branchCredentials,
     logs: [
       {
         action: 'FACTORY_RESET',
@@ -2710,6 +2730,392 @@ export async function changeClaimedAdminPassword(
   });
   await logAudit('ADMIN_PASSWORD_CHANGED', { timestamp: new Date().toISOString() });
   return { success: true };
+}
+
+// =========================================================================
+// Branch & Master Access Credentials (scrypt-hashed, DB + Codebase + GitHub Sync)
+// =========================================================================
+
+let cachedBranchCredentials: Record<string, BranchCredentialRecord> | null = null;
+
+function readBranchCredentialsDiskFile(): Record<string, BranchCredentialRecord> {
+  try {
+    if (fs.existsSync(BRANCH_CREDENTIALS_FILE)) {
+      const raw = fs.readFileSync(BRANCH_CREDENTIALS_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const map = parsed.credentials && typeof parsed.credentials === 'object'
+          ? parsed.credentials
+          : parsed;
+        if (map && typeof map === 'object') {
+          return map as Record<string, BranchCredentialRecord>;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[DBMS] Could not read branch-credentials.json:', err);
+  }
+  return {};
+}
+
+function writeBranchCredentialsDiskFile(credsMap: Record<string, BranchCredentialRecord>): string {
+  const payload = {
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    credentials: credsMap,
+  };
+  const serialized = JSON.stringify(payload, null, 2);
+  try {
+    fs.writeFileSync(BRANCH_CREDENTIALS_FILE, serialized, 'utf-8');
+  } catch (err) {
+    console.warn('[DBMS] Could not write branch-credentials.json:', err);
+  }
+  return serialized;
+}
+
+function mergeCredentialMaps(
+  base: Record<string, BranchCredentialRecord>,
+  incoming?: Record<string, BranchCredentialRecord> | null
+): boolean {
+  if (!incoming || typeof incoming !== 'object') return false;
+  let changed = false;
+  for (const [rawId, rec] of Object.entries(incoming)) {
+    const loginId = rawId.trim().toLowerCase();
+    if (!rec || !rec.passwordHash || !rec.salt) continue;
+    const existing = base[loginId];
+    const recVer = Number(rec.version || 1);
+    const existingVer = Number(existing?.version || 0);
+    const recTs = parseTs(rec.updatedAt);
+    const existingTs = parseTs(existing?.updatedAt);
+    if (!existing || recVer > existingVer || (recVer === existingVer && recTs > existingTs)) {
+      base[loginId] = {
+        loginId,
+        passwordHash: rec.passwordHash,
+        salt: rec.salt,
+        isCustomPassword: Boolean(rec.isCustomPassword),
+        version: recVer,
+        updatedAt: rec.updatedAt || new Date().toISOString(),
+      };
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+async function ensureBranchCredentialsMap(): Promise<Record<string, BranchCredentialRecord>> {
+  const merged: Record<string, BranchCredentialRecord> = {};
+  if (cachedBranchCredentials) {
+    mergeCredentialMaps(merged, cachedBranchCredentials);
+  }
+
+  // 1. Merge disk codebase credential file
+  mergeCredentialMaps(merged, readBranchCredentialsDiskFile());
+
+  // 2. Merge local database.json mirror
+  const local = readLocalFile();
+  mergeCredentialMaps(merged, local.branchCredentials || {});
+
+  // 3. Merge remote DB if connected
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query(
+        "SELECT data FROM battery_metadata WHERE key = 'branch_credentials'"
+      );
+      if (res.rows.length > 0 && res.rows[0].data) {
+        const parsed =
+          typeof res.rows[0].data === 'string'
+            ? JSON.parse(res.rows[0].data)
+            : res.rows[0].data;
+        mergeCredentialMaps(merged, parsed);
+      }
+    } catch (err) {
+      console.warn('[DBMS] PG read branch_credentials warning:', err);
+    }
+  } else if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'branch_credentials')
+        .maybeSingle();
+      if (!error && data?.data) {
+        const parsed = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+        mergeCredentialMaps(merged, parsed);
+      }
+    } catch (err) {
+      console.warn('[DBMS] Supabase read branch_credentials warning:', err);
+    }
+  }
+
+  // 4. Bootstrap any missing account slots with hashed initial passcode (never plaintext on disk)
+  const initialPasscode = cleanEnvValue(process.env.DEFAULT_BRANCH_PASSCODE) || '1234';
+  const now = new Date().toISOString();
+  let bootstrapped = false;
+  for (const acct of BRANCH_LOGIN_ACCOUNTS) {
+    if (!merged[acct.loginId]) {
+      const salt = crypto.randomBytes(16).toString('hex');
+      merged[acct.loginId] = {
+        loginId: acct.loginId,
+        passwordHash: hashPasswordWithScrypt(initialPasscode, salt),
+        salt,
+        isCustomPassword: false,
+        version: 1,
+        updatedAt: now,
+      };
+      bootstrapped = true;
+    }
+  }
+
+  cachedBranchCredentials = merged;
+  if (bootstrapped || !fs.existsSync(BRANCH_CREDENTIALS_FILE)) {
+    writeBranchCredentialsDiskFile(merged);
+    mirrorToLocalFile((state) => {
+      state.branchCredentials = merged;
+    });
+    if (isPostgresConnected && pgPool) {
+      pgPool
+        .query(
+          `INSERT INTO battery_metadata (key, data, updated_at)
+           VALUES ('branch_credentials', $1, NOW())
+           ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
+          [JSON.stringify(merged)]
+        )
+        .catch(() => {});
+    } else if (isSupabaseReady && supabaseClient) {
+      supabaseClient
+        .from('battery_metadata')
+        .upsert(
+          { key: 'branch_credentials', data: merged, updated_at: now },
+          { onConflict: 'key' }
+        )
+        .then(() => {}, () => {});
+    }
+  }
+
+  return merged;
+}
+
+async function persistBranchCredentialsMap(
+  credsMap: Record<string, BranchCredentialRecord>,
+  commitMessage: string
+): Promise<GitHubCommitResult> {
+  cachedBranchCredentials = credsMap;
+  const serializedFile = writeBranchCredentialsDiskFile(credsMap);
+
+  mirrorToLocalFile((local) => {
+    local.branchCredentials = credsMap;
+  });
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO battery_metadata (key, data, updated_at)
+         VALUES ('branch_credentials', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
+        [JSON.stringify(credsMap)]
+      );
+    } catch (err) {
+      console.error('[DBMS] PG persistBranchCredentials error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      await supabaseClient.from('battery_metadata').upsert(
+        {
+          key: 'branch_credentials',
+          data: credsMap,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+    } catch (err) {
+      console.error('[DBMS] Supabase persistBranchCredentials error:', err);
+    }
+  }
+
+  scheduleCloudSpaceBackup('branch_credentials_updated', 1500);
+  return commitHashedCredentialsToGitHub(
+    'data/branch-credentials.json',
+    serializedFile,
+    commitMessage
+  );
+}
+
+export async function getBranchCredentialVersion(loginId: string): Promise<number> {
+  const normalized = loginId.trim().toLowerCase();
+  const map = await ensureBranchCredentialsMap();
+  return map[normalized]?.version || 1;
+}
+
+export async function verifyBranchLoginPassword(
+  rawLoginId: string,
+  password: string
+): Promise<{
+  valid: boolean;
+  account?: BranchLoginAccountMeta;
+  version?: number;
+}> {
+  const loginId = typeof rawLoginId === 'string' ? rawLoginId.trim().toLowerCase() : '';
+  const account = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
+  if (!account || typeof password !== 'string' || !password) {
+    return { valid: false };
+  }
+
+  const map = await ensureBranchCredentialsMap();
+  const rec = map[loginId];
+  if (!rec?.passwordHash || !rec?.salt) {
+    return { valid: false };
+  }
+
+  const computedHash = hashPasswordWithScrypt(password, rec.salt);
+  const bufA = Buffer.from(computedHash, 'hex');
+  const bufB = Buffer.from(rec.passwordHash, 'hex');
+  const valid = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+
+  return valid ? { valid: true, account, version: rec.version } : { valid: false };
+}
+
+export async function getBranchCredentialsSummary(): Promise<{
+  credentials: BranchCredentialSummary[];
+  githubStatus: ReturnType<typeof getGitHubSyncStatus>;
+}> {
+  const map = await ensureBranchCredentialsMap();
+  const credentials: BranchCredentialSummary[] = BRANCH_LOGIN_ACCOUNTS.map((acct) => {
+    const rec = map[acct.loginId];
+    return {
+      loginId: acct.loginId,
+      role: acct.role,
+      branchId: acct.branchId,
+      allowedBranchIds: acct.allowedBranchIds,
+      label: acct.label,
+      isCustomPassword: Boolean(rec?.isCustomPassword),
+      version: rec?.version || 1,
+      updatedAt: rec?.updatedAt || new Date().toISOString(),
+    };
+  });
+
+  return {
+    credentials,
+    githubStatus: getGitHubSyncStatus(),
+  };
+}
+
+export async function updateBranchLoginPassword(
+  rawLoginId: string,
+  newPassword: string
+): Promise<{
+  summary: BranchCredentialSummary;
+  githubSync: GitHubCommitResult;
+}> {
+  const loginId = typeof rawLoginId === 'string' ? rawLoginId.trim().toLowerCase() : '';
+  const account = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
+  if (!account) {
+    throw new Error('Unknown branch or master login ID');
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < 4) {
+    throw new Error('Password must be at least 4 characters long');
+  }
+
+  const map = { ...(await ensureBranchCredentialsMap()) };
+  const prev = map[loginId];
+  const nextVersion = (prev?.version || 1) + 1;
+  const now = new Date().toISOString();
+  const salt = crypto.randomBytes(16).toString('hex');
+
+  map[loginId] = {
+    loginId,
+    passwordHash: hashPasswordWithScrypt(newPassword, salt),
+    salt,
+    isCustomPassword: true,
+    version: nextVersion,
+    updatedAt: now,
+  };
+
+  const githubSync = await persistBranchCredentialsMap(
+    map,
+    `security: rotate hashed credential for ${loginId} (v${nextVersion})`
+  );
+
+  await logAudit('ADMIN_BRANCH_PASSWORD_UPDATED', {
+    loginId,
+    label: account.label,
+    version: nextVersion,
+    githubSynced: githubSync.synced,
+    timestamp: now,
+  });
+
+  return {
+    summary: {
+      loginId: account.loginId,
+      role: account.role,
+      branchId: account.branchId,
+      allowedBranchIds: account.allowedBranchIds,
+      label: account.label,
+      isCustomPassword: true,
+      version: nextVersion,
+      updatedAt: now,
+    },
+    githubSync,
+  };
+}
+
+export async function bulkUpdateBranchLoginPasswords(
+  updates: Array<{ loginId: string; newPassword: string }>
+): Promise<{
+  updatedIds: string[];
+  credentials: BranchCredentialSummary[];
+  githubSync: GitHubCommitResult;
+}> {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new Error('At least one password update is required');
+  }
+
+  const map = { ...(await ensureBranchCredentialsMap()) };
+  const now = new Date().toISOString();
+  const updatedIds: string[] = [];
+
+  for (const item of updates) {
+    const loginId = typeof item?.loginId === 'string' ? item.loginId.trim().toLowerCase() : '';
+    const account = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
+    if (!account) {
+      throw new Error(`Unknown login ID: ${item?.loginId}`);
+    }
+    if (typeof item?.newPassword !== 'string' || item.newPassword.length < 4) {
+      throw new Error(`Password for ${loginId} must be at least 4 characters long`);
+    }
+
+    const prev = map[loginId];
+    const nextVersion = (prev?.version || 1) + 1;
+    const salt = crypto.randomBytes(16).toString('hex');
+    map[loginId] = {
+      loginId,
+      passwordHash: hashPasswordWithScrypt(item.newPassword, salt),
+      salt,
+      isCustomPassword: true,
+      version: nextVersion,
+      updatedAt: now,
+    };
+    updatedIds.push(loginId);
+  }
+
+  const githubSync = await persistBranchCredentialsMap(
+    map,
+    `security: rotate hashed credentials for [${updatedIds.join(', ')}]`
+  );
+
+  await logAudit('ADMIN_BRANCH_PASSWORDS_BULK_UPDATED', {
+    updatedIds,
+    githubSynced: githubSync.synced,
+    timestamp: now,
+  });
+
+  const { credentials } = await getBranchCredentialsSummary();
+  return {
+    updatedIds,
+    credentials,
+    githubSync,
+  };
 }
 
 // =========================================================================

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   BatteryColumn,
   BatterySerialItem,
+  BranchAuthSession,
   BranchTransfer,
   BranchTransferItem,
   DayRecord,
@@ -13,6 +14,7 @@ import {
   parseBatteryRecordKey,
 } from './types/stock';
 import { BranchCategoryPortal } from './components/BranchCategoryPortal';
+import { BranchLoginScreen } from './components/BranchLoginScreen';
 import { ChargerStockView } from './components/ChargerStockView';
 import { VehicleStockView } from './components/VehicleStockView';
 import { ReceiveGoodsBanner } from './components/ReceiveGoodsBanner';
@@ -75,6 +77,10 @@ import {
   BackendStatus,
   AdminSessionInfo,
   subscribeRealtimeSync,
+  apiBranchLogout,
+  apiGetBranchSession,
+  setApiBranchToken,
+  setOnBranchUnauthorized,
 } from './services/api';
 import {
   exportRecordToExcel,
@@ -203,27 +209,33 @@ function ensureTodayLedger(
 }
 
 export default function App() {
+  // Strictly in-memory Branch / Master session (never stored in localStorage)
+  const [branchToken, setBranchToken] = useState<string | null>(null);
+  const [branchSession, setBranchSession] = useState<BranchAuthSession | null>(null);
+  const [branchAuthNotice, setBranchAuthNotice] = useState<string | null>(null);
+  const branchSessionRef = useRef<BranchAuthSession | null>(branchSession);
+  const branchTokenRef = useRef<string | null>(branchToken);
+
+  useEffect(() => {
+    branchSessionRef.current = branchSession;
+  }, [branchSession]);
+
+  useEffect(() => {
+    branchTokenRef.current = branchToken;
+    setApiBranchToken(branchToken);
+  }, [branchToken]);
+
+  const isMasterSession = branchSession?.role === 'master';
+  const allowedBranchIds = branchSession?.allowedBranchIds || [];
+
   const [columns, setColumns] = useState<BatteryColumn[]>(() => loadColumns());
-  const [activeBranchId, setActiveBranchId] = useState<string>(() => {
-    return localStorage.getItem('active_branch_id') || DEFAULT_BRANCH_ID;
-  });
-  const [records, setRecords] = useState<Record<string, DayRecord>>(() => {
-    const loaded = prunePreResetRecords(
-      loadRecords(),
-      getLocalResetEpoch(),
-      getLocalResetDateIST()
-    );
-    const cols = loadColumns();
-    const initialBranch = localStorage.getItem('active_branch_id') || DEFAULT_BRANCH_ID;
-    return ensureTodayLedger(loaded, cols, false, initialBranch);
-  });
+  const [activeBranchId, setActiveBranchId] = useState<string>(DEFAULT_BRANCH_ID);
+  const [records, setRecords] = useState<Record<string, DayRecord>>({});
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(() => loadTeamMembers());
-  const [serials, setSerials] = useState<Record<string, BatterySerialItem>>(() =>
-    prunePreResetSerials(loadLocalSerials(), getLocalResetEpoch(), getLocalResetDateIST())
-  );
-  const [chargerRecords, setChargerRecords] = useState<Record<string, any>>(() => loadLocalChargers());
-  const [vehicleRecords, setVehicleRecords] = useState<Record<string, any>>(() => loadLocalVehicles());
-  const [transfers, setTransfers] = useState<BranchTransfer[]>(() => loadLocalTransfers());
+  const [serials, setSerials] = useState<Record<string, BatterySerialItem>>({});
+  const [chargerRecords, setChargerRecords] = useState<Record<string, any>>({});
+  const [vehicleRecords, setVehicleRecords] = useState<Record<string, any>>({});
+  const [transfers, setTransfers] = useState<BranchTransfer[]>([]);
   const [isReceivingGoods, setIsReceivingGoods] = useState<boolean>(false);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const isCloudDbConnected = Boolean(backendStatus?.supabaseReady || backendStatus?.hasPostgresUrl);
@@ -236,11 +248,8 @@ export default function App() {
     return (localStorage.getItem('active_stock_category') as StockCategoryId) || 'battery';
   });
 
-  // When opening the app, show the 5 branches selection portal
-  const [isBranchPortalOpen, setIsBranchPortalOpen] = useState<boolean>(() => {
-    const hasVisited = sessionStorage.getItem('has_selected_branch_session');
-    return !hasVisited;
-  });
+  // Master login shows the 5-branch portal until selected; single-branch login opens directly into that branch
+  const [isBranchPortalOpen, setIsBranchPortalOpen] = useState<boolean>(false);
 
   const activeBranch = useMemo(() => {
     return BRANCHES.find((b) => b.id === activeBranchId) || BRANCHES[0];
@@ -250,6 +259,81 @@ export default function App() {
   useEffect(() => {
     activeBranchRef.current = activeBranchId;
   }, [activeBranchId]);
+
+  const handleBranchAuthenticated = (token: string, session: BranchAuthSession) => {
+    // Isolate local browser caches so zero records from another branch remain on this device
+    clearAllLocalStockStorage();
+    inFlightRecordKeysRef.current.clear();
+    inFlightSerialKeysRef.current.clear();
+    hasCompletedInitialSyncRef.current = false;
+
+    setApiBranchToken(token);
+    branchTokenRef.current = token;
+    branchSessionRef.current = session;
+    setBranchAuthNotice(null);
+    setBranchToken(token);
+    setBranchSession(session);
+
+    const targetBranch =
+      session.role === 'branch' && session.branchId
+        ? session.branchId
+        : session.allowedBranchIds.includes(localStorage.getItem('active_branch_id') || '')
+        ? (localStorage.getItem('active_branch_id') as string)
+        : DEFAULT_BRANCH_ID;
+
+    setActiveBranchId(targetBranch);
+    localStorage.setItem('active_branch_id', targetBranch);
+    const cols = loadColumns();
+    setColumns(cols);
+    setRecords(ensureTodayLedger({}, cols, false, targetBranch));
+    setSerials({});
+    setChargerRecords({});
+    setVehicleRecords({});
+    setTransfers([]);
+    setCurrentDate(getIndianTodayDate());
+
+    if (session.role === 'master') {
+      const hasVisited = sessionStorage.getItem('has_selected_branch_session');
+      setIsBranchPortalOpen(!hasVisited);
+    } else {
+      setIsBranchPortalOpen(false);
+    }
+  };
+
+  const handleBranchLogout = (notice?: string) => {
+    const tokenToRevoke = branchTokenRef.current;
+    if (tokenToRevoke) {
+      apiBranchLogout(tokenToRevoke);
+    }
+    setApiBranchToken(null);
+    branchTokenRef.current = null;
+    branchSessionRef.current = null;
+    clearAllLocalStockStorage();
+    inFlightRecordKeysRef.current.clear();
+    inFlightSerialKeysRef.current.clear();
+    hasCompletedInitialSyncRef.current = false;
+
+    setBranchToken(null);
+    setBranchSession(null);
+    setBranchAuthNotice(notice || null);
+    setRecords({});
+    setSerials({});
+    setChargerRecords({});
+    setVehicleRecords({});
+    setTransfers([]);
+    setIsBranchPortalOpen(false);
+  };
+
+  useEffect(() => {
+    setOnBranchUnauthorized(() => {
+      handleBranchLogout(
+        'Your branch session expired or the password was changed by Admin. Please sign in again.'
+      );
+    });
+    return () => {
+      setOnBranchUnauthorized(null);
+    };
+  }, []);
 
   const pendingTransfersByBranch = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -322,6 +406,11 @@ export default function App() {
   });
 
   const handleSelectBranchAndCategory = (branchId: string, categoryId: StockCategoryId) => {
+    const session = branchSessionRef.current;
+    if (session && session.role === 'branch' && !session.allowedBranchIds.includes(branchId)) {
+      showToast('Access restricted: your login ID can only open your assigned branch.');
+      return;
+    }
     setActiveBranchId(branchId);
     setActiveCategory(categoryId);
     localStorage.setItem('active_branch_id', branchId);
@@ -456,6 +545,7 @@ export default function App() {
 
   // Sync data from Cloud DBMS / backend safely without overwriting local/in-flight edits
   const syncWithCloudBackend = async (forceReplace = false) => {
+    if (!branchTokenRef.current) return;
     if (isSyncingRef.current && !forceReplace) return;
     isSyncingRef.current = true;
     try {
@@ -660,10 +750,24 @@ export default function App() {
   };
 
   useEffect(() => {
-    syncWithCloudBackend();
+    if (!branchToken) return;
+    syncWithCloudBackend(true);
 
     // Subscribe to live multi-device Real-Time Cloud Synchronization
     const unsubscribe = subscribeRealtimeSync({
+      branchToken,
+      onBranchCredentialsUpdated: async (payload) => {
+        const activeLoginId = branchSessionRef.current?.loginId;
+        const activeToken = branchTokenRef.current;
+        if (activeLoginId && activeToken && payload?.loginId === activeLoginId) {
+          const check = await apiGetBranchSession(activeToken);
+          if (!check.authenticated) {
+            handleBranchLogout(
+              `Password for "${activeLoginId}" was updated by Admin. Sign in with the new password.`
+            );
+          }
+        }
+      },
       onRecordUpdated: (updatedRecord) => {
         const recordKey = getBatteryRecordKey(updatedRecord.branchId, updatedRecord.date);
         if (inFlightRecordKeysRef.current.has(recordKey) || getPendingSyncKeys().includes(recordKey)) {
@@ -820,7 +924,7 @@ export default function App() {
       window.removeEventListener('online', handleOnline);
       clearInterval(pollInterval);
     };
-  }, []);
+  }, [branchToken]);
 
   // Branch-scoped battery records for the active branch
   const branchRecords = useMemo(() => {
@@ -1656,6 +1760,61 @@ export default function App() {
     }
   };
 
+  const adminPortalModal = (
+    <AdminPortalModal
+      isOpen={isAdminPortalOpen}
+      onClose={() => {
+        setIsAdminPortalOpen(false);
+        setAdminPromptReason(null);
+        pendingAdminCallbackRef.current = null;
+      }}
+      adminToken={adminToken}
+      adminSession={adminSession}
+      onAuthenticated={(token, session) => {
+        setAdminToken(token);
+        setAdminSession(session);
+        setAdminPromptReason(null);
+        if (pendingAdminCallbackRef.current) {
+          const cb = pendingAdminCallbackRef.current;
+          pendingAdminCallbackRef.current = null;
+          setIsAdminPortalOpen(false);
+          cb(token);
+        }
+      }}
+      onSignedOut={() => {
+        setAdminToken(null);
+        setAdminSession(null);
+        setAdminPromptReason(null);
+        pendingAdminCallbackRef.current = null;
+        showToast('Signed out from Admin Console');
+      }}
+      promptReason={adminPromptReason}
+      initialTab={adminInitialTab}
+      onDataReload={syncWithCloudBackend}
+      currentRecord={currentRecord}
+      columns={columns}
+      serials={serials}
+      records={records}
+      transfers={transfers}
+      activeBranchId={activeBranchId}
+      onShowToast={showToast}
+    />
+  );
+
+  if (!branchSession || !branchToken) {
+    return (
+      <>
+        <BranchLoginScreen
+          onAuthenticated={handleBranchAuthenticated}
+          onOpenAdminPortal={() => openAdminPortal(null, 'passwords')}
+          isAdminAuthenticated={Boolean(adminToken)}
+          notice={branchAuthNotice}
+        />
+        {adminPortalModal}
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-900 font-sans">
       {/* Top Bar adhering to Top Bar Contract */}
@@ -1676,28 +1835,48 @@ export default function App() {
         pendingReceiveCount={pendingTransfersByBranch[activeBranchId] || 0}
         isAdminAuthenticated={Boolean(adminToken)}
         onOpenAdminPortal={() => openAdminPortal(null, 'analytics')}
+        branchLoginId={branchSession.loginId}
+        branchRole={branchSession.role}
+        canSwitchBranch={isMasterSession}
+        onBranchLogout={() => handleBranchLogout()}
       />
 
       {/* Branch & Category Navigation Bar */}
       <div className="bg-slate-900 text-white px-4 sm:px-6 py-2.5 border-b border-slate-800 shadow-xs flex items-center justify-between text-xs flex-wrap gap-2.5">
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setIsBranchPortalOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-500/40 text-blue-200 font-bold transition-all cursor-pointer shadow-2xs text-xs"
-            title="Click to view all 5 branches: 1-Chandravadni Naka, 2-Morar Battery Factory, 3-Yard City Center, 4-Service Center, 5-Vehicle Manufacturing Factory"
-          >
-            <Building2 className="w-3.5 h-3.5 text-blue-400" />
-            <span>{activeBranch.name}</span>
-            <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
-              Switch Branch (1-5)
-            </span>
-            {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
-              <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
-                <BellRing className="w-3 h-3" />
-                <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
+          {isMasterSession ? (
+            <button
+              onClick={() => setIsBranchPortalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-500/40 text-blue-200 font-bold transition-all cursor-pointer shadow-2xs text-xs"
+              title="Click to view all 5 branches: 1-Chandravadni Naka, 2-Morar Battery Factory, 3-Yard City Center, 4-Service Center, 5-Vehicle Manufacturing Factory"
+            >
+              <Building2 className="w-3.5 h-3.5 text-blue-400" />
+              <span>{activeBranch.name}</span>
+              <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
+                Switch Branch (1-5)
               </span>
-            )}
-          </button>
+              {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
+                <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                  <BellRing className="w-3 h-3" />
+                  <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
+                </span>
+              )}
+            </button>
+          ) : (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/40 border border-blue-500/30 text-blue-100 font-bold text-xs">
+              <Lock className="w-3.5 h-3.5 text-amber-300" />
+              <span>{activeBranch.name}</span>
+              <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono">
+                ID: {branchSession.loginId}
+              </span>
+              {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
+                <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                  <BellRing className="w-3 h-3" />
+                  <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
+                </span>
+              )}
+            </div>
+          )}
 
           <span className="text-slate-600">/</span>
 
@@ -1743,13 +1922,23 @@ export default function App() {
           <span className="text-[11px] text-slate-400 hidden lg:inline">
             📍 {activeBranch.address}
           </span>
-          <button
-            onClick={() => setIsBranchPortalOpen(true)}
-            className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer flex items-center gap-1"
-          >
-            <span>All 5 Branches & Categories</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+          {isMasterSession ? (
+            <button
+              onClick={() => setIsBranchPortalOpen(true)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer flex items-center gap-1"
+            >
+              <span>All 5 Branches & Categories</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          ) : (
+            <button
+              onClick={() => setIsBranchPortalOpen(true)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer flex items-center gap-1"
+            >
+              <span>Branch Categories</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -1808,6 +1997,7 @@ export default function App() {
           <BranchCategoryPortal
             currentBranchId={activeBranchId}
             currentCategoryId={activeCategory}
+            allowedBranchIds={allowedBranchIds}
             pendingTransfersByBranch={pendingTransfersByBranch}
             onSelectBranchAndCategory={handleSelectBranchAndCategory}
             onClose={() => setIsBranchPortalOpen(false)}
@@ -2512,44 +2702,7 @@ export default function App() {
         }}
       />
 
-      <AdminPortalModal
-        isOpen={isAdminPortalOpen}
-        onClose={() => {
-          setIsAdminPortalOpen(false);
-          setAdminPromptReason(null);
-          pendingAdminCallbackRef.current = null;
-        }}
-        adminToken={adminToken}
-        adminSession={adminSession}
-        onAuthenticated={(token, session) => {
-          setAdminToken(token);
-          setAdminSession(session);
-          setAdminPromptReason(null);
-          if (pendingAdminCallbackRef.current) {
-            const cb = pendingAdminCallbackRef.current;
-            pendingAdminCallbackRef.current = null;
-            setIsAdminPortalOpen(false);
-            cb(token);
-          }
-        }}
-        onSignedOut={() => {
-          setAdminToken(null);
-          setAdminSession(null);
-          setAdminPromptReason(null);
-          pendingAdminCallbackRef.current = null;
-          showToast('Signed out from Admin Console');
-        }}
-        promptReason={adminPromptReason}
-        initialTab={adminInitialTab}
-        onDataReload={syncWithCloudBackend}
-        currentRecord={currentRecord}
-        columns={columns}
-        serials={serials}
-        records={records}
-        transfers={transfers}
-        activeBranchId={activeBranchId}
-        onShowToast={showToast}
-      />
+      {adminPortalModal}
 
       <SerialTrackerModal
         isOpen={isSerialModalOpen}

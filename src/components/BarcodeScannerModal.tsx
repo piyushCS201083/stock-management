@@ -380,9 +380,10 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
         try {
           const baseUrl = getApiBaseUrl();
+          const { buildBranchHeaders } = await import('../services/api');
           const res = await fetch(`${baseUrl}/api/scan-barcode-ocr`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: buildBranchHeaders(true),
             body: JSON.stringify({
               imageBase64: base64Data,
               mimeType: file.type || 'image/jpeg',

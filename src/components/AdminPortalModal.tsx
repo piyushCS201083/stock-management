@@ -25,28 +25,42 @@ import {
   History,
   Server,
   HardDrive,
+  GitBranch,
+  ExternalLink,
 } from 'lucide-react';
 import {
   AdminSessionInfo,
   AdminStatusResponse,
   BackendAnalyticsSnapshot,
   CloudBackupSnapshotMeta,
+  GitHubCommitOutcome,
+  GitHubSyncStatusInfo,
   apiAdminLogin,
   apiAdminLogout,
+  apiBulkUpdateBranchPasswords,
   apiChangeAdminPassword,
   apiClaimAdminPassword,
   apiDownloadAdminFile,
   apiFactoryReset,
   apiFetchAdminAnalytics,
+  apiFetchBranchCredentials,
   apiGetAdminStatus,
   apiListCloudinaryBackups,
   apiRestoreCloudinaryBackup,
   apiTriggerCloudinaryBackup,
+  apiUpdateBranchPassword,
 } from '../services/api';
-import { BatteryColumn, BatterySerialItem, BranchTransfer, BRANCHES, DayRecord } from '../types/stock';
+import {
+  BatteryColumn,
+  BatterySerialItem,
+  BranchCredentialSummary,
+  BranchTransfer,
+  BRANCHES,
+  DayRecord,
+} from '../types/stock';
 import { exportRecordToExcel, exportSerialHistoryToExcel } from '../utils/excelExport';
 
-export type AdminTabId = 'analytics' | 'exports' | 'backend' | 'backups' | 'security';
+export type AdminTabId = 'analytics' | 'exports' | 'backend' | 'backups' | 'passwords' | 'security';
 
 interface AdminPortalModalProps {
   isOpen: boolean;
@@ -126,6 +140,16 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   const [confirmNewPwd, setConfirmNewPwd] = useState('');
   const [pwdUpdating, setPwdUpdating] = useState(false);
 
+  // Branch & Master Password Manager states
+  const [branchCreds, setBranchCreds] = useState<BranchCredentialSummary[]>([]);
+  const [credsLoading, setCredsLoading] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<GitHubSyncStatusInfo | null>(null);
+  const [lastGithubSync, setLastGithubSync] = useState<GitHubCommitOutcome | null>(null);
+  const [pwdDrafts, setPwdDrafts] = useState<Record<string, string>>({});
+  const [pwdVisibleMap, setPwdVisibleMap] = useState<Record<string, boolean>>({});
+  const [masterBulkPwd, setMasterBulkPwd] = useState('');
+  const [savingLoginId, setSavingLoginId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isOpen) return;
     setActiveTab(initialTab);
@@ -150,12 +174,14 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     setAnalyticsLoading(true);
     setAnalyticsError(null);
     setBackupsLoading(true);
+    setCredsLoading(true);
     try {
-      const [anaRes, bkRes] = await Promise.all([
+      const [anaRes, bkRes, credsRes] = await Promise.all([
         apiFetchAdminAnalytics(token),
         apiListCloudinaryBackups(token),
+        apiFetchBranchCredentials(token),
       ]);
-      if (anaRes.unauthorized || bkRes.unauthorized) {
+      if (anaRes.unauthorized || bkRes.unauthorized || credsRes.unauthorized) {
         onSignedOut();
         setAuthError('Admin session expired. Please sign in again.');
         return;
@@ -166,9 +192,16 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
         setAnalyticsError(anaRes.error || 'Could not load backend analytics');
       }
       setBackups(bkRes.backups || []);
+      if (credsRes.success && credsRes.credentials) {
+        setBranchCreds(credsRes.credentials);
+        if (credsRes.githubStatus) {
+          setGithubStatus(credsRes.githubStatus);
+        }
+      }
     } finally {
       setAnalyticsLoading(false);
       setBackupsLoading(false);
+      setCredsLoading(false);
     }
   };
 
@@ -386,6 +419,132 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     }
   };
 
+  const handleUpdateSingleBranchPassword = async (loginId: string) => {
+    if (!adminToken) return;
+    const candidate = (pwdDrafts[loginId] || '').trim();
+    if (candidate.length < 4) {
+      setActionMessage({
+        type: 'err',
+        text: `New password for "${loginId}" must be at least 4 characters.`,
+      });
+      return;
+    }
+
+    setSavingLoginId(loginId);
+    setActionMessage(null);
+    const res = await apiUpdateBranchPassword(loginId, candidate, adminToken);
+    setSavingLoginId(null);
+
+    if (res.unauthorized) {
+      onSignedOut();
+      return;
+    }
+    if (res.success && res.credential) {
+      setBranchCreds((prev) =>
+        prev.map((c) => (c.loginId === res.credential!.loginId ? res.credential! : c))
+      );
+      setPwdDrafts((prev) => ({ ...prev, [loginId]: '' }));
+      if (res.githubSync) {
+        setLastGithubSync(res.githubSync);
+      }
+      const ghSuffix = res.githubSync?.synced
+        ? ` GitHub committed (${res.githubSync.commitSha?.slice(0, 7)}).`
+        : '';
+      setActionMessage({
+        type: 'ok',
+        text: `Updated password for "${loginId}" live (v${res.credential.version}). Old password is immediately invalid.${ghSuffix}`,
+      });
+      onShowToast(`Updated "${loginId}" password live!`);
+    } else {
+      setActionMessage({
+        type: 'err',
+        text: res.error || `Failed to update password for "${loginId}".`,
+      });
+    }
+  };
+
+  const handleBulkUpdatePasswords = async (updatesList?: Array<{ loginId: string; newPassword: string }>) => {
+    if (!adminToken) return;
+    const updates =
+      updatesList ||
+      branchCreds
+        .map((c) => ({
+          loginId: c.loginId,
+          newPassword: (pwdDrafts[c.loginId] || '').trim(),
+        }))
+        .filter((u) => u.newPassword.length > 0);
+
+    if (updates.length === 0) {
+      setActionMessage({
+        type: 'err',
+        text: 'Enter at least one new password before running bulk update.',
+      });
+      return;
+    }
+    const invalid = updates.find((u) => u.newPassword.length < 4);
+    if (invalid) {
+      setActionMessage({
+        type: 'err',
+        text: `Password for "${invalid.loginId}" must be at least 4 characters.`,
+      });
+      return;
+    }
+
+    setSavingLoginId('__ALL__');
+    setActionMessage(null);
+    const res = await apiBulkUpdateBranchPasswords(updates, adminToken);
+    setSavingLoginId(null);
+
+    if (res.unauthorized) {
+      onSignedOut();
+      return;
+    }
+    if (res.success && res.credentials) {
+      setBranchCreds(res.credentials);
+      setPwdDrafts((prev) => {
+        const next = { ...prev };
+        updates.forEach((u) => {
+          delete next[u.loginId];
+        });
+        return next;
+      });
+      setMasterBulkPwd('');
+      if (res.githubSync) {
+        setLastGithubSync(res.githubSync);
+      }
+      const ghSuffix = res.githubSync?.synced
+        ? ` GitHub committed (${res.githubSync.commitSha?.slice(0, 7)}).`
+        : '';
+      setActionMessage({
+        type: 'ok',
+        text: `Updated ${res.updatedIds?.length || updates.length} account password(s) live. Previous passwords removed.${ghSuffix}`,
+      });
+      onShowToast(`Updated ${res.updatedIds?.length || updates.length} login password(s) live!`);
+    } else {
+      setActionMessage({
+        type: 'err',
+        text: res.error || 'Bulk password update failed.',
+      });
+    }
+  };
+
+  const handleApplyOnePasswordToAllAccounts = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = masterBulkPwd.trim();
+    if (trimmed.length < 4) {
+      setActionMessage({
+        type: 'err',
+        text: 'Shared password must be at least 4 characters.',
+      });
+      return;
+    }
+    const updates = branchCreds.map((c) => ({
+      loginId: c.loginId,
+      newPassword: trimmed,
+    }));
+    await handleBulkUpdatePasswords(updates);
+  };
+
   const filteredMovements = useMemo(() => {
     const list = analytics?.recentMovements || [];
     const q = movementSearch.trim().toLowerCase();
@@ -424,6 +583,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     { id: 'exports', label: 'Excel & Exports', icon: <FileSpreadsheet className="w-4 h-4" /> },
     { id: 'backend', label: 'Backend Data', icon: <Database className="w-4 h-4" /> },
     { id: 'backups', label: 'Backups & Audit', icon: <Cloud className="w-4 h-4" /> },
+    { id: 'passwords', label: 'Password Manager', icon: <KeyRound className="w-4 h-4" /> },
     { id: 'security', label: 'Factory Reset & Access', icon: <RotateCcw className="w-4 h-4" /> },
   ];
 
@@ -434,7 +594,13 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-slate-950/75 backdrop-blur-xs overflow-y-auto">
+    <div
+      className={
+        isAuthenticated
+          ? 'fixed inset-0 z-50 flex bg-slate-50 overflow-hidden'
+          : 'fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-slate-950/75 backdrop-blur-xs overflow-y-auto'
+      }
+    >
       {!isAuthenticated ? (
         /* ===============================================================
            ADMIN LOGIN / FIRST-RUN SETUP VIEW
@@ -635,10 +801,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
         /* ===============================================================
            AUTHENTICATED ADMIN CONSOLE (SAAS WORKSPACE ARCHITECTURE)
            =============================================================== */
-        <div
-          className="bg-slate-50 rounded-xl border border-slate-300 shadow-2xl w-full max-w-7xl flex flex-col overflow-hidden my-auto"
-          style={{ height: 'min(92vh, calc(100% - 1.5rem))' }}
-        >
+        <div className="bg-slate-50 w-full h-full flex flex-col overflow-hidden">
           {/* Top Bar Contract */}
           <div className="px-5 py-3.5 bg-white border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-2.5 text-xs min-w-0">
@@ -1710,7 +1873,242 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
               )}
 
               {/* =========================================================
-                  TAB 5: FACTORY RESET & ADMIN SECURITY
+                  TAB 5: REAL-TIME PASSWORD MANAGER & GITHUB AUTO-SYNC
+                 ========================================================= */}
+              {activeTab === 'passwords' && (
+                <div className="space-y-5 max-w-5xl">
+                  {/* Live Sync & GitHub Codebase Status Banner */}
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <div className="w-9 h-9 rounded-lg bg-slate-900 text-amber-400 flex items-center justify-center shrink-0">
+                          <KeyRound className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-900">
+                            Branch & Master Login Password Manager
+                          </h3>
+                          <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                            Rotate passwords for individual branches (<code className="font-mono bg-slate-100 px-1 rounded">c, m, y, s, v</code>) or the master account (<code className="font-mono bg-slate-100 px-1 rounded">administrator</code>). Changes take effect immediately, wipe previous password hashes, invalidate old branch sessions, and commit <code className="font-mono bg-slate-100 px-1 rounded">data/branch-credentials.json</code> to GitHub.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold shrink-0 ${
+                          githubStatus?.configured
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                            : 'bg-amber-50 border-amber-200 text-amber-900'
+                        }`}
+                      >
+                        <GitBranch className="w-3.5 h-3.5" />
+                        <span>
+                          {githubStatus?.configured
+                            ? `GitHub Auto-Sync: ${githubStatus.repo} (${githubStatus.branch})`
+                            : 'GitHub Auto-Sync: Add GITHUB_TOKEN & GITHUB_REPO'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {lastGithubSync && (
+                      <div
+                        className={`p-3 rounded-lg border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                          lastGithubSync.synced
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                            : 'bg-slate-50 border-slate-200 text-slate-800'
+                        }`}
+                      >
+                        <span>
+                          <strong>GitHub Sync:</strong> {lastGithubSync.message}
+                        </span>
+                        {lastGithubSync.commitUrl && (
+                          <a
+                            href={lastGithubSync.commitUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-bold text-blue-700 hover:underline"
+                          >
+                            <span>View Commit</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick Apply Same Password to All 6 Accounts */}
+                  <form
+                    onSubmit={handleApplyOnePasswordToAllAccounts}
+                    className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-end justify-between gap-3 text-xs"
+                  >
+                    <div className="flex-1">
+                      <label className="block font-bold text-slate-800 mb-1">
+                        Set One New Password Across All 6 Accounts ({branchCreds.length})
+                      </label>
+                      <input
+                        type="password"
+                        minLength={4}
+                        value={masterBulkPwd}
+                        onChange={(e) => setMasterBulkPwd(e.target.value)}
+                        placeholder="Enter shared password (min 4 characters) to rotate all accounts at once"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={savingLoginId === '__ALL__' || masterBulkPwd.trim().length < 4}
+                      className="inline-flex items-center justify-center gap-1.5 px-4 py-2 font-bold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-lg cursor-pointer shrink-0"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>
+                        {savingLoginId === '__ALL__' ? 'Rotating All...' : 'Rotate All 6 Live'}
+                      </span>
+                    </button>
+                  </form>
+
+                  {/* Per-Account Credentials Table */}
+                  <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                          Per-Branch & Master Credentials ({branchCreds.length})
+                        </h4>
+                        <p className="text-[11px] text-slate-500">
+                          Type a new password for any specific row and click Update Live, or enter multiple rows and click Update All Entered.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleBulkUpdatePasswords()}
+                        disabled={savingLoginId === '__ALL__'}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg cursor-pointer self-start sm:self-auto"
+                      >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        <span>
+                          {savingLoginId === '__ALL__' ? 'Updating...' : 'Update All Entered'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {credsLoading && branchCreds.length === 0 ? (
+                      <div className="p-8 text-center text-xs text-slate-500">
+                        Loading login credentials...
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                              <th className="py-2.5 px-3 text-left">Login ID</th>
+                              <th className="py-2.5 px-3 text-left">Access Scope</th>
+                              <th className="py-2.5 px-3 text-left">Password State</th>
+                              <th className="py-2.5 px-3 text-left min-w-[210px]">New Password</th>
+                              <th className="py-2.5 px-3 text-right">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {branchCreds.map((cred) => {
+                              const draftVal = pwdDrafts[cred.loginId] || '';
+                              const isVis = Boolean(pwdVisibleMap[cred.loginId]);
+                              const isSavingThis =
+                                savingLoginId === cred.loginId || savingLoginId === '__ALL__';
+                              return (
+                                <tr key={cred.loginId} className="hover:bg-slate-50">
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    <span
+                                      className={`inline-flex items-center px-2.5 py-1 rounded-md font-mono font-extrabold text-xs ${
+                                        cred.role === 'master'
+                                          ? 'bg-slate-900 text-amber-300'
+                                          : 'bg-blue-50 text-blue-900 border border-blue-200'
+                                      }`}
+                                    >
+                                      {cred.loginId}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 font-semibold text-slate-900">
+                                    <div>{cred.label}</div>
+                                    <div className="text-[10px] font-normal text-slate-500">
+                                      {cred.role === 'master'
+                                        ? 'Unrestricted access to all 5 branches'
+                                        : `Locked strictly to ${cred.allowedBranchIds.join(', ')}`}
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    <div className="flex items-center gap-1.5">
+                                      <span
+                                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                          cred.isCustomPassword
+                                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                            : 'bg-amber-100 text-amber-900 border border-amber-200'
+                                        }`}
+                                      >
+                                        {cred.isCustomPassword ? 'Rotated / Custom' : 'Initial Setup'}
+                                      </span>
+                                      <span className="font-mono text-[10px] text-slate-500">
+                                        v{cred.version}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                      {new Date(cred.updatedAt).toLocaleString()}
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <div className="relative">
+                                      <input
+                                        type={isVis ? 'text' : 'password'}
+                                        value={draftVal}
+                                        minLength={4}
+                                        onChange={(e) =>
+                                          setPwdDrafts((prev) => ({
+                                            ...prev,
+                                            [cred.loginId]: e.target.value,
+                                          }))
+                                        }
+                                        placeholder="New password (min 4 chars)"
+                                        autoComplete="new-password"
+                                        className="w-full pl-2.5 pr-8 py-1.5 border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setPwdVisibleMap((prev) => ({
+                                            ...prev,
+                                            [cred.loginId]: !prev[cred.loginId],
+                                          }))
+                                        }
+                                        className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                                      >
+                                        {isVis ? (
+                                          <EyeOff className="w-3.5 h-3.5" />
+                                        ) : (
+                                          <Eye className="w-3.5 h-3.5" />
+                                        )}
+                                      </button>
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateSingleBranchPassword(cred.loginId)}
+                                      disabled={isSavingThis || draftVal.trim().length < 4}
+                                      className="px-3 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-40 rounded-lg cursor-pointer"
+                                    >
+                                      {savingLoginId === cred.loginId ? 'Saving...' : 'Update Live'}
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* =========================================================
+                  TAB 6: FACTORY RESET & ADMIN SECURITY
                  ========================================================= */}
               {activeTab === 'security' && (
                 <div className="space-y-5 max-w-2xl">
