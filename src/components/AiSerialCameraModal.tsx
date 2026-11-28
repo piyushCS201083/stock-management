@@ -182,6 +182,11 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
   const [cameraUnavailableMsg, setCameraUnavailableMsg] = useState<string | null>(null);
 
   const [capturedPhotoUrl, setCapturedPhotoUrl] = useState<string | null>(null);
+  const [capturedPhotoPayload, setCapturedPhotoPayload] = useState<{
+    dataUrl: string;
+    mimeType: string;
+    file?: File;
+  } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -245,12 +250,14 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
     if (!isOpen) {
       stopCameraStream();
       setCapturedPhotoUrl(null);
+      setCapturedPhotoPayload(null);
       setIsAnalyzing(false);
       setErrorMsg(null);
       return;
     }
 
     setCapturedPhotoUrl(null);
+    setCapturedPhotoPayload(null);
     setErrorMsg(null);
     startCameraStream();
 
@@ -262,6 +269,7 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
   const analyzePhoto = useCallback(
     async (dataUrl: string, mimeType: string, file?: File) => {
       setCapturedPhotoUrl(dataUrl);
+      setCapturedPhotoPayload({ dataUrl, mimeType, file });
       setIsAnalyzing(true);
       setErrorMsg(null);
       stopCameraStream();
@@ -370,9 +378,19 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
 
   const handleRetake = () => {
     setCapturedPhotoUrl(null);
+    setCapturedPhotoPayload(null);
     setErrorMsg(null);
     setIsAnalyzing(false);
     startCameraStream();
+  };
+
+  const handleRetrySamePhoto = () => {
+    if (!capturedPhotoPayload || isAnalyzing) return;
+    analyzePhoto(
+      capturedPhotoPayload.dataUrl,
+      capturedPhotoPayload.mimeType,
+      capturedPhotoPayload.file
+    );
   };
 
   if (!isOpen) return null;
@@ -531,14 +549,24 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
           {/* Action Buttons */}
           <div className="space-y-2">
             {capturedPhotoUrl && !isAnalyzing ? (
-              <button
-                type="button"
-                onClick={handleRetake}
-                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-md"
-              >
-                <RefreshCw className="w-4 h-4" />
-                <span>Retake Photo</span>
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleRetrySamePhoto}
+                  className="py-2.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-md"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Retry AI Read</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRetake}
+                  className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-md"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retake Photo</span>
+                </button>
+              </div>
             ) : isCameraActive ? (
               <button
                 type="button"

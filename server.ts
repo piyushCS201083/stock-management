@@ -1819,7 +1819,7 @@ app.post('/api/scan-barcode-ocr', requireBranchAccess, async (req: express.Reque
       });
     }
 
-    const { GoogleGenAI, Type } = await import('@google/genai');
+    const { GoogleGenAI, ThinkingLevel, Type } = await import('@google/genai');
     const ai = new GoogleGenAI({
       apiKey,
       httpOptions: {
@@ -1867,75 +1867,114 @@ Extract:
       text: ocrPrompt,
     };
 
-    const callGeminiOcr = async () =>
-      ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: { parts: [imagePart, textPart] },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              serialNos: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: 'All extracted serial numbers in reading order.',
-              },
-              serialNo: {
-                type: Type.STRING,
-                description: 'Comma-separated serial numbers extracted from the photo, or empty string.',
-              },
-              model: {
-                type: Type.STRING,
-                description: 'Detected battery or charger model/spec if visible, or empty string.',
-              },
-              batchNo: {
-                type: Type.STRING,
-                description: 'Detected batch or MFD code if visible, or empty string.',
-              },
-              confidence: {
-                type: Type.STRING,
-                description: 'Confidence level: high, medium, or low.',
-              },
-              rawText: {
-                type: Type.STRING,
-                description: 'Short summary of label text read from the photo.',
-              },
-            },
-          },
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        serialNos: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'All extracted serial numbers in reading order.',
         },
-      });
+        serialNo: {
+          type: Type.STRING,
+          description: 'Comma-separated serial numbers extracted from the photo, or empty string.',
+        },
+        model: {
+          type: Type.STRING,
+          description: 'Detected battery or charger model/spec if visible, or empty string.',
+        },
+        batchNo: {
+          type: Type.STRING,
+          description: 'Detected batch or MFD code if visible, or empty string.',
+        },
+        confidence: {
+          type: Type.STRING,
+          description: 'Confidence level: high, medium, or low.',
+        },
+        rawText: {
+          type: Type.STRING,
+          description: 'Short summary of label text read from the photo.',
+        },
+      },
+    };
 
-    let response;
-    let lastErr: any = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const extractErrorInfo = (err: any): { status: number; message: string; isTransient: boolean } => {
+      let status = Number(err?.status || err?.code || err?.error?.code || 0);
+      let message = String(err?.error?.message || err?.message || 'Gemini OCR request failed');
+      if (message.trim().startsWith('{')) {
+        try {
+          const parsedErr = JSON.parse(message);
+          const nested = parsedErr?.error || parsedErr;
+          if (nested?.code && !status) status = Number(nested.code) || 0;
+          if (nested?.message) message = String(nested.message);
+        } catch {
+          // Keep original string if not valid JSON
+        }
+      }
+      const isTransient =
+        status === 503 ||
+        status === 500 ||
+        status === 429 ||
+        /UNAVAILABLE|high demand|overloaded|temporar|timeout|ECONNRESET|RESOURCE_EXHAUSTED/i.test(
+          `${message} ${err?.status || ''}`
+        );
+      return { status, message, isTransient };
+    };
+
+    const ocrAttempts: Array<{ model: string; useLowThinking: boolean; delayBeforeMs: number }> = [
+      { model: 'gemini-4-hydrogen', useLowThinking: true, delayBeforeMs: 0 },
+      { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayBeforeMs: 250 },
+      { model: 'gemini-4-hydrogen', useLowThinking: true, delayBeforeMs: 900 },
+      { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayBeforeMs: 1400 },
+    ];
+
+    let response: any = null;
+    let usedEngine = 'gemini-4-hydrogen';
+    let lastErrInfo: { status: number; message: string; isTransient: boolean } | null = null;
+
+    for (let i = 0; i < ocrAttempts.length; i++) {
+      const attempt = ocrAttempts[i];
+      if (i > 0 && attempt.delayBeforeMs > 0) {
+        await new Promise((r) => setTimeout(r, attempt.delayBeforeMs));
+      }
       try {
-        response = await callGeminiOcr();
-        lastErr = null;
+        response = await ai.models.generateContent({
+          model: attempt.model,
+          contents: { parts: [imagePart, textPart] },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema,
+            ...(attempt.useLowThinking
+              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+              : {}),
+          },
+        });
+        usedEngine = attempt.model;
+        lastErrInfo = null;
         break;
       } catch (err: any) {
-        lastErr = err;
-        const msg = String(err?.message || '');
-        const status = Number(err?.status || err?.code || 0);
-        const isTransient = status === 503 || status === 500 || /timeout|ECONNRESET|temporar/i.test(msg);
-        if (attempt === 0 && isTransient) {
-          await new Promise((r) => setTimeout(r, 400));
-          continue;
+        lastErrInfo = extractErrorInfo(err);
+        if (!lastErrInfo.isTransient) {
+          break;
         }
-        break;
+        console.warn(
+          `[Server] OCR attempt ${i + 1} (${attempt.model}) transient error (${lastErrInfo.status}): ${lastErrInfo.message}`
+        );
       }
     }
 
-    if (lastErr || !response) {
-      const status = Number(lastErr?.status || 502);
-      const rawMsg = String(lastErr?.message || 'Gemini OCR request failed');
+    if (lastErrInfo || !response) {
+      const status = lastErrInfo?.status || 502;
+      const rawMsg = lastErrInfo?.message || 'Gemini OCR request failed';
       let friendlyError = rawMsg;
       if (status === 403 || /PERMISSION_DENIED/i.test(rawMsg)) {
         friendlyError = 'Gemini API permission denied. Please check GEMINI_API_KEY in Settings > Secrets.';
       } else if (status === 400 || /API_KEY_INVALID/i.test(rawMsg)) {
         friendlyError = 'Gemini API key is invalid or request was rejected. Please check Settings > Secrets.';
       } else if (status === 429 || /RESOURCE_EXHAUSTED/i.test(rawMsg)) {
-        friendlyError = 'Gemini API rate limit or quota reached. Please wait a moment and try again.';
+        friendlyError = 'Gemini API rate limit or quota reached. Please wait a moment and tap Retry.';
+      } else if (status === 503 || /UNAVAILABLE|high demand|overloaded/i.test(rawMsg)) {
+        friendlyError = 'AI vision servers are temporarily busy. Please tap "Retry AI Read" in a few seconds.';
       } else if (status === 404 || /NOT_FOUND/i.test(rawMsg)) {
         friendlyError = 'Requested Gemini vision model was not found.';
       }
@@ -2006,7 +2045,7 @@ Extract:
             ? parsed.rawText.trim()
             : rawTextResponse.slice(0, 180),
       },
-      engine: 'gemini-4-hydrogen',
+      engine: usedEngine,
     });
   } catch (err: any) {
     console.error('[Server] OCR scanning error:', err);
