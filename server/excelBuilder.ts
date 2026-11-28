@@ -1,14 +1,14 @@
 import * as XLSX from 'xlsx';
 import {
   BRANCHES,
-  BatteryColumn,
-  BatterySerialItem,
-  BranchTransfer,
+  type BatteryColumn,
+  type BatterySerialItem,
+  type BranchTransfer,
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_BRANCH_ID,
-  DayRecord,
+  type DayRecord,
   parseBatteryRecordKey,
-} from '../src/types/stock';
+} from '../src/types/stock.ts';
 
 function computeTotals(record: DayRecord, columns: BatteryColumn[]) {
   let openingStockTotal = 0;
