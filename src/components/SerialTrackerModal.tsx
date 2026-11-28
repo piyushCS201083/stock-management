@@ -118,7 +118,10 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         (item.inwardPartner && item.inwardPartner.toLowerCase().includes(search)) ||
         (item.outwardPartner && item.outwardPartner.toLowerCase().includes(search)) ||
         (item.inwardCause && item.inwardCause.toLowerCase().includes(search)) ||
-        (item.outwardCause && item.outwardCause.toLowerCase().includes(search));
+        (item.outwardCause && item.outwardCause.toLowerCase().includes(search)) ||
+        (item.inwardBy && item.inwardBy.toLowerCase().includes(search)) ||
+        (item.outwardBy && item.outwardBy.toLowerCase().includes(search)) ||
+        (item.lastUpdatedBy && item.lastUpdatedBy.toLowerCase().includes(search));
 
       // Status
       const matchStatus = statusFilter === 'all' || item.status === statusFilter;
@@ -517,6 +520,13 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                             {item.inwardCause}
                           </div>
                         )}
+                        {item.inwardBy && (
+                          <div className="mt-0.5">
+                            <span className="inline-block font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200">
+                              ID: {item.inwardBy}
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Outward Details */}
@@ -535,6 +545,13 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                             {item.outwardCause && (
                               <div className="text-slate-500 truncate text-[10.5px]" title={item.outwardCause}>
                                 {item.outwardCause}
+                              </div>
+                            )}
+                            {item.outwardBy && (
+                              <div className="mt-0.5">
+                                <span className="inline-block font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-800 border border-rose-200">
+                                  ID: {item.outwardBy}
+                                </span>
                               </div>
                             )}
                           </>
@@ -642,6 +659,14 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                           <strong>Brought by / Dealer:</strong> {selectedSerial.inwardPartner}
                         </div>
                       )}
+                      {selectedSerial.inwardBy && (
+                        <div className="text-slate-700">
+                          <strong>Done By (Login ID):</strong>{' '}
+                          <span className="font-mono font-bold text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                            {selectedSerial.inwardBy}
+                          </span>
+                        </div>
+                      )}
                       {selectedSerial.inwardCause && (
                         <div className="text-slate-600 italic">
                           "{selectedSerial.inwardCause}"
@@ -666,6 +691,14 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                             <strong>To / Dealer / Vehicle:</strong> {selectedSerial.outwardPartner}
                           </div>
                         )}
+                        {selectedSerial.outwardBy && (
+                          <div className="text-slate-700">
+                            <strong>Done By (Login ID):</strong>{' '}
+                            <span className="font-mono font-bold text-rose-800 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                              {selectedSerial.outwardBy}
+                            </span>
+                          </div>
+                        )}
                         {selectedSerial.outwardCause && (
                           <div className="text-slate-600 italic">
                             "{selectedSerial.outwardCause}"
@@ -680,9 +713,16 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                     <div className="pt-1 space-y-2">
                       {selectedSerial.history.map((evt, idx) => (
                         <div key={idx} className="p-2.5 bg-slate-50 border border-slate-200 rounded text-[11px] text-slate-700">
-                          <div className="flex items-center justify-between font-bold text-slate-900 mb-0.5">
+                          <div className="flex items-center justify-between font-bold text-slate-900 mb-0.5 gap-2">
                             <span className="capitalize">{evt.type.replace('_', ' ')}</span>
-                            <span className="font-mono text-slate-500">{evt.date}</span>
+                            <div className="flex items-center gap-1.5">
+                              {evt.performedBy && (
+                                <span className="font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200">
+                                  ID: {evt.performedBy}
+                                </span>
+                              )}
+                              <span className="font-mono text-slate-500">{evt.date}</span>
+                            </div>
                           </div>
                           <div>{evt.cause}</div>
                           {evt.partner && <div className="text-slate-500">Contact: {evt.partner}</div>}

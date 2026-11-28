@@ -958,7 +958,7 @@ app.post('/api/records', requireBranchAccess, requireBranchCategory('battery'), 
     if (!isBranchAllowed(req.branchAccess, targetBranch)) {
       return res.status(403).json({ success: false, error: 'Access denied for this branch' });
     }
-    const result = await saveRecordWithStatus(record);
+    const result = await saveRecordWithStatus(record, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     broadcastRealtime('RECORD_UPDATED', result.record, [targetBranch]);
     res.json({
@@ -1096,7 +1096,7 @@ app.post('/api/serials', requireBranchAccess, requireBranchCategory('battery'), 
     if (!isBranchAllowed(req.branchAccess, targetBranch)) {
       return res.status(403).json({ success: false, error: 'Access denied for this branch' });
     }
-    const saved = await saveSerial(item);
+    const saved = await saveSerial(item, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     broadcastRealtime('SERIAL_UPDATED', saved, [targetBranch]);
     res.json({
@@ -1124,7 +1124,7 @@ app.post('/api/serials/bulk', requireBranchAccess, requireBranchCategory('batter
       }
       targetBranches.add(bId);
     }
-    const saved = await bulkSaveSerials(items);
+    const saved = await bulkSaveSerials(items, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     broadcastRealtime('SERIALS_BULK_UPDATED', saved, Array.from(targetBranches));
     res.json({
@@ -1181,7 +1181,7 @@ app.post('/api/chargers', requireBranchAccess, requireBranchCategory('charger'),
     if (!isBranchAllowed(req.branchAccess, branchId)) {
       return res.status(403).json({ success: false, error: 'Access denied for this branch' });
     }
-    const saved = await saveChargerRecord(branchId, date, record);
+    const saved = await saveChargerRecord(branchId, date, record, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     broadcastRealtime('CHARGER_UPDATED', saved, [branchId]);
     res.json({
@@ -1221,7 +1221,7 @@ app.post('/api/vehicles', requireBranchAccess, requireBranchCategory('vehicle'),
     if (!isBranchAllowed(req.branchAccess, branchId)) {
       return res.status(403).json({ success: false, error: 'Access denied for this branch' });
     }
-    const saved = await saveVehicleRecord(branchId, date, record);
+    const saved = await saveVehicleRecord(branchId, date, record, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     broadcastRealtime('VEHICLE_UPDATED', saved, [branchId]);
     res.json({
@@ -1267,7 +1267,7 @@ app.post('/api/transfers', requireBranchAccess, async (req: express.Request & { 
     if (!isCategoryAllowed(req.branchAccess, transferCategory)) {
       return res.status(403).json({ success: false, error: `Access denied: your account cannot send ${transferCategory} stock transfers` });
     }
-    const result = await createBranchTransfer(body);
+    const result = await createBranchTransfer(body, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     broadcastRealtime('TRANSFERS_UPDATED', result.transfers, [body.fromBranchId, body.toBranchId]);
     res.json({
@@ -1303,7 +1303,7 @@ app.post('/api/transfers/receive', requireBranchAccess, async (req: express.Requ
         return res.status(403).json({ success: false, error: `Access denied for receiving ${trf.category || 'battery'} stock` });
       }
     }
-    const result = await receiveBranchTransfers(selections, receivedBy);
+    const result = await receiveBranchTransfers(selections, receivedBy, req.branchAccess?.loginId);
     const storage = getActiveStorageTarget();
     const affectedBranches = Array.from(
       new Set(
@@ -1511,13 +1511,14 @@ app.get('/api/cloud/excel/serials/export', requireAdmin, async (req, res) => {
 });
 
 // Automated WhatsApp Dispatch & Audit Log
-app.post('/api/whatsapp/dispatch', requireBranchAccess, requireBranchCategory('battery'), async (req, res) => {
+app.post('/api/whatsapp/dispatch', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const { date, recipients, message, imageDataUrl } = req.body;
 
     await logAudit('WHATSAPP_DISPATCH', {
       date,
       recipientsCount: recipients?.length || 0,
+      performedBy: req.branchAccess?.loginId || 'system',
       timestamp: new Date().toISOString(),
     });
 

@@ -1160,6 +1160,7 @@ export interface BackendAnalyticsSnapshot {
     branchName: string;
     partner?: string;
     cause?: string;
+    performedBy?: string;
     timestamp: string;
   }>;
   recentTransfers: BranchTransfer[];
@@ -1879,8 +1880,8 @@ export interface RealtimeSyncCallbacks {
   onSerialDeleted?: (serialNo: string) => void;
   onColumnsUpdated?: (columns: BatteryColumn[]) => void;
   onTeamUpdated?: (team: TeamMember[]) => void;
-  onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
-  onVehicleUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedAt: string }) => void;
+  onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedBy?: string; transactions?: any[]; updatedAt: string }) => void;
+  onVehicleUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedBy?: string; transactions?: any[]; updatedAt: string }) => void;
   onTransfersUpdated?: (transfers: BranchTransfer[]) => void;
   onBranchCredentialsUpdated?: (payload: { loginId: string; version: number }) => void;
   onFactoryReset?: (payload: { resetEpoch?: string; todayIST?: string }) => void;
@@ -1982,6 +1983,8 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
             branchId: payload.branchId,
             date: payload.date,
             items: payload.record,
+            updatedBy: payload.updatedBy,
+            transactions: payload.transactions,
             updatedAt: payload.updatedAt,
           };
           saveLocalChargers(local);
@@ -1995,6 +1998,8 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
             branchId: payload.branchId,
             date: payload.date,
             items: payload.record,
+            updatedBy: payload.updatedBy,
+            transactions: payload.transactions,
             updatedAt: payload.updatedAt,
           };
           saveLocalVehicles(local);

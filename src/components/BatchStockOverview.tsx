@@ -157,6 +157,8 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
       const matchOutCause = item.outwardCause && item.outwardCause.toLowerCase().includes(q);
       const matchInDate = item.inwardDate && item.inwardDate.includes(q);
       const matchOutDate = item.outwardDate && item.outwardDate.includes(q);
+      const matchInBy = item.inwardBy && item.inwardBy.toLowerCase().includes(q);
+      const matchOutBy = item.outwardBy && item.outwardBy.toLowerCase().includes(q);
 
       return (
         matchSerial ||
@@ -167,7 +169,9 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
         matchInCause ||
         matchOutCause ||
         matchInDate ||
-        matchOutDate
+        matchOutDate ||
+        matchInBy ||
+        matchOutBy
       );
     });
   }, [serialList, searchQuery, selectedQuickFilter]);
@@ -416,6 +420,14 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                             {item.inwardPartner || 'Store Receiving'}
                           </strong>
                         </div>
+                        {item.inwardBy && (
+                          <div className="text-slate-700">
+                            <span className="font-semibold text-slate-600">Done By (Login ID):</span>{' '}
+                            <span className="font-mono font-bold text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                              {item.inwardBy}
+                            </span>
+                          </div>
+                        )}
                         {item.inwardCause && (
                           <div className="text-slate-600 text-[11px] italic bg-white/80 p-1.5 rounded border border-emerald-100">
                             "{item.inwardCause}"
@@ -454,6 +466,14 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                                 {item.outwardPartner || 'Dispatched Customer / Workshop'}
                               </strong>
                             </div>
+                            {item.outwardBy && (
+                              <div className="text-slate-700">
+                                <span className="font-semibold text-slate-600">Done By (Login ID):</span>{' '}
+                                <span className="font-mono font-bold text-rose-800 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                                  {item.outwardBy}
+                                </span>
+                              </div>
+                            )}
                             {item.outwardCause && (
                               <div className="text-slate-600 text-[11px] italic bg-white/80 p-1.5 rounded border border-rose-100">
                                 "{item.outwardCause}"
@@ -848,11 +868,25 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
                               {item.inwardPartner && (
                                 <span className="text-slate-500 ml-1.5">· {item.inwardPartner}</span>
                               )}
+                              {item.inwardBy && (
+                                <span className="ml-1.5 font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200">
+                                  ID: {item.inwardBy}
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 px-3 text-slate-600 max-w-xs truncate">
-                              {item.outwardDate
-                                ? `${item.outwardDate}${item.outwardPartner ? ` · ${item.outwardPartner}` : ''}`
-                                : item.inwardCause || 'Available in store'}
+                              {item.outwardDate ? (
+                                <span>
+                                  {`${item.outwardDate}${item.outwardPartner ? ` · ${item.outwardPartner}` : ''}`}
+                                  {item.outwardBy && (
+                                    <span className="ml-1.5 font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-800 border border-rose-200">
+                                      ID: {item.outwardBy}
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                item.inwardCause || 'Available in store'
+                              )}
                             </td>
                             <td className="py-2.5 px-3 text-right whitespace-nowrap">
                               <button

@@ -8,8 +8,11 @@ import {
   BranchTransferItem,
   DayRecord,
   DEFAULT_BRANCH_ID,
+  DEFAULT_CHARGER_COLUMNS,
+  DEFAULT_VEHICLE_COLUMNS,
   BRANCHES,
   StockCategoryId,
+  StockTransactionEntry,
   TeamMember,
   getBatteryRecordKey,
   parseBatteryRecordKey,
@@ -85,6 +88,7 @@ import {
 } from './services/api';
 import {
   exportRecordToExcel,
+  exportSecondaryStockToExcel,
   exportSerialHistoryToExcel,
 } from './utils/excelExport';
 import { Header } from './components/Header';
@@ -931,6 +935,8 @@ export default function App() {
             branchId: payload.branchId,
             date: payload.date,
             items: payload.record,
+            updatedBy: payload.updatedBy,
+            transactions: payload.transactions,
             updatedAt: payload.updatedAt,
           },
         }));
@@ -943,6 +949,8 @@ export default function App() {
             branchId: payload.branchId,
             date: payload.date,
             items: payload.record,
+            updatedBy: payload.updatedBy,
+            transactions: payload.transactions,
             updatedAt: payload.updatedAt,
           },
         }));
@@ -1068,10 +1076,17 @@ export default function App() {
 
   // Bulk save serials from AssignSerialModal
   const handleBulkSaveSerials = async (newItems: BatterySerialItem[]) => {
+    const actorLoginId = branchSessionRef.current?.loginId || '';
     const stamped = newItems.map((it) => ({
       ...it,
       serialNo: it.serialNo.trim().toUpperCase(),
       branchId: it.branchId || activeBranchId,
+      inwardBy: it.inwardBy || actorLoginId || undefined,
+      lastUpdatedBy: actorLoginId || it.lastUpdatedBy || undefined,
+      history: (it.history || []).map((evt) => ({
+        ...evt,
+        performedBy: evt.performedBy || actorLoginId || undefined,
+      })),
     }));
     const updated = { ...serialsRef.current };
     stamped.forEach((item) => {
@@ -1097,10 +1112,26 @@ export default function App() {
     updatedItem: BatterySerialItem,
     previousSerialNo?: string
   ) => {
+    const actorLoginId = branchSessionRef.current?.loginId || '';
+    const prevExisting =
+      serialsRef.current[updatedItem.serialNo.trim().toUpperCase()] ||
+      (previousSerialNo ? serialsRef.current[previousSerialNo.trim().toUpperCase()] : undefined);
+    const prevEventIds = new Set((prevExisting?.history || []).map((e) => e.id));
     const stamped: BatterySerialItem = {
       ...updatedItem,
       serialNo: updatedItem.serialNo.trim().toUpperCase(),
       branchId: updatedItem.branchId || activeBranchId,
+      inwardBy: updatedItem.inwardBy || actorLoginId || undefined,
+      outwardBy:
+        updatedItem.status === 'dispatched' && prevExisting?.status !== 'dispatched'
+          ? actorLoginId || updatedItem.outwardBy
+          : updatedItem.outwardBy,
+      lastUpdatedBy: actorLoginId || updatedItem.lastUpdatedBy || undefined,
+      history: (updatedItem.history || []).map((evt) =>
+        prevEventIds.has(evt.id)
+          ? evt
+          : { ...evt, performedBy: evt.performedBy || actorLoginId || undefined }
+      ),
     };
     const updated = { ...serialsRef.current };
     if (previousSerialNo && previousSerialNo.trim().toUpperCase() !== stamped.serialNo) {
@@ -1134,14 +1165,91 @@ export default function App() {
   ) => {
     const targetBranch = updatedInput.branchId || activeBranchId;
     const timestamp = new Date().toISOString();
+    const actorLoginId = branchSessionRef.current?.loginId || '';
+    const recordKey = getBatteryRecordKey(targetBranch, updatedInput.date);
+    const prevRecordSnapshot = recordsRef.current[recordKey];
+
+    // Build granular StockTransactionEntry entries for every IN / OUT delta on this save
+    const newTxEntries: StockTransactionEntry[] = [];
+    if (actorLoginId) {
+      const trackedModelsForTx: Array<{ id: string; name: string }> = [
+        ...columnsRef.current.map((c) => ({ id: c.id, name: c.name })),
+        { id: 'repair', name: 'OLD BATTERY FOR REPAIR' },
+        { id: 'service', name: 'SERVICE BATTERY' },
+      ];
+      trackedModelsForTx.forEach((col) => {
+        const prevIn = Number(prevRecordSnapshot?.inStock?.[col.id] || 0);
+        const nextIn = Number(updatedInput.inStock?.[col.id] || 0);
+        const deltaIn = nextIn - prevIn;
+        if (deltaIn !== 0) {
+          const matchingSerials = (serialEntries || []).filter(
+            (s) => s.modelId === col.id && s.type !== 'out' && s.type !== 'repair_out'
+          );
+          const inCause =
+            (col.id === 'repair' ? updatedInput.repairInCause : updatedInput.inCause?.[col.id]) ||
+            updatedInput.totalInCause ||
+            '';
+          newTxEntries.push({
+            id: `tx_${Date.now()}_${col.id}_in_${Math.random().toString(36).slice(2, 6)}`,
+            timestamp,
+            date: updatedInput.date,
+            branchId: targetBranch,
+            category: 'battery',
+            action: col.id === 'repair' ? 'repair_in' : col.id === 'service' ? 'service' : 'in',
+            modelId: col.id,
+            modelName: col.name,
+            quantity: deltaIn,
+            cause: inCause || undefined,
+            partner: matchingSerials.map((s) => s.partner).filter(Boolean).join(', ') || undefined,
+            serialNos: matchingSerials.map((s) => s.serialNo.trim().toUpperCase()),
+            performedBy: actorLoginId,
+          });
+        }
+
+        const prevOut = Number(prevRecordSnapshot?.outStock?.[col.id] || 0);
+        const nextOut = Number(updatedInput.outStock?.[col.id] || 0);
+        const deltaOut = nextOut - prevOut;
+        if (deltaOut !== 0) {
+          const matchingSerials = (serialEntries || []).filter(
+            (s) => s.modelId === col.id && (s.type === 'out' || s.type === 'repair_out')
+          );
+          const outCause =
+            (col.id === 'repair' ? updatedInput.repairOutCause : updatedInput.outCause?.[col.id]) ||
+            updatedInput.totalOutCause ||
+            '';
+          newTxEntries.push({
+            id: `tx_${Date.now()}_${col.id}_out_${Math.random().toString(36).slice(2, 6)}`,
+            timestamp,
+            date: updatedInput.date,
+            branchId: targetBranch,
+            category: 'battery',
+            action: col.id === 'repair' ? 'repair_out' : col.id === 'service' ? 'service' : 'out',
+            modelId: col.id,
+            modelName: col.name,
+            quantity: deltaOut,
+            cause: outCause || undefined,
+            partner: matchingSerials.map((s) => s.partner || s.vehicle).filter(Boolean).join(', ') || undefined,
+            serialNos: matchingSerials.map((s) => s.serialNo.trim().toUpperCase()),
+            performedBy: actorLoginId,
+          });
+        }
+      });
+    }
+
+    const existingTx = Array.isArray(updatedInput.transactions)
+      ? updatedInput.transactions
+      : Array.isArray(prevRecordSnapshot?.transactions)
+      ? prevRecordSnapshot.transactions
+      : [];
+
     const updated: DayRecord = {
       ...updatedInput,
       branchId: targetBranch,
       isAutoGenerated: false,
       lastModified: timestamp,
+      lastModifiedBy: actorLoginId || updatedInput.lastModifiedBy || prevRecordSnapshot?.lastModifiedBy,
+      transactions: [...existingTx, ...newTxEntries].slice(-500),
     };
-    const recordKey = getBatteryRecordKey(targetBranch, updated.date);
-    const prevRecordSnapshot = recordsRef.current[recordKey];
 
     inFlightRecordKeysRef.current.add(recordKey);
     setSaveState('saving');
@@ -1287,6 +1395,7 @@ export default function App() {
           inwardDate: updated.date,
           inwardCause: entry.cause,
           inwardPartner: entry.partner,
+          inwardBy: actorLoginId || undefined,
           history: [],
         };
 
@@ -1299,31 +1408,37 @@ export default function App() {
           partner: entry.partner,
           vehicleOrLocation: entry.vehicle,
           branchId: targetBranch,
+          performedBy: actorLoginId || undefined,
         };
 
         existing.history = [movement, ...(existing.history || [])];
         existing.branchId = targetBranch;
+        existing.lastUpdatedBy = actorLoginId || existing.lastUpdatedBy;
 
         if (entry.type === 'in') {
           existing.status = 'in_stock';
           existing.inwardDate = updated.date;
           existing.inwardCause = entry.cause;
           existing.inwardPartner = entry.partner;
+          existing.inwardBy = existing.inwardBy || actorLoginId || undefined;
         } else if (entry.type === 'out' || entry.type === 'repair_out') {
           existing.status = 'dispatched';
           existing.outwardDate = updated.date;
           existing.outwardCause = entry.cause;
           existing.outwardPartner = entry.partner || entry.vehicle;
+          existing.outwardBy = actorLoginId || existing.outwardBy;
         } else if (entry.type === 'repair_in') {
           existing.status = 'in_repair';
           existing.inwardDate = existing.inwardDate || updated.date;
           existing.inwardCause = existing.inwardCause || entry.cause;
           existing.inwardPartner = existing.inwardPartner || entry.partner;
+          existing.inwardBy = existing.inwardBy || actorLoginId || undefined;
         } else if (entry.type === 'service') {
           existing.status = 'service_standby';
           existing.inwardDate = existing.inwardDate || updated.date;
           existing.inwardCause = existing.inwardCause || entry.cause;
           existing.inwardPartner = existing.inwardPartner || entry.partner;
+          existing.inwardBy = existing.inwardBy || actorLoginId || undefined;
         }
 
         if (entry.batchNo) existing.batchNo = entry.batchNo;
@@ -1479,8 +1594,52 @@ export default function App() {
       'Sign in as Admin to download Serials & Movement History Excel (.xlsx).',
       'exports',
       () => {
-        exportSerialHistoryToExcel(serials, columns, activeBranchId, records, transfers);
+        exportSerialHistoryToExcel(
+          serials,
+          columns,
+          activeBranchId,
+          records,
+          transfers,
+          chargerRecords,
+          vehicleRecords
+        );
         showToast('Downloaded Complete Serial Numbers & Movement History Excel (.xlsx)');
+      }
+    );
+  };
+
+  const handleDownloadChargerExcelGated = (itemsMap: Record<string, any>) => {
+    requireAdminAction(
+      'Sign in as Admin to download Charger Stock Excel (.xlsx).',
+      'exports',
+      () => {
+        exportSecondaryStockToExcel(
+          'charger',
+          activeBranchId,
+          currentDate,
+          itemsMap,
+          DEFAULT_CHARGER_COLUMNS,
+          chargerRecords
+        );
+        showToast(`Downloaded Charger Stock Excel (${currentDate})`);
+      }
+    );
+  };
+
+  const handleDownloadVehicleExcelGated = (itemsMap: Record<string, any>) => {
+    requireAdminAction(
+      'Sign in as Admin to download EV Vehicle Stock Excel (.xlsx).',
+      'exports',
+      () => {
+        exportSecondaryStockToExcel(
+          'vehicle',
+          activeBranchId,
+          currentDate,
+          itemsMap,
+          DEFAULT_VEHICLE_COLUMNS,
+          vehicleRecords
+        );
+        showToast(`Downloaded EV Vehicle Stock Excel (${currentDate})`);
       }
     );
   };
@@ -1877,6 +2036,8 @@ export default function App() {
       serials={serials}
       records={records}
       transfers={transfers}
+      chargerRecords={chargerRecords}
+      vehicleRecords={vehicleRecords}
       activeBranchId={activeBranchId}
       onShowToast={showToast}
     />
@@ -2110,6 +2271,9 @@ export default function App() {
             activeDate={currentDate}
             remoteChargerRecords={chargerRecords}
             isCloudDbConnected={isCloudDbConnected}
+            currentLoginId={branchSession.loginId}
+            isAdminAuthenticated={Boolean(adminToken)}
+            onDownloadExcel={handleDownloadChargerExcelGated}
             onSaveChargerRecord={async (branchId, date, record) => {
               const saved = await apiSaveChargerRecord(branchId, date, record);
               setChargerRecords((prev) => {
@@ -2119,6 +2283,8 @@ export default function App() {
                     branchId,
                     date,
                     items: record,
+                    updatedBy: saved.updatedBy || branchSession.loginId,
+                    transactions: saved.transactions || prev[saved.key]?.transactions,
                     updatedAt: saved.updatedAt,
                   },
                 };
@@ -2139,6 +2305,9 @@ export default function App() {
             activeDate={currentDate}
             remoteVehicleRecords={vehicleRecords}
             isCloudDbConnected={isCloudDbConnected}
+            currentLoginId={branchSession.loginId}
+            isAdminAuthenticated={Boolean(adminToken)}
+            onDownloadExcel={handleDownloadVehicleExcelGated}
             onSaveVehicleRecord={async (branchId, date, record) => {
               const saved = await apiSaveVehicleRecord(branchId, date, record);
               setVehicleRecords((prev) => {
@@ -2148,6 +2317,8 @@ export default function App() {
                     branchId,
                     date,
                     items: record,
+                    updatedBy: saved.updatedBy || branchSession.loginId,
+                    transactions: saved.transactions || prev[saved.key]?.transactions,
                     updatedAt: saved.updatedAt,
                   },
                 };
@@ -2832,10 +3003,24 @@ export default function App() {
         onDownloadSerialExcel={handleDownloadSerialHistoryExcelGated}
         isAdminAuthenticated={Boolean(adminToken)}
         onSaveSerial={async (item) => {
+          const actorLoginId = branchSessionRef.current?.loginId || '';
+          const prevExisting = serialsRef.current[item.serialNo.trim().toUpperCase()];
+          const prevEventIds = new Set((prevExisting?.history || []).map((e) => e.id));
           const stamped: BatterySerialItem = {
             ...item,
             serialNo: item.serialNo.trim().toUpperCase(),
             branchId: item.branchId || activeBranchId,
+            inwardBy: item.inwardBy || actorLoginId || undefined,
+            outwardBy:
+              item.status === 'dispatched' && prevExisting?.status !== 'dispatched'
+                ? actorLoginId || item.outwardBy
+                : item.outwardBy,
+            lastUpdatedBy: actorLoginId || item.lastUpdatedBy || undefined,
+            history: (item.history || []).map((evt) =>
+              prevEventIds.has(evt.id)
+                ? evt
+                : { ...evt, performedBy: evt.performedBy || actorLoginId || undefined }
+            ),
           };
           inFlightSerialKeysRef.current.add(stamped.serialNo);
           const updated = { ...serialsRef.current, [stamped.serialNo]: stamped };
@@ -2922,9 +3107,16 @@ export default function App() {
               <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-1">
                 <div className="flex items-center justify-between font-bold text-emerald-900">
                   <span>📥 Inward Date (Arrived in Stock)</span>
-                  <span className="font-mono text-emerald-800 bg-white px-2 py-0.5 rounded border border-emerald-200">
-                    {selectedSerialHistory.inwardDate}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {selectedSerialHistory.inwardBy && (
+                      <span className="font-mono text-[10px] font-bold bg-emerald-100 text-emerald-900 px-1.5 py-0.5 rounded border border-emerald-300">
+                        By: {selectedSerialHistory.inwardBy}
+                      </span>
+                    )}
+                    <span className="font-mono text-emerald-800 bg-white px-2 py-0.5 rounded border border-emerald-200">
+                      {selectedSerialHistory.inwardDate}
+                    </span>
+                  </div>
                 </div>
                 {selectedSerialHistory.inwardPartner && (
                   <div className="text-slate-700">
@@ -2943,9 +3135,16 @@ export default function App() {
                 <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg space-y-1">
                   <div className="flex items-center justify-between font-bold text-rose-900">
                     <span>📤 Outward Date (Dispatched)</span>
-                    <span className="font-mono text-rose-800 bg-white px-2 py-0.5 rounded border border-rose-200">
-                      {selectedSerialHistory.outwardDate}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {selectedSerialHistory.outwardBy && (
+                        <span className="font-mono text-[10px] font-bold bg-rose-100 text-rose-900 px-1.5 py-0.5 rounded border border-rose-300">
+                          By: {selectedSerialHistory.outwardBy}
+                        </span>
+                      )}
+                      <span className="font-mono text-rose-800 bg-white px-2 py-0.5 rounded border border-rose-200">
+                        {selectedSerialHistory.outwardDate}
+                      </span>
+                    </div>
                   </div>
                   {selectedSerialHistory.outwardPartner && (
                     <div className="text-slate-700">
@@ -2978,7 +3177,14 @@ export default function App() {
                     >
                       <div className="flex items-center justify-between font-bold text-slate-900">
                         <span className="capitalize">{evt.type.replace('_', ' ')}</span>
-                        <span className="font-mono text-slate-500">{evt.date}</span>
+                        <div className="flex items-center gap-1.5">
+                          {evt.performedBy && (
+                            <span className="font-mono text-[10px] font-bold bg-indigo-50 text-indigo-800 px-1.5 py-0.5 rounded border border-indigo-200">
+                              ID: {evt.performedBy}
+                            </span>
+                          )}
+                          <span className="font-mono text-slate-500">{evt.date}</span>
+                        </div>
                       </div>
                       <div>{evt.cause}</div>
                       {evt.partner && <div className="text-slate-500">Contact / Vehicle: {evt.partner}</div>}

@@ -88,6 +88,8 @@ interface AdminPortalModalProps {
   serials: Record<string, BatterySerialItem>;
   records: Record<string, DayRecord>;
   transfers: BranchTransfer[];
+  chargerRecords?: Record<string, any>;
+  vehicleRecords?: Record<string, any>;
   activeBranchId: string;
   onShowToast: (msg: string) => void;
 }
@@ -107,6 +109,8 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   serials,
   records,
   transfers,
+  chargerRecords,
+  vehicleRecords,
   activeBranchId,
   onShowToast,
 }) => {
@@ -790,6 +794,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
         m.branchName.toLowerCase().includes(q) ||
         (m.partner && m.partner.toLowerCase().includes(q)) ||
         (m.cause && m.cause.toLowerCase().includes(q)) ||
+        (m.performedBy && m.performedBy.toLowerCase().includes(q)) ||
         m.date.toLowerCase().includes(q)
     );
   }, [analytics?.recentMovements, movementSearch]);
@@ -1709,7 +1714,9 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                                 columns,
                                 activeBranchId,
                                 records,
-                                transfers
+                                transfers,
+                                chargerRecords,
+                                vehicleRecords
                               );
                               onShowToast('Downloaded Serials & Movement History Excel (.xlsx)');
                             }}
@@ -1830,6 +1837,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                               <th className="py-2 px-3 text-left">Branch</th>
                               <th className="py-2 px-3 text-left">Partner / Vehicle</th>
                               <th className="py-2 px-3 text-left">Cause</th>
+                              <th className="py-2 px-3 text-left">Done By (Login ID)</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100 tabular-nums">
@@ -1866,6 +1874,15 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                                 <td className="py-2 px-3 text-slate-600 max-w-[220px] truncate">
                                   {m.cause || '—'}
                                 </td>
+                                <td className="py-2 px-3 whitespace-nowrap">
+                                  {m.performedBy ? (
+                                    <span className="font-mono font-bold text-[11px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200">
+                                      {m.performedBy}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -1894,6 +1911,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                               <th className="py-2 px-3 text-left">From Branch</th>
                               <th className="py-2 px-3 text-left">To Branch</th>
                               <th className="py-2 px-3 text-left">Items</th>
+                              <th className="py-2 px-3 text-left">Done By (Login ID)</th>
                               <th className="py-2 px-3 text-left">Status</th>
                             </tr>
                           </thead>
@@ -1909,6 +1927,14 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                                   {(t.items || [])
                                     .map((it) => `${it.quantity}x ${it.modelName}`)
                                     .join(', ')}
+                                </td>
+                                <td className="py-2 px-3 text-[11px] font-mono text-slate-700 whitespace-nowrap">
+                                  <div>Sent: {t.createdBy || '—'}</div>
+                                  {(t.receivedByLoginId || t.receivedBy) && (
+                                    <div className="text-emerald-700">
+                                      Rcvd: {t.receivedByLoginId || t.receivedBy}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="py-2 px-3 font-semibold uppercase text-[11px]">
                                   {t.status === 'received' ? (
