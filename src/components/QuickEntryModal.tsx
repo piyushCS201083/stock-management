@@ -797,19 +797,18 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const inColClosing = inSelectedCol ? getModelCurrentClosing(inSelectedCol.id) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center pt-5 pb-2 px-3 sm:p-6 bg-slate-950/70 backdrop-blur-xs overflow-y-auto overscroll-contain">
       <div
-        className="bg-white rounded-2xl shadow-2xl border-2 border-slate-300 w-full max-w-2xl flex flex-col overflow-y-auto overscroll-contain my-auto ring-1 ring-slate-900/10"
-        style={{ maxHeight: 'min(92vh, calc(100% - 2rem))' }}
+        className="bg-white rounded-xl sm:rounded-2xl shadow-2xl border border-slate-300 sm:border-2 w-full max-w-2xl flex flex-col overflow-hidden ring-1 ring-slate-900/10 max-h-[min(80dvh,calc(100%-1.75rem))] sm:max-h-[min(88vh,calc(100%-3rem))]"
       >
         {/* Header */}
-        <div className="sticky top-0 z-20 flex items-center justify-between px-5 sm:px-6 py-3.5 bg-slate-900 text-white shrink-0 rounded-t-2xl gap-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-sm sm:text-base font-bold whitespace-nowrap">
+        <div className="relative z-20 flex items-start sm:items-center justify-between px-3.5 sm:px-6 py-2.5 sm:py-3.5 bg-slate-900 text-white shrink-0 rounded-t-xl sm:rounded-t-2xl gap-2 sm:gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0">
+            <h2 className="text-xs sm:text-base font-bold leading-snug">
               Log {entityCap} IN / OUT ({activeBranch.shortName})
             </h2>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded-lg text-xs font-mono transition-colors">
-              <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="inline-flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-0.5 sm:py-1 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded-lg text-[11px] sm:text-xs font-mono transition-colors max-w-full">
+              <Calendar className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-400 shrink-0" />
               <input
                 type="date"
                 aria-label="Change transaction date till today"
@@ -824,14 +823,14 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     onSelectDate?.(targetDate);
                   }
                 }}
-                className="bg-transparent text-slate-100 text-xs font-semibold focus:outline-none cursor-pointer [color-scheme:dark]"
+                className="bg-transparent text-slate-100 text-[11px] sm:text-xs font-semibold focus:outline-none cursor-pointer [color-scheme:dark] max-w-[118px] sm:max-w-none"
               />
               {record.date !== todayIST && onSelectDate && (
                 <button
                   type="button"
                   onClick={() => onSelectDate(todayIST)}
                   title={`Jump to today: ${todayIST}`}
-                  className="px-1.5 py-0.5 text-[10px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold font-sans rounded transition-colors cursor-pointer"
+                  className="px-1.5 py-0.5 text-[10px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold font-sans rounded transition-colors cursor-pointer shrink-0"
                 >
                   Today
                 </button>
@@ -847,13 +846,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 p-4 sm:p-5 space-y-3.5">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain p-3 sm:p-5 pb-5 sm:pb-6 space-y-3 sm:space-y-3.5">
           {/* Movement Type Selector */}
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5 sm:mb-2">
               Transaction Category:
             </label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1.5 sm:gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -1028,13 +1027,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 min-w-0">
                   <input
                     type="text"
                     placeholder="IN Serial Numbers (optional — auto-generated if blank)"
                     value={inSerialInput}
                     onChange={(e) => setInSerialInput(e.target.value)}
-                    className="flex-1 px-2.5 py-1.5 text-xs font-mono border border-emerald-200 rounded-lg bg-white"
+                    className="w-full sm:w-auto sm:flex-1 min-w-0 px-2.5 py-1.5 text-xs font-mono border border-emerald-200 rounded-lg bg-white"
                   />
                   <button
                     type="button"
@@ -1143,13 +1142,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 min-w-0">
                   <input
                     type="text"
                     placeholder="OUT Serial Numbers (optional)"
                     value={serialInput}
                     onChange={(e) => setSerialInput(e.target.value)}
-                    className="flex-1 px-2.5 py-1.5 text-xs font-mono border border-rose-200 rounded-lg bg-white"
+                    className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-mono border border-rose-200 rounded-lg bg-white"
                   />
                   <button
                     type="button"
@@ -1169,12 +1168,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
             <>
               {/* If Repair Battery selected, choose In vs Out */}
               {(entryType === 'repair_in' || entryType === 'repair_out') && (
-                <div className="flex items-center gap-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs">
+                <div className="flex flex-wrap items-center gap-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs">
                   <span className="font-semibold text-amber-900">Repair Action:</span>
                   <button
                     type="button"
                     onClick={() => setEntryType('repair_in')}
-                    className={`px-3 py-1 rounded font-medium cursor-pointer ${
+                    className={`px-2.5 sm:px-3 py-1 rounded font-medium cursor-pointer ${
                       entryType === 'repair_in'
                         ? 'bg-amber-600 text-white'
                         : 'bg-white text-amber-800 border border-amber-300'
@@ -1185,7 +1184,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setEntryType('repair_out')}
-                    className={`px-3 py-1 rounded font-medium cursor-pointer ${
+                    className={`px-2.5 sm:px-3 py-1 rounded font-medium cursor-pointer ${
                       entryType === 'repair_out'
                         ? 'bg-amber-600 text-white'
                         : 'bg-white text-amber-800 border border-amber-300'
@@ -1198,7 +1197,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
               {/* Model & Quantity Selection (for In/Out) */}
               {entryType !== 'repair_in' && entryType !== 'repair_out' && entryType !== 'service' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                       {entityCap} Specification / Model:
@@ -1283,7 +1282,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   {targetBranchId && (
                     <div className="space-y-2 pt-1">
                       {extraOutItems.map((extra, idx) => (
-                        <div key={idx} className="flex items-center gap-2">
+                        <div key={idx} className="flex flex-wrap sm:flex-nowrap items-center gap-2 min-w-0">
                           <select
                             value={extra.modelId}
                             onChange={(e) =>
@@ -1291,7 +1290,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                                 prev.map((it, i) => (i === idx ? { ...it, modelId: e.target.value } : it))
                               )
                             }
-                            className="flex-1 px-2.5 py-1.5 text-xs border border-amber-300 rounded-lg bg-white font-medium"
+                            className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border border-amber-300 rounded-lg bg-white font-medium"
                           >
                             {columns.map((col) => (
                               <option key={col.id} value={col.id}>
@@ -1314,12 +1313,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                                 )
                               )
                             }
-                            className="w-20 px-2.5 py-1.5 text-xs border border-amber-300 rounded-lg bg-white font-bold tabular-nums"
+                            className="w-16 sm:w-20 px-2 py-1.5 text-xs border border-amber-300 rounded-lg bg-white font-bold tabular-nums shrink-0"
                           />
                           <button
                             type="button"
                             onClick={() => setExtraOutItems((prev) => prev.filter((_, i) => i !== idx))}
-                            className="p-1.5 text-rose-600 hover:bg-rose-100 rounded-lg cursor-pointer"
+                            className="p-1.5 text-rose-600 hover:bg-rose-100 rounded-lg cursor-pointer shrink-0"
                             title="Remove model"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1337,7 +1336,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         }
                         className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
                       >
-                        <Plus className="w-3 h-3" />
+                        <Plus className="w-3 h-3 shrink-0" />
                         <span>Add another {entityLower} model to this branch transfer</span>
                       </button>
                     </div>
@@ -1347,22 +1346,22 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
               {/* Live Preview Box */}
               {entryType !== 'repair_in' && entryType !== 'repair_out' && entryType !== 'service' ? (
-                <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <span className="text-slate-700 font-semibold flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
+                <div className="p-2.5 sm:p-3 bg-blue-50/70 border border-blue-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs min-w-0">
+                  <span className="text-slate-700 font-semibold flex flex-wrap items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse shrink-0"></span>
                     <span>Stock Impact on</span>
                     <strong className="text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-300 font-bold">
                       {selectedCol?.name}
                     </strong>
                     :
                   </span>
-                  <div className="flex items-center gap-2 font-mono">
-                    <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-slate-200 text-xs">
+                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 font-mono">
+                    <span className="text-slate-600 bg-white px-2 sm:px-2.5 py-1 rounded border border-slate-200 text-[11px] sm:text-xs">
                       Current: <strong className="text-slate-900">{currentClosing}</strong>
                     </span>
-                    <ArrowRight className="w-3.5 h-3.5 text-blue-600" />
+                    <ArrowRight className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                     <span
-                      className={`font-bold px-2.5 py-1 rounded border text-xs shadow-2xs ${
+                      className={`font-bold px-2 sm:px-2.5 py-1 rounded border text-[11px] sm:text-xs shadow-2xs ${
                         entryType === 'in'
                           ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
                           : 'bg-rose-100 text-rose-900 border-rose-300'
@@ -1373,21 +1372,21 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   </div>
                 </div>
               ) : entryType === 'repair_in' || entryType === 'repair_out' ? (
-                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="p-2.5 sm:p-3 bg-amber-50/70 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs min-w-0">
                   <span className="text-amber-900 font-semibold flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>
+                    <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse shrink-0"></span>
                     <span>Repair {entityCap} Pool Impact:</span>
                   </span>
-                  <div className="flex items-center gap-2 font-mono">
+                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 font-mono">
                     {(() => {
                       const repairClosing = getModelCurrentClosing('repair');
                       return (
                         <>
-                          <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-amber-200 text-xs">
+                          <span className="text-slate-600 bg-white px-2 sm:px-2.5 py-1 rounded border border-amber-200 text-[11px] sm:text-xs">
                             Current: <strong className="text-slate-900">{repairClosing}</strong>
                           </span>
-                          <ArrowRight className="w-3.5 h-3.5 text-amber-600" />
-                          <span className="font-bold px-2.5 py-1 rounded border border-amber-300 bg-amber-100 text-amber-900 text-xs">
+                          <ArrowRight className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span className="font-bold px-2 sm:px-2.5 py-1 rounded border border-amber-300 bg-amber-100 text-amber-900 text-[11px] sm:text-xs">
                             New Closing:{' '}
                             {entryType === 'repair_in'
                               ? repairClosing + quantity
@@ -1399,21 +1398,21 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="p-2.5 sm:p-3 bg-indigo-50/70 border border-indigo-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs min-w-0">
                   <span className="text-indigo-900 font-semibold flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse"></span>
+                    <span className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse shrink-0"></span>
                     <span>Service Standby Pool Impact:</span>
                   </span>
-                  <div className="flex items-center gap-2 font-mono">
+                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 font-mono">
                     {(() => {
                       const serviceClosing = getModelCurrentClosing('service');
                       return (
                         <>
-                          <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-indigo-200 text-xs">
+                          <span className="text-slate-600 bg-white px-2 sm:px-2.5 py-1 rounded border border-indigo-200 text-[11px] sm:text-xs">
                             Current: <strong className="text-slate-900">{serviceClosing}</strong>
                           </span>
-                          <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />
-                          <span className="font-bold px-2.5 py-1 rounded border border-indigo-300 bg-indigo-100 text-indigo-900 text-xs">
+                          <ArrowRight className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span className="font-bold px-2 sm:px-2.5 py-1 rounded border border-indigo-300 bg-indigo-100 text-indigo-900 text-[11px] sm:text-xs">
                             New Closing: {serviceClosing + quantity}
                           </span>
                         </>
@@ -1472,13 +1471,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
               </div>
 
               {/* Dedicated Serial No. & Batch Section */}
-              <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2.5">
+              <div className="p-3 sm:p-3.5 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2.5 min-w-0">
                 <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-1.5 font-bold text-xs text-blue-900">
-                    <Barcode className="w-4 h-4 text-blue-700" />
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-blue-900 min-w-0">
+                    <Barcode className="w-4 h-4 text-blue-700 shrink-0" />
                     <span>{entityCap} Serial Numbers & Batch Tracking (In-App Only)</span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -1488,30 +1487,30 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-md shadow-xs transition-colors cursor-pointer"
                       title={`AI Camera: capture or upload a ${entityLower} photo to read the serial and type it below`}
                     >
-                      <Camera className="w-3.5 h-3.5" />
+                      <Camera className="w-3.5 h-3.5 shrink-0" />
                       <span>AI Camera</span>
-                      <Sparkles className="w-3 h-3 text-amber-300" />
+                      <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
                     </button>
                     <button
                       type="button"
                       onClick={() => handleAutoGenerateSerials(selectedColId, quantity, 'primary')}
                       className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 hover:text-blue-900 underline cursor-pointer"
                     >
-                      <Sparkles className="w-3 h-3" />
+                      <Sparkles className="w-3 h-3 shrink-0" />
                       <span>Auto-fill {quantity}</span>
                     </button>
                   </div>
                 </div>
 
                 {lastScannedSerial && (
-                  <div className="p-2 bg-emerald-100/90 border border-emerald-300 rounded-md text-emerald-900 text-xs font-semibold flex items-center justify-between animate-fade-in">
-                    <span className="flex items-center gap-1.5 font-mono">
+                  <div className="p-2 bg-emerald-100/90 border border-emerald-300 rounded-md text-emerald-900 text-xs font-semibold flex items-center justify-between flex-wrap gap-1.5 animate-fade-in">
+                    <span className="flex items-center gap-1.5 font-mono min-w-0 break-all">
                       <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                       <span>
                         Scanned & Added: <strong>{lastScannedSerial}</strong>
                       </span>
                     </span>
-                    <span className="text-[10px] text-emerald-700 font-sans font-normal">
+                    <span className="text-[10px] text-emerald-700 font-sans font-normal shrink-0">
                       Ready for next or Save
                     </span>
                   </div>
@@ -1547,9 +1546,9 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <div className="sm:col-span-2">
-                    <div className="flex items-center justify-between mb-1">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 min-w-0">
+                  <div className="sm:col-span-2 min-w-0">
+                    <div className="flex items-center justify-between flex-wrap gap-1 mb-1">
                       <label className="block text-[11px] font-semibold text-slate-700">
                         Serial Number(s) <span className="text-rose-600 font-bold">*</span>{' '}
                         <span className="text-slate-400 font-normal">(required · comma or enter separated)</span>:
@@ -1573,7 +1572,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         )
                       )}
                     </div>
-                    <div className="relative flex items-center">
+                    <div className="relative flex items-center min-w-0">
                       <input
                         ref={serialInputRef}
                         type="text"
@@ -1589,7 +1588,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                           cancelAiTyping(false);
                           setSerialInput(e.target.value);
                         }}
-                        className={`w-full pl-2.5 pr-24 py-2 text-xs font-mono font-medium border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs transition-all ${
+                        className={`w-full min-w-0 pl-2.5 pr-20 sm:pr-24 py-2 text-xs font-mono font-medium border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs transition-all ${
                           isAiTypingSerial
                             ? 'border-indigo-500 ring-2 ring-indigo-500/30 focus:ring-indigo-500'
                             : validationAttempted && buildSerialList(serialInput).length === 0
@@ -1603,7 +1602,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                           setScannerTarget('primary');
                           setIsScannerOpen(true);
                         }}
-                        className="absolute right-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-md text-[11px] font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                        className="absolute right-1 px-2 sm:px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-md text-[11px] font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
                         title={`Open Camera to scan ${entityLower} barcode or label`}
                       >
                         <Camera className="w-3.5 h-3.5" />
@@ -1617,7 +1616,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     )}
                   </div>
 
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                       Batch ({entityCap} Model) <span className="text-rose-600 font-bold">*</span>:
                     </label>
@@ -1635,7 +1634,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                           val.trim().length > 0 && val.trim() !== defaultName;
                         setBatchNo(val);
                       }}
-                      className={`w-full px-2.5 py-2 text-xs font-mono border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs ${
+                      className={`w-full min-w-0 px-2.5 py-2 text-xs font-mono border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs ${
                         validationAttempted && !batchNo.trim()
                           ? 'border-rose-500 ring-2 ring-rose-500/20 focus:ring-rose-500'
                           : 'border-blue-300 focus:ring-blue-500'
@@ -1649,8 +1648,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 text-[11px] text-blue-800 pt-0.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <div className="flex items-start gap-1.5 text-[11px] text-blue-800 pt-0.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
                   <span>
                     <strong>Confidential:</strong> Serial numbers are saved for in-app tracking and history
                     search, and will <strong>NOT</strong> appear on the WhatsApp Excel photo.
@@ -1662,38 +1661,38 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         </div>
 
         {/* Pinned Footer */}
-        <div className="shrink-0 bg-slate-100 border-t-2 border-slate-200 px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 rounded-b-2xl">
+        <div className="shrink-0 bg-slate-100 border-t-2 border-slate-200 px-3 sm:px-6 py-2.5 sm:py-3.5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 rounded-b-xl sm:rounded-b-2xl">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200/80 rounded-lg transition-colors order-3 sm:order-1 text-center cursor-pointer"
+            className="px-3 sm:px-4 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200/80 rounded-lg transition-colors order-3 sm:order-1 text-center cursor-pointer"
           >
             Cancel
           </button>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 order-1 sm:order-2">
+          <div className="grid grid-cols-2 sm:flex sm:flex-row items-stretch sm:items-center gap-2 order-1 sm:order-2">
             <button
               type="button"
               onClick={() => handleSave(false)}
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-all shadow-xs active:scale-[0.98] cursor-pointer"
+              className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 sm:py-2.5 text-[11px] sm:text-xs font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-all shadow-xs active:scale-[0.98] cursor-pointer text-center"
               title="Save changes and update spreadsheet ledger"
             >
-              <Check className="w-4 h-4 text-slate-600" />
-              <span>
+              <Check className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600 shrink-0" />
+              <span className="truncate">
                 {targetBranchId && (entryType === 'out' || entryType === 'both')
-                  ? 'Save & Send to Branch'
-                  : 'Update Excel & Serials'}
+                  ? 'Save & Send'
+                  : 'Update Excel'}
               </span>
             </button>
 
             <button
               type="button"
               onClick={() => handleSave(true)}
-              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-extrabold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-all shadow-sm active:scale-[0.98] cursor-pointer ring-2 ring-emerald-500/30"
+              className="inline-flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 text-[11px] sm:text-xs font-extrabold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-all shadow-sm active:scale-[0.98] cursor-pointer ring-2 ring-emerald-500/30 text-center"
               title="Save transaction and immediately open WhatsApp dispatch"
             >
-              <Send className="w-4 h-4" />
-              <span>Update & Send WhatsApp</span>
+              <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+              <span className="truncate">Save & WhatsApp</span>
             </button>
           </div>
         </div>

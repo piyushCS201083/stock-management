@@ -219,10 +219,10 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
 
             <button
               onClick={() => onOpenSerialTrackerModal('in_stock')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors cursor-pointer self-start sm:self-auto shrink-0 shadow-xs"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 sm:py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors cursor-pointer w-full sm:w-auto shrink-0 shadow-xs"
               title={`View all in-stock ${entityLower} serial numbers, past outward history, and download Serial Excel`}
             >
-              <Barcode className="w-3.5 h-3.5" />
+              <Barcode className="w-3.5 h-3.5 shrink-0" />
               <span>In-Stock Serials ({branchInStockCount}) & History ({serialList.length})</span>
             </button>
           </div>
@@ -303,15 +303,15 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
               <button
                 type="button"
                 onClick={onDownloadSerialExcel}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 transition-colors cursor-pointer"
+                className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 sm:py-1 rounded-md font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 transition-colors cursor-pointer w-full sm:w-auto"
                 title={
                   isAdminAuthenticated
                     ? `Download Excel 2: All ${entityCap} Serial Numbers + Past/Dispatched Movement History (.xlsx)`
                     : 'Admin login required to download Serials & History Excel (.xlsx)'
                 }
               >
-                {!isAdminAuthenticated && <Lock className="w-3 h-3 text-amber-300" />}
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
+                {!isAdminAuthenticated && <Lock className="w-3 h-3 text-amber-300 shrink-0" />}
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
                 <span>Download Serials & History Excel (.xlsx)</span>
               </button>
             )}
@@ -555,15 +555,15 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 shrink-0 w-full sm:w-auto">
             {totalMissingSerials > 0 ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-amber-900 bg-amber-100 border border-amber-300 rounded-lg">
-                <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-bold text-amber-900 bg-amber-100 border border-amber-300 rounded-lg">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                 <span>{totalMissingSerials} Missing Serials</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 rounded-lg">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 rounded-lg">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span>All Stock Serialized</span>
               </span>
             )}
@@ -581,33 +581,33 @@ export const BatchStockOverview: React.FC<BatchStockOverviewProps> = ({
 
         {/* Expanded Detailed Stock Content */}
         {isBatchCardsExpanded && (
-          <div className="p-4 sm:p-5 space-y-4">
+          <div className="p-3 sm:p-5 space-y-4">
             {/* Mode Switcher: Model/Batch View vs Serial No.-Wise Stock */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-              <div className="inline-flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 self-start">
+              <div className="grid grid-cols-2 sm:inline-flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 w-full sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setDetailedViewMode('batch')}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                  className={`inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-md text-[11px] sm:text-xs font-bold transition-all cursor-pointer ${
                     detailedViewMode === 'batch'
                       ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                  <span>Model / Batch-wise Stock</span>
+                  <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Model / Batch-wise</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setDetailedViewMode('serial_wise')}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                  className={`inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-md text-[11px] sm:text-xs font-bold transition-all cursor-pointer ${
                     detailedViewMode === 'serial_wise'
                       ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <List className="w-3.5 h-3.5" />
-                  <span>Serial No.-wise Stock ({branchSerialList.length})</span>
+                  <List className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Serial-wise ({branchSerialList.length})</span>
                 </button>
               </div>
 

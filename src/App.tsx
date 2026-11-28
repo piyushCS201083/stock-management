@@ -2535,7 +2535,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col text-slate-900 font-sans">
+    <div className="min-h-screen bg-slate-100 flex flex-col text-slate-900 font-sans overflow-x-clip">
       {/* Top Bar adhering to Top Bar Contract */}
       <Header
         onOpenQuickEntry={() => openQuickEntryWithType('both')}
@@ -2565,37 +2565,37 @@ export default function App() {
       />
 
       {/* Branch & Category Navigation Bar */}
-      <div className="bg-slate-900 text-white px-4 sm:px-6 py-2.5 border-b border-slate-800 shadow-xs flex items-center justify-between text-xs flex-wrap gap-2.5">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="bg-slate-900 text-white px-3 sm:px-6 py-2 sm:py-2.5 border-b border-slate-800 shadow-xs flex items-center justify-between text-xs flex-wrap gap-2">
+        <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto min-w-0">
           {isMasterSession ? (
             <button
               onClick={() => setIsBranchPortalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-500/40 text-blue-200 font-bold transition-all cursor-pointer shadow-2xs text-xs"
+              className="inline-flex items-center flex-wrap gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-500/40 text-blue-200 font-bold transition-all cursor-pointer shadow-2xs text-xs max-w-full min-w-0"
               title="Click to view all 5 branches: 1-Chandravadni Naka, 2-Morar Battery Factory, 3-Yard City Center, 4-Service Center, 5-Vehicle Manufacturing Factory"
             >
-              <Building2 className="w-3.5 h-3.5 text-blue-400" />
-              <span>{activeBranch.name}</span>
-              <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
+              <Building2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              <span className="truncate">{activeBranch.name}</span>
+              <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal shrink-0">
                 Switch Branch (1-5)
               </span>
               {(allowedCategories.includes('battery') || allowedCategories.includes('charger')) &&
                 (pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
-                  <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                  <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse shrink-0">
                     <BellRing className="w-3 h-3" />
                     <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
                   </span>
                 )}
             </button>
           ) : (
-            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/40 border border-blue-500/30 text-blue-100 font-bold text-xs">
-              <Lock className="w-3.5 h-3.5 text-amber-300" />
-              <span>{activeBranch.name}</span>
-              <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono">
+            <div className="inline-flex items-center flex-wrap gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-blue-900/40 border border-blue-500/30 text-blue-100 font-bold text-xs max-w-full min-w-0">
+              <Lock className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span className="truncate">{activeBranch.name}</span>
+              <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono shrink-0">
                 ID: {branchSession.loginId}
               </span>
               {(allowedCategories.includes('battery') || allowedCategories.includes('charger')) &&
                 (pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
-                  <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                  <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse shrink-0">
                     <BellRing className="w-3 h-3" />
                     <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
                   </span>
@@ -2603,47 +2603,47 @@ export default function App() {
             </div>
           )}
 
-          <span className="text-slate-600">/</span>
+          <span className="text-slate-600 hidden sm:inline">/</span>
 
           {/* Quick Category Switcher (Permitted Stock Registers Only) */}
-          <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg border border-slate-700 flex-wrap">
+          <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg border border-slate-700 flex-wrap w-full sm:w-auto">
             {allowedCategories.includes('battery') && (
               <button
                 onClick={() => handleSelectCategory('battery')}
-                className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                className={`flex-1 sm:flex-initial justify-center px-2.5 sm:px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-[11px] sm:text-xs ${
                   activeCategory === 'battery'
                     ? 'bg-blue-600 text-white shadow-2xs'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <BatteryCharging className="w-3.5 h-3.5" />
-                <span>Battery Stock</span>
+                <BatteryCharging className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">Battery Stock</span>
               </button>
             )}
             {allowedCategories.includes('charger') && (
               <button
                 onClick={() => handleSelectCategory('charger')}
-                className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                className={`flex-1 sm:flex-initial justify-center px-2.5 sm:px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-[11px] sm:text-xs ${
                   activeCategory === 'charger'
                     ? 'bg-amber-600 text-white shadow-2xs'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Charger Stock</span>
+                <Zap className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">Charger Stock</span>
               </button>
             )}
             {allowedCategories.includes('vehicle') && (
               <button
                 onClick={() => handleSelectCategory('vehicle')}
-                className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                className={`flex-1 sm:flex-initial justify-center px-2.5 sm:px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-[11px] sm:text-xs ${
                   activeCategory === 'vehicle'
                     ? 'bg-emerald-600 text-white shadow-2xs'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Car className="w-3.5 h-3.5" />
-                <span>Vehicle Stock</span>
+                <Car className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">Vehicle Stock</span>
               </button>
             )}
           </div>
@@ -2778,7 +2778,7 @@ export default function App() {
         </main>
       ) : (activeCategory === 'battery' && allowedCategories.includes('battery')) ||
         (activeCategory === 'charger' && allowedCategories.includes('charger')) ? (
-        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
+        <main className="flex-1 max-w-7xl w-full min-w-0 mx-auto p-2.5 sm:p-6 pb-24 md:pb-6 space-y-4 sm:space-y-6">
           {/* TOP: Incoming Goods Notification Banner for Active Branch */}
           <ReceiveGoodsBanner
             activeBranch={activeBranch}
@@ -2789,12 +2789,12 @@ export default function App() {
           />
 
           {/* TOP: Workspace Toolbar & Date Bar (Moved to top per user request) */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-5 shadow-2xs space-y-3.5 sm:space-y-4 min-w-0 w-full">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 min-w-0">
               {/* Left: Date Switcher & Day Navigation & Cloud Status */}
-              <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-wrap w-full md:w-auto min-w-0">
                 <div
-                  className={`flex items-center rounded-lg p-1 transition-all ${
+                  className={`flex items-center justify-between sm:justify-start rounded-lg p-1 transition-all w-full sm:w-auto min-w-0 ${
                     isViewingToday
                       ? 'bg-blue-50/90 border-2 border-blue-500 shadow-xs ring-2 ring-blue-500/20'
                       : 'bg-slate-50 border border-slate-300'
@@ -2803,36 +2803,38 @@ export default function App() {
                   <button
                     onClick={handlePrevDate}
                     disabled={currentIndex <= 0}
-                    className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
+                    className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer shrink-0"
                     title="Previous Date"
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </button>
 
-                  <div className="flex items-center gap-2 px-3 py-1 font-bold text-slate-900 text-sm">
-                    <Calendar className="w-4 h-4 text-blue-600 shrink-0" />
-                    <select
-                      value={currentDate}
-                      onChange={(e) => handleSelectOrCreateDate(e.target.value)}
-                      className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer"
-                    >
-                      {recordedDates.map((d) => (
-                        <option key={d} value={d}>
-                          {d} {d === todayIST ? '★ (Today)' : ''}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 px-1 sm:px-3 py-0.5 sm:py-1 font-bold text-slate-900 text-xs sm:text-sm min-w-0 flex-1 sm:flex-initial">
+                    <div className="inline-flex items-center gap-1 min-w-0">
+                      <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600 shrink-0" />
+                      <select
+                        value={currentDate}
+                        onChange={(e) => handleSelectOrCreateDate(e.target.value)}
+                        className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer text-xs sm:text-sm max-w-[138px] sm:max-w-none truncate"
+                      >
+                        {recordedDates.map((d) => (
+                          <option key={d} value={d}>
+                            {d} {d === todayIST ? '★ (Today)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
                     {isViewingToday ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span className="inline-flex items-center gap-1 px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-[11px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs shrink-0 whitespace-nowrap">
+                        <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                         <span>Today</span>
                       </span>
                     ) : (
                       <button
                         type="button"
                         onClick={handleJumpToTodayIST}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer"
+                        className="inline-flex items-center gap-1 px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-[11px] font-bold rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                         title="Return to today's active ledger"
                       >
                         <span>Jump to Today</span>
@@ -2850,278 +2852,288 @@ export default function App() {
                         if (target) handleSelectOrCreateDate(target);
                       }}
                       title="Change date till today (IST)"
-                      className="text-xs text-slate-600 border border-slate-300 rounded px-1.5 py-0.5 bg-white cursor-pointer focus:outline-blue-500"
+                      className="text-[11px] sm:text-xs text-slate-600 border border-slate-300 rounded px-1 sm:px-1.5 py-0.5 bg-white cursor-pointer focus:outline-blue-500 max-w-[116px] sm:max-w-none shrink-0"
                     />
                   </div>
 
                   <button
                     onClick={handleNextDate}
                     disabled={isViewingToday}
-                    className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer"
+                    className="p-1.5 text-slate-600 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-200 cursor-pointer shrink-0"
                     title={isViewingToday ? "Already at today's active ledger" : "Next Date / Tomorrow"}
                   >
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
 
-                <button
-                  onClick={handleJumpToTodayIST}
-                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                    isViewingToday
-                      ? 'text-emerald-900 bg-emerald-50 border-emerald-400 font-bold shadow-2xs'
-                      : 'text-amber-900 bg-amber-50 hover:bg-amber-100 border-amber-300'
-                  }`}
-                  title="Jump to today's date in India Standard Time"
-                >
-                  {isViewingToday && <span className="w-2 h-2 rounded-full bg-emerald-500"></span>}
-                  <span>Today ({todayIST})</span>
-                </button>
+                <div className="grid grid-cols-2 sm:contents gap-2 w-full sm:w-auto">
+                  <button
+                    onClick={handleJumpToTodayIST}
+                    className={`inline-flex items-center justify-center sm:justify-start gap-1.5 px-2.5 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-lg border transition-all cursor-pointer truncate ${
+                      isViewingToday
+                        ? 'text-emerald-900 bg-emerald-50 border-emerald-400 font-bold shadow-2xs'
+                        : 'text-amber-900 bg-amber-50 hover:bg-amber-100 border-amber-300'
+                    }`}
+                    title="Jump to today's date in India Standard Time"
+                  >
+                    {isViewingToday && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>}
+                    <span className="truncate">Today ({todayIST})</span>
+                  </button>
 
-                <button
-                  onClick={handleCreateNextDay}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors cursor-pointer"
-                  title="Create next day entry carrying forward today's closing stock"
-                >
-                  <Plus className="w-3.5 h-3.5 text-blue-600" />
-                  <span>Next Day Carryover</span>
-                </button>
+                  <button
+                    onClick={handleCreateNextDay}
+                    className="inline-flex items-center justify-center sm:justify-start gap-1.5 px-2.5 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors cursor-pointer"
+                    title="Create next day entry carrying forward today's closing stock"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span className="truncate">Next Day Carryover</span>
+                  </button>
 
-                <button
-                  onClick={() => setIsCloudModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 cursor-pointer"
-                  title="View Cloud DBMS, Supabase & Cloudinary Cloud Space settings"
-                >
-                  <Database className="w-3 h-3 text-emerald-600" />
-                  <span className="hidden sm:inline">DBMS:</span>
-                  <span className="font-semibold text-slate-800">
-                    {saveState === 'saving'
-                      ? 'Saving...'
-                      : pendingSyncCount > 0
-                      ? `Pending (${pendingSyncCount})`
-                      : backendStatus?.supabaseReady
-                      ? 'Supabase Saved'
-                      : backendStatus?.online
-                      ? 'Saved'
-                      : 'Local Safe'}
-                  </span>
-                </button>
+                  <button
+                    onClick={() => setIsCloudModalOpen(true)}
+                    className="inline-flex items-center justify-center sm:justify-start gap-1.5 px-2.5 py-2 sm:py-1.5 text-[11px] sm:text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 cursor-pointer"
+                    title="View Cloud DBMS, Supabase & Cloudinary Cloud Space settings"
+                  >
+                    <Database className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span className="hidden sm:inline">DBMS:</span>
+                    <span className="font-semibold text-slate-800 truncate">
+                      {saveState === 'saving'
+                        ? 'Saving...'
+                        : pendingSyncCount > 0
+                        ? `Pending (${pendingSyncCount})`
+                        : backendStatus?.supabaseReady
+                        ? 'Supabase Saved'
+                        : backendStatus?.online
+                        ? 'Saved'
+                        : 'Local Safe'}
+                    </span>
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => handleManualSaveAndBackup(false)}
-                  disabled={isCloudSpaceBackingUp}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
-                    backendStatus?.cloudinary?.configured
-                      ? 'text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border-indigo-300'
-                      : 'text-slate-700 bg-white hover:bg-slate-50 border-slate-300'
-                  }`}
-                  title={
-                    backendStatus?.cloudinary?.configured
-                      ? `Save & upload snapshot to Cloudinary Cloud Space (${backendStatus.cloudinary.cloudName})`
-                      : 'Flush pending saves & create server backup snapshot (configure Cloudinary keys in Cloud DBMS settings for Cloud Space upload)'
-                  }
-                >
-                  {isCloudSpaceBackingUp ? (
-                    <Cloud className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
-                  ) : (
-                    <Save className="w-3.5 h-3.5 text-indigo-600" />
+                  <button
+                    type="button"
+                    onClick={() => handleManualSaveAndBackup(false)}
+                    disabled={isCloudSpaceBackingUp}
+                    className={`inline-flex items-center justify-center sm:justify-start gap-1.5 px-2.5 py-2 sm:py-1.5 text-[11px] sm:text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                      backendStatus?.cloudinary?.configured
+                        ? 'text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border-indigo-300'
+                        : 'text-slate-700 bg-white hover:bg-slate-50 border-slate-300'
+                    }`}
+                    title={
+                      backendStatus?.cloudinary?.configured
+                        ? `Save & upload snapshot to Cloudinary Cloud Space (${backendStatus.cloudinary.cloudName})`
+                        : 'Flush pending saves & create server backup snapshot (configure Cloudinary keys in Cloud DBMS settings for Cloud Space upload)'
+                    }
+                  >
+                    {isCloudSpaceBackingUp ? (
+                      <Cloud className="w-3.5 h-3.5 text-indigo-600 animate-pulse shrink-0" />
+                    ) : (
+                      <Save className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    )}
+                    <span className="truncate">
+                      {isCloudSpaceBackingUp
+                        ? 'Backing up...'
+                        : backendStatus?.cloudinary?.configured
+                        ? 'Save & Cloud Space'
+                        : 'Save & Backup'}
+                    </span>
+                  </button>
+
+                  {!isChargerMode && (
+                    <div className="col-span-2 sm:col-span-1 flex justify-center sm:block">
+                      <ReferenceImageViewer />
+                    </div>
                   )}
-                  <span>
-                    {isCloudSpaceBackingUp
-                      ? 'Backing up...'
-                      : backendStatus?.cloudinary?.configured
-                      ? 'Save & Cloud Space'
-                      : 'Save & Backup'}
-                  </span>
-                </button>
-
-                {!isChargerMode && <ReferenceImageViewer />}
+                </div>
               </div>
 
               {/* Right: Quick Action Buttons with IN, OUT, and Both IN & OUT */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={() => setIsBarcodeScannerOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 border border-blue-700 rounded-lg shadow-xs transition-all cursor-pointer ring-2 ring-blue-500/20"
-                  title="Scan any barcode or QR code with high-speed camera scanner"
-                >
-                  <Barcode className="w-4 h-4 text-white" />
-                  <span>Scan Barcode</span>
-                </button>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:flex-wrap w-full md:w-auto min-w-0">
+                <div className="grid grid-cols-1 sm:flex sm:items-center gap-2 w-full sm:w-auto">
+                  <button
+                    onClick={() => setIsBarcodeScannerOpen(true)}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 border border-blue-700 rounded-lg shadow-xs transition-all cursor-pointer ring-2 ring-blue-500/20 w-full sm:w-auto"
+                    title="Scan any barcode or QR code with high-speed camera scanner"
+                  >
+                    <Barcode className="w-4 h-4 text-white shrink-0" />
+                    <span>Scan Barcode</span>
+                  </button>
 
-                <button
-                  onClick={() => {
-                    setSerialModalInitialFilter('all');
-                    setIsSerialModalOpen(true);
-                  }}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 border border-amber-500 rounded-lg shadow-xs transition-all cursor-pointer ring-1 ring-amber-400/50"
-                  title={
-                    isChargerMode
-                      ? 'Search charger serials, view batchwise stock, and trace complete history'
-                      : 'Search battery serials, view batchwise stock, and trace complete history'
-                  }
-                >
-                  <Barcode className="w-4 h-4 text-slate-950" />
-                  <span className="font-extrabold text-slate-950">Serial & Batch Tracker</span>
-                  {unassignedCount > 0 ? (
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-900 text-amber-300 font-bold">
-                      {unassignedCount} to Assign
+                  <button
+                    onClick={() => {
+                      setSerialModalInitialFilter('all');
+                      setIsSerialModalOpen(true);
+                    }}
+                    className="inline-flex items-center justify-between sm:justify-start gap-2 px-3.5 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 border border-amber-500 rounded-lg shadow-xs transition-all cursor-pointer ring-1 ring-amber-400/50 w-full sm:w-auto"
+                    title={
+                      isChargerMode
+                        ? 'Search charger serials, view batchwise stock, and trace complete history'
+                        : 'Search battery serials, view batchwise stock, and trace complete history'
+                    }
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Barcode className="w-4 h-4 text-slate-950 shrink-0" />
+                      <span className="font-extrabold text-slate-950">Serial & Batch Tracker</span>
                     </span>
-                  ) : (
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-800 text-white font-bold">
-                      All Serialized
-                    </span>
-                  )}
-                </button>
+                    {unassignedCount > 0 ? (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-900 text-amber-300 font-bold shrink-0">
+                        {unassignedCount} to Assign
+                      </span>
+                    ) : (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-800 text-white font-bold shrink-0">
+                        All Serialized
+                      </span>
+                    )}
+                  </button>
+                </div>
 
-                <div className="inline-flex items-center rounded-lg border border-slate-300 bg-slate-100 p-0.5 gap-0.5 shadow-2xs">
+                <div className="grid grid-cols-2 sm:inline-flex sm:items-center rounded-lg border border-slate-300 bg-slate-100 p-1 sm:p-0.5 gap-1 sm:gap-0.5 shadow-2xs w-full sm:w-auto">
                   <button
                     type="button"
                     onClick={() => openQuickEntryWithType('in')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-md transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1 px-2.5 py-2 sm:py-1.5 text-xs font-extrabold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-md transition-colors cursor-pointer"
                     title="Log Stock IN (+)"
                   >
-                    <PlusCircle className="w-3.5 h-3.5 text-emerald-600" />
+                    <PlusCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                     <span>IN (+)</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => openQuickEntryWithType('out')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-md transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1 px-2.5 py-2 sm:py-1.5 text-xs font-extrabold text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-md transition-colors cursor-pointer"
                     title="Log Stock OUT (-) or Send to Another Branch"
                   >
-                    <MinusCircle className="w-3.5 h-3.5 text-rose-600" />
+                    <MinusCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                     <span>OUT (-)</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => openQuickEntryWithType('both')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 rounded-md transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1 px-2.5 py-2 sm:py-1.5 text-xs font-extrabold text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 rounded-md transition-colors cursor-pointer"
                     title="Log Both IN and OUT transactions together"
                   >
-                    <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600" />
+                    <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
                     <span>Both IN & OUT</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => openQuickEntryWithType('transfer')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-extrabold text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-400 rounded-md transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1 px-2.5 py-2 sm:py-1.5 text-xs font-extrabold text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-400 rounded-md transition-colors cursor-pointer"
                     title={
                       isChargerMode
                         ? 'Send charger from this branch to another branch with top receive notification'
                         : 'Send battery from this branch to another branch with top receive notification'
                     }
                   >
-                    <Truck className="w-3.5 h-3.5 text-amber-800" />
+                    <Truck className="w-3.5 h-3.5 text-amber-800 shrink-0" />
                     <span>Send to Branch</span>
                   </button>
                 </div>
 
                 <button
                   onClick={() => setIsWhatsAppOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+                  className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer w-full sm:w-auto"
                 >
-                  <Send className="w-3.5 h-3.5" />
+                  <Send className="w-3.5 h-3.5 shrink-0" />
                   <span>Dispatch to WhatsApp</span>
                 </button>
 
-                <div className="inline-flex items-center rounded-lg border border-slate-300 bg-white p-0.5 gap-0.5 shadow-2xs">
+                <div className="grid grid-cols-2 sm:inline-flex sm:items-center rounded-lg border border-slate-300 bg-white p-1 sm:p-0.5 gap-1 sm:gap-0.5 shadow-2xs w-full sm:w-auto">
                   <button
                     onClick={handleDownloadQuantityExcelGated}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1.5 px-2.5 py-2 sm:py-1.5 text-[11px] sm:text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors cursor-pointer"
                     title={
                       adminToken
                         ? `Excel 1: Download ${isChargerMode ? 'Charger' : 'Battery'} Quantity Stock Excel (.xlsx)`
                         : 'Admin login required to download Quantity Excel (.xlsx)'
                     }
                   >
-                    {!adminToken && <Lock className="w-3 h-3 text-emerald-700" />}
-                    <Download className="w-3.5 h-3.5 text-emerald-700" />
-                    <span>Quantity Excel</span>
+                    {!adminToken && <Lock className="w-3 h-3 text-emerald-700 shrink-0" />}
+                    <Download className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                    <span className="truncate">Quantity Excel</span>
                   </button>
                   <button
                     onClick={handleDownloadSerialHistoryExcelGated}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1.5 px-2.5 py-2 sm:py-1.5 text-[11px] sm:text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md transition-colors cursor-pointer"
                     title={
                       adminToken
                         ? `Excel 2: Download All ${isChargerMode ? 'Charger' : 'Battery'} Serial Numbers + Past/Dispatched History (.xlsx)`
                         : 'Admin login required to download Serials & History Excel (.xlsx)'
                     }
                   >
-                    {!adminToken && <Lock className="w-3 h-3 text-blue-700" />}
-                    <FileSpreadsheet className="w-3.5 h-3.5 text-blue-700" />
-                    <span>Serials & History Excel</span>
+                    {!adminToken && <Lock className="w-3 h-3 text-blue-700 shrink-0" />}
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                    <span className="truncate">Serials & History Excel</span>
                   </button>
                 </div>
               </div>
             </div>
 
             {/* KPI Summary Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-3 border-t border-slate-100">
-              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3 pt-3 border-t border-slate-100">
+              <div className="p-2.5 sm:p-3 bg-slate-50 rounded-lg border border-slate-200">
+                <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">
                   Opening Stock
                 </span>
-                <span className="text-xl font-extrabold text-slate-900 tabular-nums">
+                <span className="text-lg sm:text-xl font-extrabold text-slate-900 tabular-nums">
                   {totals.openingStockTotal}
                 </span>
-                <span className="text-[11px] text-slate-400 block mt-0.5">Standard models</span>
+                <span className="text-[10px] sm:text-[11px] text-slate-400 block mt-0.5">Standard models</span>
               </div>
 
-              <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
-                <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide block">
+              <div className="p-2.5 sm:p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
+                <span className="text-[10px] sm:text-[11px] font-semibold text-emerald-700 uppercase tracking-wide block">
                   Inward (In Stock)
                 </span>
-                <span className="text-xl font-extrabold text-emerald-700 tabular-nums">
+                <span className="text-lg sm:text-xl font-extrabold text-emerald-700 tabular-nums">
                   +{totals.inStockTotal}
                 </span>
-                <span className="text-[11px] text-emerald-600/80 block mt-0.5">
+                <span className="text-[10px] sm:text-[11px] text-emerald-600/80 block mt-0.5">
                   Received / Exchanged
                 </span>
               </div>
 
-              <div className="p-3 bg-rose-50/60 rounded-lg border border-rose-200">
-                <span className="text-[11px] font-semibold text-rose-700 uppercase tracking-wide block">
+              <div className="p-2.5 sm:p-3 bg-rose-50/60 rounded-lg border border-rose-200">
+                <span className="text-[10px] sm:text-[11px] font-semibold text-rose-700 uppercase tracking-wide block">
                   Outward (Out Stock)
                 </span>
-                <span className="text-xl font-extrabold text-rose-700 tabular-nums">
+                <span className="text-lg sm:text-xl font-extrabold text-rose-700 tabular-nums">
                   {totals.outStockTotal}
                 </span>
-                <span className="text-[11px] text-rose-600/80 block mt-0.5">
+                <span className="text-[10px] sm:text-[11px] text-rose-600/80 block mt-0.5">
                   Vehicles / Dealers
                 </span>
               </div>
 
-              <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-200">
-                <span className="text-[11px] font-semibold text-blue-700 uppercase tracking-wide block">
+              <div className="p-2.5 sm:p-3 bg-blue-50/60 rounded-lg border border-blue-200">
+                <span className="text-[10px] sm:text-[11px] font-semibold text-blue-700 uppercase tracking-wide block">
                   Today's Closing
                 </span>
-                <span className="text-xl font-extrabold text-blue-800 tabular-nums">
+                <span className="text-lg sm:text-xl font-extrabold text-blue-800 tabular-nums">
                   {totals.closingStockTotal}
                 </span>
-                <span className="text-[11px] text-blue-600/80 block mt-0.5">Units in store</span>
+                <span className="text-[10px] sm:text-[11px] text-blue-600/80 block mt-0.5">Units in store</span>
               </div>
 
-              <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-200">
-                <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide block">
+              <div className="p-2.5 sm:p-3 bg-amber-50/60 rounded-lg border border-amber-200">
+                <span className="text-[10px] sm:text-[11px] font-semibold text-amber-800 uppercase tracking-wide block">
                   Old For Repair
                 </span>
-                <span className="text-xl font-extrabold text-amber-900 tabular-nums">
+                <span className="text-lg sm:text-xl font-extrabold text-amber-900 tabular-nums">
                   {totals.repair.closing}
                 </span>
-                <span className="text-[11px] text-amber-700/80 block mt-0.5">
+                <span className="text-[10px] sm:text-[11px] text-amber-700/80 block mt-0.5">
                   In: +{totals.repair.in} | Out: {totals.repair.out}
                 </span>
               </div>
 
-              <div className="p-3 bg-indigo-50/60 rounded-lg border border-indigo-200">
-                <span className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wide block">
+              <div className="p-2.5 sm:p-3 bg-indigo-50/60 rounded-lg border border-indigo-200">
+                <span className="text-[10px] sm:text-[11px] font-semibold text-indigo-800 uppercase tracking-wide block">
                   Service Standby
                 </span>
-                <span className="text-xl font-extrabold text-indigo-900 tabular-nums">
+                <span className="text-lg sm:text-xl font-extrabold text-indigo-900 tabular-nums">
                   {totals.service.closing}
                 </span>
-                <span className="text-[11px] text-indigo-600/80 block mt-0.5">Total pool units</span>
+                <span className="text-[10px] sm:text-[11px] text-indigo-600/80 block mt-0.5">Total pool units</span>
               </div>
             </div>
           </div>
@@ -3154,11 +3166,11 @@ export default function App() {
           />
 
         {/* The Excel Spreadsheet (Exact replica of user's photo) */}
-        <section className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
+        <section className="bg-white border border-slate-200 rounded-xl p-3 sm:p-5 shadow-2xs space-y-3 min-w-0 w-full">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="min-w-0">
               <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 flex-wrap">
-                <FileSpreadsheet className="w-4 h-4 text-blue-600" />
+                <FileSpreadsheet className="w-4 h-4 text-blue-600 shrink-0" />
                 <span>
                   {isChargerMode
                     ? 'Charger Daily Inventory Spreadsheet'
@@ -3171,53 +3183,53 @@ export default function App() {
                   </span>
                 )}
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-500 mt-0.5">
                 Synced from last stock entry. Click any quantity/cause cell to edit, or click any Today&apos;s Stock {isChargerMode ? 'charger' : 'battery'} count to see its serial numbers in stock.
               </p>
             </div>
 
-            <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 sm:gap-2.5 flex-wrap w-full sm:w-auto">
               <button
                 type="button"
                 onClick={handleDownloadQuantityExcelGated}
-                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer"
+                className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 text-[11px] sm:text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer"
                 title={
                   adminToken
                     ? 'Download Excel 1: Quantity Stock Sheet (.xlsx)'
                     : 'Admin login required to download Quantity Stock Sheet (.xlsx)'
                 }
               >
-                {!adminToken && <Lock className="w-3 h-3" />}
-                <Download className="w-3.5 h-3.5" />
+                {!adminToken && <Lock className="w-3 h-3 shrink-0" />}
+                <Download className="w-3.5 h-3.5 shrink-0" />
                 <span>Quantity .xlsx</span>
               </button>
               <button
                 type="button"
                 onClick={handleDownloadSerialHistoryExcelGated}
-                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md cursor-pointer"
+                className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 text-[11px] sm:text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md cursor-pointer"
                 title={
                   adminToken
                     ? `Download Excel 2: All ${isChargerMode ? 'Charger' : 'Battery'} Serials & Past Outward History (.xlsx)`
                     : 'Admin login required to download Serials & History Excel (.xlsx)'
                 }
               >
-                {!adminToken && <Lock className="w-3 h-3" />}
-                <FileSpreadsheet className="w-3.5 h-3.5" />
+                {!adminToken && <Lock className="w-3 h-3 shrink-0" />}
+                <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
                 <span>Serials & History .xlsx</span>
               </button>
               <button
                 type="button"
                 onClick={() => handleManualSaveAndBackup(true)}
                 disabled={isCloudSpaceBackingUp}
-                className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                className="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-1 py-1.5 sm:py-0 text-xs font-semibold text-indigo-700 hover:text-indigo-900 cursor-pointer"
                 title={
                   adminToken
                     ? 'Sync & back up both Quantity and Serial History Excels (.xlsx) to Cloudinary now'
                     : 'Admin login required to sync Excels to Cloud Space'
                 }
               >
-                {!adminToken && <Lock className="w-3 h-3" />}
-                <Cloud className="w-3.5 h-3.5" />
+                {!adminToken && <Lock className="w-3 h-3 shrink-0" />}
+                <Cloud className="w-3.5 h-3.5 shrink-0" />
                 <span>{isCloudSpaceBackingUp ? 'Syncing...' : 'Sync Excels to Cloud'}</span>
               </button>
             </div>
@@ -3245,31 +3257,31 @@ export default function App() {
 
           {/* Bottom Action & Dispatch Bar directly under Spreadsheet */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 pt-3 border-t border-slate-100 gap-3">
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
               <span className="font-semibold text-slate-700">Daily Workflow:</span>
               <span>1. Direct cell edits or Log Transaction</span>
               <span>→</span>
-              <span>2. Click "Send WhatsApp"</span>
+              <span>2. Click &quot;Send WhatsApp&quot;</span>
               <span>→</span>
               <span>3. Send verified photo & report</span>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto shrink-0">
               <button
                 onClick={() => setIsQuickEntryOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer shadow-2xs"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer shadow-2xs"
                 title="Open quick update dialog to log inward/outward changes"
               >
-                <Plus className="w-4 h-4" />
+                <Plus className="w-4 h-4 shrink-0" />
                 <span>Update Ledger</span>
               </button>
 
               <button
                 onClick={() => setIsWhatsAppOpen(true)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+                className="inline-flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
                 title="Send verified sheet photo and summary to WhatsApp"
               >
-                <Send className="w-3.5 h-3.5" />
+                <Send className="w-3.5 h-3.5 shrink-0" />
                 <span>Send WhatsApp</span>
               </button>
             </div>
@@ -3277,49 +3289,49 @@ export default function App() {
         </section>
 
         {/* Authorized Owner & Admin WhatsApp Dispatch Section */}
-        <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
+        <section className="bg-white border border-slate-200 rounded-xl p-3.5 sm:p-5 shadow-2xs min-w-0 w-full">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <div>
+            <div className="min-w-0">
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>Authorized Owner & Admin (WhatsApp Dispatch)</span>
               </h3>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-500 mt-0.5">
                 Official stock ledger, verified Excel snapshots, and inward/outward alerts are routed directly to Owner & Admin.
               </p>
             </div>
 
             <button
               onClick={() => setIsTeamModalOpen(true)}
-              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline cursor-pointer self-start sm:self-auto"
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline cursor-pointer self-start sm:self-auto shrink-0"
             >
               Contact Settings
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
             {teamMembers.map((member) => (
               <div
                 key={member.id}
-                className="p-4 bg-gradient-to-br from-emerald-50/60 via-slate-50 to-white rounded-xl border border-emerald-200 text-xs flex flex-col justify-between shadow-xs hover:border-emerald-300 transition-all"
+                className="p-3.5 sm:p-4 bg-gradient-to-br from-emerald-50/60 via-slate-50 to-white rounded-xl border border-emerald-200 text-xs flex flex-col justify-between shadow-xs hover:border-emerald-300 transition-all min-w-0"
               >
                 <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-extrabold text-base text-slate-900 tracking-tight">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="font-extrabold text-sm sm:text-base text-slate-900 tracking-tight">
                       {member.name}
                     </span>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                    <span className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
                       <ShieldCheck className="w-3.5 h-3.5 text-amber-700" />
                       <span>{member.role || 'Owner & Admin'}</span>
                     </span>
                   </div>
                   <div className="text-emerald-700 text-xs font-medium mt-1 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
                     <span>Primary Stock Administrator & Owner</span>
                   </div>
                 </div>
 
-                <div className="mt-4 pt-3 border-t border-emerald-100 flex flex-wrap items-center justify-between gap-3">
+                <div className="mt-4 pt-3 border-t border-emerald-100 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3">
                   <div className="flex flex-col">
                     <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
                       Verified WhatsApp Number
@@ -3336,9 +3348,9 @@ export default function App() {
                     )}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 sm:py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
                   >
-                    <Send className="w-3.5 h-3.5" />
+                    <Send className="w-3.5 h-3.5 shrink-0" />
                     <span>Direct WhatsApp Chat</span>
                   </a>
                 </div>
