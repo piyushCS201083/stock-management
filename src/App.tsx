@@ -2950,6 +2950,7 @@ export default function App() {
         recordedDates={recordedDates}
         onSelectDate={handleSelectOrCreateDate}
         serials={serials}
+        closingStock={totals.closingStock}
       />
 
       <ReceiveTransferModal

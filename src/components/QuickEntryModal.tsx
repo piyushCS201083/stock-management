@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { BatteryColumn, BatterySerialItem, BRANCHES, BranchInfo, DayRecord, DEFAULT_BRANCH_ID } from '../types/stock';
+import { calculateRecordTotals } from '../utils/storage';
 import {
   PlusCircle,
   MinusCircle,
@@ -72,6 +73,7 @@ interface QuickEntryModalProps {
   recordedDates?: string[];
   onSelectDate?: (date: string) => void;
   serials?: Record<string, BatterySerialItem>;
+  closingStock?: Record<string, number>;
 }
 
 export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
@@ -85,6 +87,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   onCreateBranchTransfer,
   onSelectDate,
   serials = {},
+  closingStock,
 }) => {
   const [entryType, setEntryType] = useState<'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service'>(
     initialEntryType === 'transfer' ? 'out' : initialEntryType
@@ -125,10 +128,21 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       ? { id: 'service', name: 'SERVICE BATTERY', isSpecial: true }
       : columns.find((c) => c.id === id);
 
-  const getModelCurrentClosing = (colId: string): number =>
-    (record.stock[colId] || 0) +
-    (record.inStock[colId] || 0) +
-    (record.outStock[colId] || 0);
+  const liveClosingStock = useMemo(() => {
+    if (closingStock) return closingStock;
+    return calculateRecordTotals(record, columns).closingStock;
+  }, [closingStock, record, columns]);
+
+  const getModelCurrentClosing = (colId: string): number => {
+    if (Object.prototype.hasOwnProperty.call(liveClosingStock, colId)) {
+      return Number(liveClosingStock[colId] || 0);
+    }
+    return (
+      Number(record.stock?.[colId] || 0) +
+      Number(record.inStock?.[colId] || 0) +
+      Number(record.outStock?.[colId] || 0)
+    );
+  };
 
   const getDefaultBatchName = (
     mode: 'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service',
@@ -173,10 +187,17 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       setSelectedColId(columns[0].id);
       return;
     }
+    if (
+      inColId !== 'service' &&
+      !columns.some((c) => c.id === inColId) &&
+      columns[0]?.id
+    ) {
+      setInColId(columns[0].id);
+    }
     if (!isBatchCustomRef.current) {
       setBatchNo(getDefaultBatchName(entryType, selectedColId));
     }
-  }, [isOpen, entryType, selectedColId, columns]);
+  }, [isOpen, entryType, selectedColId, inColId, columns]);
 
   const inStockSerialsForOutModel = useMemo(() => {
     const col =
@@ -654,10 +675,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   };
 
   const selectedCol = resolveModel(selectedColId);
-  const currentOpen = selectedCol ? record.stock[selectedCol.id] || 0 : 0;
-  const currentIn = selectedCol ? record.inStock[selectedCol.id] || 0 : 0;
-  const currentOut = selectedCol ? record.outStock[selectedCol.id] || 0 : 0;
-  const currentClosing = currentOpen + currentIn + currentOut;
+  const currentClosing = selectedCol ? getModelCurrentClosing(selectedCol.id) : 0;
 
   const previewClosing =
     entryType === 'in'
@@ -666,12 +684,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       ? currentClosing - quantity
       : currentClosing;
 
-  const inSelectedCol = columns.find((c) => c.id === inColId);
-  const inColClosing = inSelectedCol
-    ? (record.stock[inSelectedCol.id] || 0) +
-      (record.inStock[inSelectedCol.id] || 0) +
-      (record.outStock[inSelectedCol.id] || 0)
-    : 0;
+  const inSelectedCol = resolveModel(inColId);
+  const inColClosing = inSelectedCol ? getModelCurrentClosing(inSelectedCol.id) : 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
@@ -865,9 +879,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     >
                       {columns.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.name} (Current: {getModelCurrentClosing(col.id)})
+                          {col.name} (Closing: {getModelCurrentClosing(col.id)} units)
                         </option>
                       ))}
+                      <option value="service">
+                        SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                      </option>
                     </select>
                   </div>
                   <div>
@@ -957,9 +974,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     >
                       {columns.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.name} (Current: {getModelCurrentClosing(col.id)})
+                          {col.name} (Closing: {getModelCurrentClosing(col.id)} units)
                         </option>
                       ))}
+                      <option value="service">
+                        SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                      </option>
                     </select>
                   </div>
                   <div>
@@ -1081,11 +1101,11 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     >
                       {columns.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.name} (Current: {getModelCurrentClosing(col.id)} units)
+                          {col.name} (Closing: {getModelCurrentClosing(col.id)} units)
                         </option>
                       ))}
                       <option value="service">
-                        SERVICE BATTERY (Current: {getModelCurrentClosing('service')} units)
+                        SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
                       </option>
                     </select>
                   </div>
@@ -1166,9 +1186,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                           >
                             {columns.map((col) => (
                               <option key={col.id} value={col.id}>
-                                {col.name}
+                                {col.name} (Closing: {getModelCurrentClosing(col.id)} units)
                               </option>
                             ))}
+                            <option value="service">
+                              SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                            </option>
                           </select>
                           <input
                             type="number"
@@ -1248,10 +1271,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   </span>
                   <div className="flex items-center gap-2 font-mono">
                     {(() => {
-                      const repairClosing =
-                        (record.stock['repair'] || 0) +
-                        (record.inStock['repair'] || 0) +
-                        (record.outStock['repair'] || 0);
+                      const repairClosing = getModelCurrentClosing('repair');
                       return (
                         <>
                           <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-amber-200 text-xs">
@@ -1277,10 +1297,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   </span>
                   <div className="flex items-center gap-2 font-mono">
                     {(() => {
-                      const serviceClosing =
-                        (record.stock['service'] || 0) +
-                        (record.inStock['service'] || 0) +
-                        (record.outStock['service'] || 0);
+                      const serviceClosing = getModelCurrentClosing('service');
                       return (
                         <>
                           <span className="text-slate-600 bg-white px-2.5 py-1 rounded border border-indigo-200 text-xs">
