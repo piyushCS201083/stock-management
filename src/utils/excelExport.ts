@@ -19,14 +19,19 @@ function getBranchLabel(branchId?: string): string {
   return BRANCHES.find((b) => b.id === id)?.name || id;
 }
 
-function buildFallbackDailyTransactions(record: DayRecord, columns: BatteryColumn[]): StockTransactionEntry[] {
+function buildFallbackDailyTransactions(
+  record: DayRecord,
+  columns: BatteryColumn[],
+  category: 'battery' | 'charger' = 'battery'
+): StockTransactionEntry[] {
   const branchId = record.branchId || DEFAULT_BRANCH_ID;
   const ts = record.lastModified || '';
   const actor = record.lastModifiedBy || '';
+  const isCharger = category === 'charger';
   const tracked = [
     ...columns.map((c) => ({ id: c.id, name: c.name })),
-    { id: 'repair', name: 'OLD BATTERY FOR REPAIR' },
-    { id: 'service', name: 'SERVICE BATTERY' },
+    { id: 'repair', name: isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR' },
+    { id: 'service', name: isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY' },
   ];
   const entries: StockTransactionEntry[] = [];
   tracked.forEach((col) => {
@@ -37,7 +42,7 @@ function buildFallbackDailyTransactions(record: DayRecord, columns: BatteryColum
         timestamp: ts,
         date: record.date,
         branchId,
-        category: 'battery',
+        category,
         action: col.id === 'repair' ? 'repair_in' : col.id === 'service' ? 'service' : 'in',
         modelId: col.id,
         modelName: col.name,
@@ -57,7 +62,7 @@ function buildFallbackDailyTransactions(record: DayRecord, columns: BatteryColum
         timestamp: ts,
         date: record.date,
         branchId,
-        category: 'battery',
+        category,
         action: col.id === 'repair' ? 'repair_out' : col.id === 'service' ? 'service' : 'out',
         modelId: col.id,
         modelName: col.name,
@@ -98,16 +103,23 @@ function formatTransactionAction(tx: StockTransactionEntry): string {
 /**
  * Excel 1 (Single Date): Quantity Stock Register for a specific date + Transaction Log with Login ID
  */
-export function exportRecordToExcel(record: DayRecord, columns: BatteryColumn[]) {
+export function exportRecordToExcel(
+  record: DayRecord,
+  columns: BatteryColumn[],
+  category: 'battery' | 'charger' = 'battery'
+) {
   const totals = calculateRecordTotals(record, columns);
+  const isCharger = category === 'charger';
+  const repairHeader = isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR';
+  const serviceHeader = isCharger ? 'SERVICE CHARGER TOTAL' : 'SERVICE BATTERY TOTAL';
 
   const headerRow = [
     'Date',
     'Particulars',
     ...columns.map((c) => c.name),
     'Total',
-    'OLD BATTERY FOR REPAIR',
-    'SERVICE BATTERY TOTAL',
+    repairHeader,
+    serviceHeader,
   ];
 
   const stockRow = [
@@ -202,7 +214,7 @@ export function exportRecordToExcel(record: DayRecord, columns: BatteryColumn[])
   const txList =
     Array.isArray(record.transactions) && record.transactions.length > 0
       ? record.transactions
-      : buildFallbackDailyTransactions(record, columns);
+      : buildFallbackDailyTransactions(record, columns, category);
 
   const txRows: any[][] = [
     [
@@ -222,7 +234,7 @@ export function exportRecordToExcel(record: DayRecord, columns: BatteryColumn[])
       tx.timestamp || '',
       tx.date || record.date,
       getBranchLabel(tx.branchId || record.branchId),
-      String(tx.category || 'battery').toUpperCase(),
+      String(tx.category || category).toUpperCase(),
       formatTransactionAction(tx),
       tx.modelName || tx.modelId,
       tx.quantity,
@@ -248,14 +260,22 @@ export function exportRecordToExcel(record: DayRecord, columns: BatteryColumn[])
   ];
   XLSX.utils.book_append_sheet(wb, wsTx, 'Transaction_Log');
 
-  XLSX.writeFile(wb, `Battery_Quantity_Stock_${record.date}.xlsx`);
+  const filePrefix = isCharger ? 'Charger' : 'Battery';
+  XLSX.writeFile(wb, `${filePrefix}_Quantity_Stock_${record.date}.xlsx`);
 }
 
 /**
  * Excel 1 (Complete History): Quantity Stock Register across all dates + Consolidated Transactions Log
  */
-export function exportAllRecordsToExcel(records: Record<string, DayRecord>, columns: BatteryColumn[]) {
+export function exportAllRecordsToExcel(
+  records: Record<string, DayRecord>,
+  columns: BatteryColumn[],
+  category: 'battery' | 'charger' = 'battery'
+) {
   const wb = XLSX.utils.book_new();
+  const isCharger = category === 'charger';
+  const repairHeader = isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR';
+  const serviceHeader = isCharger ? 'SERVICE CHARGER TOTAL' : 'SERVICE BATTERY TOTAL';
   const sortedDates = Object.keys(records).sort((a, b) =>
     toISODateString(parseBatteryRecordKey(a).date).localeCompare(
       toISODateString(parseBatteryRecordKey(b).date)
@@ -283,7 +303,7 @@ export function exportAllRecordsToExcel(records: Record<string, DayRecord>, colu
     const totals = calculateRecordTotals(record, columns);
 
     const sheetData = [
-      ['Date', 'Particulars', ...columns.map((c) => c.name), 'Total', 'OLD BATTERY FOR REPAIR', 'SERVICE BATTERY TOTAL'],
+      ['Date', 'Particulars', ...columns.map((c) => c.name), 'Total', repairHeader, serviceHeader],
       [record.date, 'Stock', ...columns.map((c) => record.stock[c.id] || 0), totals.openingStockTotal, record.stock['repair'] || 0, record.stock['service'] || 0],
       ['', 'In Stock', ...columns.map((c) => record.inStock[c.id] || 0), totals.inStockTotal, record.inStock['repair'] || 0, record.inStock['service'] || 0],
       ['', 'CAUSE', ...columns.map((c) => record.inCause[c.id] || ''), record.totalInCause || '', record.repairInCause || '', record.inCause['service'] || ''],
@@ -300,14 +320,14 @@ export function exportAllRecordsToExcel(records: Record<string, DayRecord>, colu
     const txList =
       Array.isArray(record.transactions) && record.transactions.length > 0
         ? record.transactions
-        : buildFallbackDailyTransactions(record, columns);
+        : buildFallbackDailyTransactions(record, columns, category);
 
     txList.forEach((tx) => {
       consolidatedTxRows.push([
         tx.timestamp || '',
         tx.date || record.date,
         getBranchLabel(tx.branchId || record.branchId),
-        String(tx.category || 'battery').toUpperCase(),
+        String(tx.category || category).toUpperCase(),
         formatTransactionAction(tx),
         tx.modelName || tx.modelId,
         tx.quantity,
@@ -335,13 +355,21 @@ export function exportAllRecordsToExcel(records: Record<string, DayRecord>, colu
   ];
   XLSX.utils.book_append_sheet(wb, wsAllTx, 'All_Transactions_By_LoginID');
 
-  XLSX.writeFile(wb, `Battery_Quantity_Stock_Complete.xlsx`);
+  XLSX.writeFile(wb, `${isCharger ? 'Charger' : 'Battery'}_Quantity_Stock_Complete.xlsx`);
 }
 
-function getModelLabel(item: BatterySerialItem, columns: BatteryColumn[]): string {
+function getModelLabel(
+  item: BatterySerialItem,
+  columns: BatteryColumn[],
+  category: 'battery' | 'charger' = 'battery'
+): string {
   if (item.modelName) return item.modelName;
-  if (item.modelId === 'repair') return 'OLD BATTERY FOR REPAIR';
-  if (item.modelId === 'service') return 'SERVICE BATTERY';
+  if (item.modelId === 'repair') {
+    return category === 'charger' ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR';
+  }
+  if (item.modelId === 'service') {
+    return category === 'charger' ? 'SERVICE CHARGER' : 'SERVICE BATTERY';
+  }
   return columns.find((c) => c.id === item.modelId)?.name || item.modelId;
 }
 
@@ -350,7 +378,7 @@ function formatStatusLabel(status: BatterySerialItem['status']): string {
 }
 
 /**
- * Excel 2: Complete Battery Serial Numbers + Every Movement + Every Daily Transaction & Transfer + Charger & Vehicle Transactions
+ * Excel 2: Complete Serial Numbers + Every Movement + Every Daily Transaction & Transfer
  */
 export function exportSerialHistoryToExcel(
   serials: Record<string, BatterySerialItem>,
@@ -359,8 +387,15 @@ export function exportSerialHistoryToExcel(
   records?: Record<string, DayRecord>,
   transfers?: BranchTransfer[],
   chargerRecords?: Record<string, any>,
-  vehicleRecords?: Record<string, any>
+  vehicleRecords?: Record<string, any>,
+  category: 'battery' | 'charger' = 'battery'
 ) {
+  const isCharger = category === 'charger';
+  const modelColHeader = isCharger ? 'Charger Model' : 'Battery Model';
+  const serialCatLabel = isCharger ? 'CHARGER SERIAL' : 'BATTERY SERIAL';
+  const ledgerCatLabel = isCharger ? 'CHARGER LEDGER' : 'BATTERY LEDGER';
+  const repairHeader = isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR';
+  const serviceHeader = isCharger ? 'SERVICE CHARGER TOTAL' : 'SERVICE BATTERY TOTAL';
   const allList = Object.values(serials || {}).sort((a, b) => {
     const aBranch = a.branchId || DEFAULT_BRANCH_ID;
     const bBranch = b.branchId || DEFAULT_BRANCH_ID;
@@ -392,7 +427,7 @@ export function exportSerialHistoryToExcel(
   const inStockRows: any[][] = [
     [
       'Serial No.',
-      'Battery Model',
+      modelColHeader,
       'Batch',
       'Branch',
       'Status',
@@ -403,7 +438,7 @@ export function exportSerialHistoryToExcel(
     ],
     ...inStockList.map((item) => [
       item.serialNo,
-      getModelLabel(item, columns),
+      getModelLabel(item, columns, category),
       item.batchNo || '',
       getBranchLabel(item.branchId),
       formatStatusLabel(item.status),
@@ -431,7 +466,7 @@ export function exportSerialHistoryToExcel(
   const dispatchedRows: any[][] = [
     [
       'Serial No.',
-      'Battery Model',
+      modelColHeader,
       'Batch',
       'Branch',
       'Current Status',
@@ -445,7 +480,7 @@ export function exportSerialHistoryToExcel(
     ],
     ...dispatchedList.map((item) => [
       item.serialNo,
-      getModelLabel(item, columns),
+      getModelLabel(item, columns, category),
       item.batchNo || '',
       getBranchLabel(item.branchId),
       formatStatusLabel(item.status),
@@ -479,7 +514,7 @@ export function exportSerialHistoryToExcel(
   const masterRows: any[][] = [
     [
       'Serial No.',
-      'Battery Model',
+      modelColHeader,
       'Batch',
       'Branch',
       'Status',
@@ -504,7 +539,7 @@ export function exportSerialHistoryToExcel(
       const lastEvtDate = sortedEvents[0]?.date || item.outwardDate || item.inwardDate || '';
       return [
         item.serialNo,
-        getModelLabel(item, columns),
+        getModelLabel(item, columns, category),
         item.batchNo || '',
         getBranchLabel(item.branchId),
         formatStatusLabel(item.status),
@@ -541,7 +576,7 @@ export function exportSerialHistoryToExcel(
     { wch: 16 },
     { wch: 16 },
   ];
-  XLSX.utils.book_append_sheet(wb, wsMaster, 'All_Battery_Serials');
+  XLSX.utils.book_append_sheet(wb, wsMaster, isCharger ? 'All_Charger_Serials' : 'All_Battery_Serials');
 
   // Sheet 4: Complete Chronological Movement & Transaction History (ALL Categories + Login ID)
   interface MovementLogEntry {
@@ -552,7 +587,7 @@ export function exportSerialHistoryToExcel(
   const movementEntries: MovementLogEntry[] = [];
 
   allList.forEach((item) => {
-    const model = getModelLabel(item, columns);
+    const model = getModelLabel(item, columns, category);
     const branchName = getBranchLabel(item.branchId);
     const statusText = formatStatusLabel(item.status);
     const events = Array.isArray(item.history) ? item.history : [];
@@ -564,7 +599,7 @@ export function exportSerialHistoryToExcel(
           timestamp: '',
           row: [
             item.inwardDate,
-            'BATTERY SERIAL',
+            serialCatLabel,
             branchName,
             'IN',
             model,
@@ -584,7 +619,7 @@ export function exportSerialHistoryToExcel(
           timestamp: '',
           row: [
             item.outwardDate,
-            'BATTERY SERIAL',
+            serialCatLabel,
             branchName,
             'OUT (DISPATCHED)',
             model,
@@ -612,7 +647,7 @@ export function exportSerialHistoryToExcel(
           timestamp: evt.timestamp || '',
           row: [
             evt.date || '',
-            'BATTERY SERIAL',
+            serialCatLabel,
             getBranchLabel(evt.branchId || item.branchId),
             evtType,
             model,
@@ -631,8 +666,8 @@ export function exportSerialHistoryToExcel(
 
   const trackedModels: Array<{ id: string; name: string }> = [
     ...columns.map((c) => ({ id: c.id, name: c.name })),
-    { id: 'repair', name: 'OLD BATTERY FOR REPAIR' },
-    { id: 'service', name: 'SERVICE BATTERY' },
+    { id: 'repair', name: repairHeader },
+    { id: 'service', name: isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY' },
   ];
 
   // Include every daily battery ledger transaction (preferring per-transaction entries with loginId)
@@ -654,7 +689,7 @@ export function exportSerialHistoryToExcel(
           timestamp: tx.timestamp || ts,
           row: [
             tx.date || recDate,
-            'BATTERY LEDGER',
+            ledgerCatLabel,
             getBranchLabel(tx.branchId || recBranch),
             formatTransactionAction(tx),
             tx.modelName || tx.modelId,
@@ -688,7 +723,7 @@ export function exportSerialHistoryToExcel(
           timestamp: ts,
           row: [
             recDate,
-            'BATTERY LEDGER',
+            ledgerCatLabel,
             branchName,
             col.id === 'repair' ? 'REPAIR IN (+)' : col.id === 'service' ? 'SERVICE IN (+)' : 'IN STOCK (+)',
             col.name,
@@ -715,7 +750,7 @@ export function exportSerialHistoryToExcel(
           timestamp: ts,
           row: [
             recDate,
-            'BATTERY LEDGER',
+            ledgerCatLabel,
             branchName,
             col.id === 'repair' ? 'REPAIR OUT (-)' : col.id === 'service' ? 'SERVICE OUT (-)' : 'OUT STOCK (-)',
             col.name,
@@ -736,14 +771,14 @@ export function exportSerialHistoryToExcel(
         movementEntries.push({
           isoDate,
           timestamp: ts,
-          row: [recDate, 'BATTERY LEDGER', branchName, 'IN NOTE', 'All Models', 0, '', '', rec.totalInCause, 'RECORDED', rec.lastModifiedBy || '', ts],
+          row: [recDate, ledgerCatLabel, branchName, 'IN NOTE', 'All Models', 0, '', '', rec.totalInCause, 'RECORDED', rec.lastModifiedBy || '', ts],
         });
       }
       if (rec.totalOutCause?.trim()) {
         movementEntries.push({
           isoDate,
           timestamp: ts,
-          row: [recDate, 'BATTERY LEDGER', branchName, 'OUT NOTE', 'All Models', 0, '', '', rec.totalOutCause, 'RECORDED', rec.lastModifiedBy || '', ts],
+          row: [recDate, ledgerCatLabel, branchName, 'OUT NOTE', 'All Models', 0, '', '', rec.totalOutCause, 'RECORDED', rec.lastModifiedBy || '', ts],
         });
       }
     }
@@ -915,8 +950,8 @@ export function exportSerialHistoryToExcel(
       'Particulars',
       ...columns.map((c) => c.name),
       'Total',
-      'OLD BATTERY FOR REPAIR',
-      'SERVICE BATTERY TOTAL',
+      repairHeader,
+      serviceHeader,
       'Updated By (Login ID)',
       'Last Modified',
       'Notes',
@@ -1017,7 +1052,8 @@ export function exportSerialHistoryToExcel(
 
   const todaySlug = getIndianTodayDate();
   const suffix = branchId ? `_${branchId}` : '_All_Branches';
-  XLSX.writeFile(wb, `Battery_Serials_And_History${suffix}_${todaySlug}.xlsx`);
+  const filePrefix = isCharger ? 'Charger' : 'Battery';
+  XLSX.writeFile(wb, `${filePrefix}_Serials_And_History${suffix}_${todaySlug}.xlsx`);
 }
 
 /**

@@ -345,8 +345,8 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                 <div className="p-3.5 bg-amber-50 text-amber-600 border border-amber-200 rounded-xl group-hover:bg-amber-600 group-hover:text-white transition-colors">
                   <Zap className="w-8 h-8" />
                 </div>
-                <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
-                  EV & Industrial Chargers
+                <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  Full Register Active
                 </span>
               </div>
 
@@ -356,15 +356,18 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                   <ArrowRight className="w-4 h-4 text-amber-600 group-hover:translate-x-1 transition-transform" />
                 </h3>
                 <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
-                  Track EV & commercial battery chargers (48V 15A, 60V 20A, 72V 25A Fast Chargers, Universal Auto-Cut), serial warranties, inward receipts, and service dispatches.
+                  Daily charger spreadsheet with automatic carryover, live inward/outward causes, individual serial tracker, ZXing barcode scanner, and automated WhatsApp dispatch.
                 </p>
 
                 <div className="mt-4 flex flex-wrap gap-1.5 text-[11px] font-mono text-slate-600">
-                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">48V 15A Smart</span>
-                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">60V 20A Fast</span>
-                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">72V 25A Heavy</span>
-                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">Universal Auto-Cut</span>
-                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">Defective / Repair</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">48V 3AH</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">48V 6AH</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">60V 3AH</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">67V 6AH</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">69V 6AH</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">72V 3AH</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">Old for Repair</span>
+                  <span className="px-2 py-0.5 bg-slate-100 rounded border border-slate-200">Service Stock</span>
                 </div>
               </div>
 

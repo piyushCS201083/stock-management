@@ -91,6 +91,7 @@ interface AdminPortalModalProps {
   chargerRecords?: Record<string, any>;
   vehicleRecords?: Record<string, any>;
   activeBranchId: string;
+  activeCategory?: 'battery' | 'charger';
   onShowToast: (msg: string) => void;
 }
 
@@ -112,6 +113,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   chargerRecords,
   vehicleRecords,
   activeBranchId,
+  activeCategory = 'battery',
   onShowToast,
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTabId>(initialTab);
@@ -1698,8 +1700,10 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              exportRecordToExcel(currentRecord, columns);
-                              onShowToast(`Downloaded Quantity Stock Excel (${currentRecord.date})`);
+                              exportRecordToExcel(currentRecord, columns, activeCategory);
+                              onShowToast(
+                                `Downloaded ${activeCategory === 'charger' ? 'Charger' : 'Battery'} Quantity Stock Excel (${currentRecord.date})`
+                              );
                             }}
                             className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg cursor-pointer"
                           >
@@ -1716,9 +1720,12 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                                 records,
                                 transfers,
                                 chargerRecords,
-                                vehicleRecords
+                                vehicleRecords,
+                                activeCategory
                               );
-                              onShowToast('Downloaded Serials & Movement History Excel (.xlsx)');
+                              onShowToast(
+                                `Downloaded ${activeCategory === 'charger' ? 'Charger' : 'Battery'} Serials & Movement History Excel (.xlsx)`
+                              );
                             }}
                             className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg cursor-pointer"
                           >

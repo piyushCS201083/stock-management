@@ -5,6 +5,7 @@ import {
   DayRecord,
   DEFAULT_BATTERY_COLUMNS,
   DEFAULT_BRANCH_ID,
+  DEFAULT_CHARGER_COLUMNS,
   DEFAULT_TEAM_MEMBERS,
   StockTransactionEntry,
   TeamMember,
@@ -16,6 +17,8 @@ import { addDaysToDateString, toISODateString } from './date';
 const STORAGE_KEYS = {
   RECORDS: 'battery_stock_records_v3_ist',
   COLUMNS: 'battery_stock_columns_v3',
+  CHARGER_RECORDS: 'charger_ledgers_v1_ist',
+  CHARGER_COLUMNS: 'charger_columns_v1',
   TEAM: 'battery_stock_team_v3',
   SELECTED_DATE: 'battery_stock_selected_date_v3',
 };
@@ -55,14 +58,19 @@ export function clearAllLocalStockStorage(resetEpoch?: string, resetDateIST?: st
   try {
     localStorage.removeItem(STORAGE_KEYS.RECORDS);
     localStorage.removeItem(STORAGE_KEYS.COLUMNS);
+    localStorage.removeItem(STORAGE_KEYS.CHARGER_RECORDS);
+    localStorage.removeItem(STORAGE_KEYS.CHARGER_COLUMNS);
     localStorage.removeItem(STORAGE_KEYS.TEAM);
     localStorage.removeItem(STORAGE_KEYS.SELECTED_DATE);
     localStorage.removeItem('battery_stock_serials_v3');
+    localStorage.removeItem('charger_serials_v1');
     localStorage.removeItem('charger_stock_records_v1');
     localStorage.removeItem('vehicle_stock_records_v1');
     localStorage.removeItem('battery_branch_transfers_v1');
     localStorage.removeItem('battery_pending_sync_keys_v1');
     localStorage.removeItem('battery_pending_serial_sync_keys_v1');
+    localStorage.removeItem('charger_pending_sync_keys_v1');
+    localStorage.removeItem('charger_pending_serial_sync_keys_v1');
 
     // Also sweep any legacy or older version cache keys from previous deployments
     const keysToRemove: string[] = [];
@@ -74,6 +82,10 @@ export function clearAllLocalStockStorage(resetEpoch?: string, resetDateIST?: st
         k.startsWith('battery_pending_') ||
         k.startsWith('battery_branch_transfers') ||
         k.startsWith('charger_stock_') ||
+        k.startsWith('charger_ledgers_') ||
+        k.startsWith('charger_columns_') ||
+        k.startsWith('charger_serials_') ||
+        k.startsWith('charger_pending_') ||
         k.startsWith('vehicle_stock_')
       ) {
         keysToRemove.push(k);
@@ -216,6 +228,52 @@ export function saveColumns(columns: BatteryColumn[]) {
     localStorage.setItem(STORAGE_KEYS.COLUMNS, JSON.stringify(columns));
   } catch (e) {
     console.error('Failed to save columns', e);
+  }
+}
+
+export function loadChargerRecords(): Record<string, DayRecord> {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.CHARGER_RECORDS);
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load charger records from storage', e);
+  }
+  return {};
+}
+
+export function saveChargerRecords(records: Record<string, DayRecord>) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.CHARGER_RECORDS, JSON.stringify(records));
+  } catch (e) {
+    console.error('Failed to save charger records', e);
+  }
+}
+
+export function loadChargerColumns(): BatteryColumn[] {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.CHARGER_COLUMNS);
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load charger columns', e);
+  }
+  return DEFAULT_CHARGER_COLUMNS;
+}
+
+export function saveChargerColumns(columns: BatteryColumn[]) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.CHARGER_COLUMNS, JSON.stringify(columns));
+  } catch (e) {
+    console.error('Failed to save charger columns', e);
   }
 }
 

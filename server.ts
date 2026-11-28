@@ -26,6 +26,17 @@ import {
   saveSerial,
   bulkSaveSerials,
   deleteSerial,
+  getAllChargerLedgers,
+  getChargerLedger,
+  saveChargerLedgerWithStatus,
+  deleteChargerLedger,
+  getChargerColumns,
+  saveChargerColumns,
+  getAllChargerSerials,
+  getChargerSerial,
+  saveChargerSerial,
+  bulkSaveChargerSerials,
+  deleteChargerSerial,
   getChargerRecords,
   saveChargerRecord,
   getVehicleRecords,
@@ -361,7 +372,17 @@ function getEventCategory(event: string): StockCategoryId | null {
   ) {
     return 'battery';
   }
-  if (event === 'CHARGER_UPDATED') return 'charger';
+  if (
+    event === 'CHARGER_UPDATED' ||
+    event === 'CHARGER_RECORD_UPDATED' ||
+    event === 'CHARGER_RECORD_DELETED' ||
+    event === 'CHARGER_COLUMNS_UPDATED' ||
+    event === 'CHARGER_SERIAL_UPDATED' ||
+    event === 'CHARGER_SERIALS_BULK_UPDATED' ||
+    event === 'CHARGER_SERIAL_DELETED'
+  ) {
+    return 'charger';
+  }
   if (event === 'VEHICLE_UPDATED') return 'vehicle';
   return null;
 }
@@ -392,7 +413,10 @@ function broadcastRealtime(event: string, payload: any, targetBranchIds?: string
             t?.category === 'charger' || t?.category === 'vehicle' ? t.category : 'battery'
           )
       );
-    } else if (event === 'SERIALS_BULK_UPDATED' && Array.isArray(payload)) {
+    } else if (
+      (event === 'SERIALS_BULK_UPDATED' || event === 'CHARGER_SERIALS_BULK_UPDATED') &&
+      Array.isArray(payload)
+    ) {
       scopedPayload = payload.filter((s: any) =>
         client.allowedBranchIds.includes(s?.branchId || DEFAULT_BRANCH_ID)
       );
@@ -1155,6 +1179,222 @@ app.delete('/api/serials/:serialNo', requireBranchAccess, requireBranchCategory(
   }
 });
 
+// =========================================================================
+// Charger Stock Register Ledger, Columns & Serial Tracker Routes
+// =========================================================================
+
+app.get('/api/charger-records', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const records = await getAllChargerLedgers();
+    const scoped: Record<string, any> = {};
+    Object.entries(records).forEach(([key, rec]) => {
+      const bId = rec?.branchId || parseBatteryRecordKey(key).branchId || DEFAULT_BRANCH_ID;
+      if (isBranchAllowed(req.branchAccess, bId)) {
+        scoped[key] = rec;
+      }
+    });
+    res.json({
+      success: true,
+      data: scoped,
+      resetEpoch: getResetEpoch(),
+      resetDateIST: getResetDateIST(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/charger-records/:date', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const requestedBranch = parseBatteryRecordKey(req.params.date).branchId;
+    if (!isBranchAllowed(req.branchAccess, requestedBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
+    const record = await getChargerLedger(req.params.date);
+    if (!record) {
+      return res.status(404).json({ success: false, error: 'Charger record not found' });
+    }
+    res.json({ success: true, data: record });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/charger-records', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const record = req.body;
+    if (!record || !record.date) {
+      return res.status(400).json({ success: false, error: 'Date is required' });
+    }
+    const targetBranch = record.branchId || DEFAULT_BRANCH_ID;
+    if (!isBranchAllowed(req.branchAccess, targetBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
+    const result = await saveChargerLedgerWithStatus(record, req.branchAccess?.loginId);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('CHARGER_RECORD_UPDATED', result.record, [targetBranch]);
+    res.json({
+      success: true,
+      data: result.record,
+      storage,
+      persistedToRemote: storage === 'local_file' ? false : result.persistedToRemote,
+      remoteError: result.remoteError,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/charger-records/:date', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const targetBranch = parseBatteryRecordKey(req.params.date).branchId;
+    if (!isBranchAllowed(req.branchAccess, targetBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
+    const success = await deleteChargerLedger(req.params.date);
+    if (success) {
+      broadcastRealtime('CHARGER_RECORD_DELETED', { date: req.params.date }, [targetBranch]);
+    }
+    res.json({ success });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/charger-columns', requireBranchAccess, async (req, res) => {
+  try {
+    const columns = await getChargerColumns();
+    res.json({ success: true, data: columns });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/charger-columns', requireBranchAccess, requireBranchCategory('charger'), async (req, res) => {
+  try {
+    const columns = req.body;
+    if (!Array.isArray(columns)) {
+      return res.status(400).json({ success: false, error: 'Columns must be an array' });
+    }
+    const saved = await saveChargerColumns(columns);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('CHARGER_COLUMNS_UPDATED', saved);
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/charger-serials', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const serials = await getAllChargerSerials();
+    const scoped: Record<string, any> = {};
+    Object.entries(serials).forEach(([k, item]) => {
+      const bId = item?.branchId || DEFAULT_BRANCH_ID;
+      if (isBranchAllowed(req.branchAccess, bId)) {
+        scoped[k] = item;
+      }
+    });
+    res.json({
+      success: true,
+      data: scoped,
+      resetEpoch: getResetEpoch(),
+      resetDateIST: getResetDateIST(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/charger-serials/:serialNo', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const item = await getChargerSerial(req.params.serialNo);
+    if (!item) {
+      return res.status(404).json({ success: false, error: 'Charger serial not found' });
+    }
+    if (!isBranchAllowed(req.branchAccess, item.branchId || DEFAULT_BRANCH_ID)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch serial' });
+    }
+    res.json({ success: true, data: item });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/charger-serials', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const item = req.body;
+    if (!item || !item.serialNo) {
+      return res.status(400).json({ success: false, error: 'serialNo is required' });
+    }
+    const targetBranch = item.branchId || DEFAULT_BRANCH_ID;
+    if (!isBranchAllowed(req.branchAccess, targetBranch)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch' });
+    }
+    const saved = await saveChargerSerial(item, req.branchAccess?.loginId);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('CHARGER_SERIAL_UPDATED', saved, [targetBranch]);
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/charger-serials/bulk', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const items = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ success: false, error: 'Items must be an array' });
+    }
+    const targetBranches = new Set<string>();
+    for (const item of items) {
+      const bId = item?.branchId || DEFAULT_BRANCH_ID;
+      if (!isBranchAllowed(req.branchAccess, bId)) {
+        return res.status(403).json({ success: false, error: `Access denied for branch ${bId}` });
+      }
+      targetBranches.add(bId);
+    }
+    const saved = await bulkSaveChargerSerials(items, req.branchAccess?.loginId);
+    const storage = getActiveStorageTarget();
+    broadcastRealtime('CHARGER_SERIALS_BULK_UPDATED', saved, Array.from(targetBranches));
+    res.json({
+      success: true,
+      data: saved,
+      storage,
+      persistedToRemote: storage !== 'local_file',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/charger-serials/:serialNo', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+  try {
+    const existing = await getChargerSerial(req.params.serialNo);
+    const bId = existing?.branchId || DEFAULT_BRANCH_ID;
+    if (existing && !isBranchAllowed(req.branchAccess, bId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this branch serial' });
+    }
+    const success = await deleteChargerSerial(req.params.serialNo);
+    if (success) {
+      broadcastRealtime('CHARGER_SERIAL_DELETED', { serialNo: req.params.serialNo }, [bId]);
+    }
+    res.json({ success });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Charger Stock Register Routes (Branch-Scoped & Category-Scoped)
 app.get('/api/chargers', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
@@ -1511,12 +1751,20 @@ app.get('/api/cloud/excel/serials/export', requireAdmin, async (req, res) => {
 });
 
 // Automated WhatsApp Dispatch & Audit Log
-app.post('/api/whatsapp/dispatch', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/whatsapp/dispatch', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
-    const { date, recipients, message, imageDataUrl } = req.body;
+    const { date, recipients, message, imageDataUrl, category } = req.body;
+    const requestedCategory: StockCategoryId = category === 'charger' ? 'charger' : 'battery';
+    if (!isCategoryAllowed(req.branchAccess, requestedCategory)) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied: your account does not have permission for ${requestedCategory} stock.`,
+      });
+    }
 
     await logAudit('WHATSAPP_DISPATCH', {
       date,
+      category: requestedCategory,
       recipientsCount: recipients?.length || 0,
       performedBy: req.branchAccess?.loginId || 'system',
       timestamp: new Date().toISOString(),
@@ -1538,104 +1786,226 @@ app.post('/api/whatsapp/dispatch', requireBranchAccess, requireBranchCategory('b
   }
 });
 
-// Battery Barcode & Serial OCR via Gemini Flash / Vision
-app.post('/api/scan-barcode-ocr', requireBranchAccess, requireBranchCategory('battery'), async (req, res) => {
+// Battery & Charger Barcode & Serial OCR via Gemini Vision
+app.post('/api/scan-barcode-ocr', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
-    const { imageBase64, mimeType = 'image/jpeg' } = req.body;
-    if (!imageBase64) {
-      return res.status(400).json({ success: false, error: 'No image data provided' });
+    const { imageBase64, mimeType = 'image/jpeg', category, modelHint } = req.body || {};
+    const scanCategory: 'battery' | 'charger' = category === 'charger' ? 'charger' : 'battery';
+    if (!isCategoryAllowed(req.branchAccess, scanCategory)) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied: your account does not have permission for ${scanCategory} stock.`,
+      });
+    }
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ success: false, error: 'No image data provided.' });
     }
 
     const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+    if (!cleanBase64) {
+      return res.status(400).json({ success: false, error: 'Invalid image payload.' });
+    }
+
     const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    if (!apiKey) {
+      return res.status(503).json({
+        success: false,
+        error: 'AI OCR is unavailable because GEMINI_API_KEY is not configured in Settings > Secrets.',
+      });
+    }
 
-    if (apiKey) {
+    const { GoogleGenAI, Type } = await import('@google/genai');
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    const modelHintLine =
+      typeof modelHint === 'string' && modelHint.trim()
+        ? `Expected stock model context: ${modelHint.trim()}.`
+        : '';
+
+    const ocrPrompt =
+      scanCategory === 'charger'
+        ? `You are an expert industrial EV charger inventory scanner reading serial numbers from photos.
+${modelHintLine}
+Carefully inspect every sticker, barcode, QR code, laser-etched text, or printed label in this EV charger photo.
+Extract:
+1. "serialNos": Array of every unique Charger Serial Number visible in the image (e.g. strings labeled S/N, SN, Serial No, Sr No, codes printed beneath barcodes/QR codes like CHG-48V3AH-001, CHG483009, EVCHG109, or numeric barcode strings). Do NOT treat bare voltage/amp specifications alone (such as "48V 3AH", "60V 3AH") or generic brand words ("Made in India") as serial numbers unless they are part of an actual serial code.
+2. "serialNo": The extracted serial numbers joined by ", " (or empty string if none is readable).
+3. "model": Detected charger specification/model if visible (e.g. "48V 3AH", "48V 6AH", "60V 3AH", "67V 6AH", "69V 6AH", "72V 3AH"), else empty string.
+4. "batchNo": Any batch or MFD date code if visible, else empty string.
+5. "confidence": "high", "medium", or "low".
+6. "rawText": Brief verbatim text read from the label.`
+        : `You are an expert industrial EV/automotive battery inventory scanner reading serial numbers from photos.
+${modelHintLine}
+Carefully inspect every sticker, barcode, QR code, laser-etched text, heat-stamped code, or printed label in this battery photo.
+Extract:
+1. "serialNos": Array of every unique Battery Serial Number visible in the image (e.g. strings labeled S/N, SN, Serial No, Sr No, codes printed beneath barcodes/QR codes like BAT-6024-001, 6024-FLAT-009, AM1234567, EX9928374, or numeric barcode strings). Do NOT treat bare size/voltage labels alone (such as "60V 24Ah", "48V 24Ah") or generic brand/warning text as serial numbers unless they are part of an actual serial code.
+2. "serialNo": The extracted serial numbers joined by ", " (or empty string if none is readable).
+3. "model": Detected battery model/specification if visible (e.g. "60x24 OLD", "60x24 FLAT", "60x30", "48x24", "72x30"), else empty string.
+4. "batchNo": Any batch or MFD date code if visible, else empty string.
+5. "confidence": "high", "medium", or "low".
+6. "rawText": Brief verbatim text read from the label.`;
+
+    const imagePart = {
+      inlineData: {
+        mimeType: typeof mimeType === 'string' && mimeType.startsWith('image/') ? mimeType : 'image/jpeg',
+        data: cleanBase64,
+      },
+    };
+    const textPart = {
+      text: ocrPrompt,
+    };
+
+    const callGeminiOcr = async () =>
+      ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: { parts: [imagePart, textPart] },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              serialNos: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+                description: 'All extracted serial numbers in reading order.',
+              },
+              serialNo: {
+                type: Type.STRING,
+                description: 'Comma-separated serial numbers extracted from the photo, or empty string.',
+              },
+              model: {
+                type: Type.STRING,
+                description: 'Detected battery or charger model/spec if visible, or empty string.',
+              },
+              batchNo: {
+                type: Type.STRING,
+                description: 'Detected batch or MFD code if visible, or empty string.',
+              },
+              confidence: {
+                type: Type.STRING,
+                description: 'Confidence level: high, medium, or low.',
+              },
+              rawText: {
+                type: Type.STRING,
+                description: 'Short summary of label text read from the photo.',
+              },
+            },
+          },
+        },
+      });
+
+    let response;
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { GoogleGenAI } = await import('@google/genai');
-        const ai = new GoogleGenAI({ apiKey });
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  text: `You are an expert industrial battery inventory scanner. Analyze this image of an automotive, inverter, or commercial battery, serial sticker label, or barcode.
-Locate and extract:
-1. The unique Battery Serial Number (e.g. printed under a barcode, etched, or stamped, like BAT-6024-001, 60x24-FLAT-009, 24FLAT109, AM1234567, EX9928374, or pure numeric strings like 890123456789).
-2. Battery Model or Specifications (e.g. 60x24 OLD, 60x24 FLAT, 60x30, 48x24, 72x30, 12V 100Ah, etc.) if visible on the casing or label.
-3. Any Batch Number or Date Code (e.g. BATCH-2026-10, MFD 10/26).
-
-Return ONLY valid JSON with this exact schema (no markdown fences, no explanatory text):
-{
-  "serialNo": "extracted serial or barcode digits, or empty string",
-  "model": "extracted battery model or empty string",
-  "batchNo": "extracted batch/date code or empty string",
-  "confidence": "high" | "medium" | "low",
-  "rawText": "short summary of label text found"
-}`,
-                },
-                {
-                  inlineData: {
-                    mimeType: mimeType || 'image/jpeg',
-                    data: cleanBase64,
-                  },
-                },
-              ],
-            },
-          ],
-        });
-
-        const rawText = response.text?.trim() || '';
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          try {
-            const parsed = JSON.parse(jsonMatch[0]);
-            if (parsed.serialNo) {
-              return res.json({ success: true, data: parsed, engine: 'gemini-3.8-flash' });
-            }
-          } catch {
-            // Regex extraction fallback below
-          }
+        response = await callGeminiOcr();
+        lastErr = null;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        const msg = String(err?.message || '');
+        const status = Number(err?.status || err?.code || 0);
+        const isTransient = status === 503 || status === 500 || /timeout|ECONNRESET|temporar/i.test(msg);
+        if (attempt === 0 && isTransient) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
         }
-
-        // Regex extraction from raw text if JSON parse failed or serial was empty
-        const serialMatch = rawText.match(/"serialNo"\s*:\s*"([^"]+)"/) ||
-          rawText.match(/\b(BAT-[A-Z0-9-]+|[A-Z0-9]{3,8}-[A-Z0-9]{2,8}(?:-[A-Z0-9]+)?|[0-9]{8,18})\b/i);
-
-        if (serialMatch && serialMatch[1]) {
-          return res.json({
-            success: true,
-            data: {
-              serialNo: serialMatch[1].trim(),
-              model: '',
-              batchNo: '',
-              confidence: 'medium',
-              rawText: rawText.slice(0, 150),
-            },
-            engine: 'gemini-3.8-flash-regex',
-          });
-        }
-      } catch (geminiErr: any) {
-        console.warn('[Server] Gemini OCR failed, falling back:', geminiErr?.message);
+        break;
       }
     }
 
-    // Fallback if no Gemini key configured or image unclear
+    if (lastErr || !response) {
+      const status = Number(lastErr?.status || 502);
+      const rawMsg = String(lastErr?.message || 'Gemini OCR request failed');
+      let friendlyError = rawMsg;
+      if (status === 403 || /PERMISSION_DENIED/i.test(rawMsg)) {
+        friendlyError = 'Gemini API permission denied. Please check GEMINI_API_KEY in Settings > Secrets.';
+      } else if (status === 400 || /API_KEY_INVALID/i.test(rawMsg)) {
+        friendlyError = 'Gemini API key is invalid or request was rejected. Please check Settings > Secrets.';
+      } else if (status === 429 || /RESOURCE_EXHAUSTED/i.test(rawMsg)) {
+        friendlyError = 'Gemini API rate limit or quota reached. Please wait a moment and try again.';
+      } else if (status === 404 || /NOT_FOUND/i.test(rawMsg)) {
+        friendlyError = 'Requested Gemini vision model was not found.';
+      }
+      const httpStatus = status >= 400 && status < 600 ? status : 502;
+      return res.status(httpStatus).json({ success: false, error: friendlyError });
+    }
+
+    const rawTextResponse = (response.text ?? '').trim();
+    let parsed: Record<string, any> | null = null;
+    try {
+      parsed = JSON.parse(rawTextResponse);
+    } catch {
+      const jsonMatch = rawTextResponse.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          parsed = JSON.parse(jsonMatch[0]);
+        } catch {
+          parsed = null;
+        }
+      }
+    }
+
+    const collectedSerials: string[] = [];
+    const seen = new Set<string>();
+    const pushSerial = (val: unknown) => {
+      if (typeof val !== 'string') return;
+      val
+        .split(/[\n,;]+/)
+        .map((part) => part.trim().replace(/^["'`]+|["'`]+$/g, '').toUpperCase())
+        .filter((part) => part.length >= 3)
+        .forEach((clean) => {
+          if (!seen.has(clean)) {
+            seen.add(clean);
+            collectedSerials.push(clean);
+          }
+        });
+    };
+
+    if (parsed) {
+      if (Array.isArray(parsed.serialNos)) {
+        parsed.serialNos.forEach(pushSerial);
+      }
+      if (typeof parsed.serialNo === 'string') {
+        pushSerial(parsed.serialNo);
+      }
+    } else if (rawTextResponse) {
+      const regexMatches = rawTextResponse.match(
+        /\b(?:(?:BAT|CHG)-[A-Z0-9-]+|[A-Z0-9]{2,8}[-/][A-Z0-9]{2,8}(?:[-/][A-Z0-9]+)*|[A-Z]{1,4}\d{5,14}|\d{7,18})\b/gi
+      );
+      regexMatches?.forEach(pushSerial);
+    }
+
     return res.json({
       success: true,
       data: {
-        serialNo: '',
-        model: '',
-        batchNo: '',
-        confidence: 'low',
-        rawText: apiKey ? 'Barcode not clear in photo' : 'No GEMINI_API_KEY set',
+        serialNo: collectedSerials.join(', '),
+        serialNos: collectedSerials,
+        model: typeof parsed?.model === 'string' ? parsed.model.trim() : '',
+        batchNo: typeof parsed?.batchNo === 'string' ? parsed.batchNo.trim() : '',
+        confidence:
+          parsed?.confidence === 'high' || parsed?.confidence === 'medium' || parsed?.confidence === 'low'
+            ? parsed.confidence
+            : collectedSerials.length > 0
+            ? 'medium'
+            : 'low',
+        rawText:
+          typeof parsed?.rawText === 'string'
+            ? parsed.rawText.trim()
+            : rawTextResponse.slice(0, 180),
       },
-      engine: 'fallback',
+      engine: 'gemini-4-hydrogen',
     });
   } catch (err: any) {
     console.error('[Server] OCR scanning error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err?.message || 'Failed to read serial from photo.' });
   }
 });
 

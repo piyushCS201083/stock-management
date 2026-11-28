@@ -28,6 +28,7 @@ interface WhatsAppDispatchModalProps {
   columns: BatteryColumn[];
   teamMembers: TeamMember[];
   tableElementId?: string;
+  category?: 'battery' | 'charger';
 }
 
 export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
@@ -36,8 +37,13 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   record,
   columns,
   teamMembers,
-  tableElementId = 'battery-stock-sheet-table',
+  tableElementId,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
+  const resolvedTableId =
+    tableElementId || (isCharger ? 'charger-stock-sheet-table' : 'battery-stock-sheet-table');
   const [messageText, setMessageText] = useState('');
   const [copiedText, setCopiedText] = useState(false);
   const [copiedImage, setCopiedImage] = useState(false);
@@ -53,19 +59,19 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   // Re-generate formatted text when record changes
   useEffect(() => {
     if (isOpen) {
-      const formatted = formatWhatsAppMessage(record, columns);
+      const formatted = formatWhatsAppMessage(record, columns, category);
       setMessageText(formatted);
       // Select all active team members by default
       setSelectedMemberIds(teamMembers.filter(m => m.active).map(m => m.id));
       captureSheetPhoto();
     }
-  }, [isOpen, record, columns, teamMembers]);
+  }, [isOpen, record, columns, teamMembers, category, resolvedTableId]);
 
   // Capture the sheet photo using html-to-image without cutting any data
   const captureSheetPhoto = async () => {
     setIsGeneratingPhoto(true);
     try {
-      const node = document.getElementById(tableElementId);
+      const node = document.getElementById(resolvedTableId);
       if (!node) {
         console.warn('Table node not found for photo generation');
         setIsGeneratingPhoto(false);
@@ -142,7 +148,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
     if (!photoDataUrl) return;
     const a = document.createElement('a');
     a.href = photoDataUrl;
-    a.download = `Battery_Stock_Sheet_${record.date}.png`;
+    a.download = `${entityCap}_Stock_Sheet_${record.date}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -153,17 +159,17 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
     try {
       const res = await fetch(photoDataUrl);
       const blob = await res.blob();
-      const file = new File([blob], `Battery_Stock_${record.date}.png`, { type: 'image/png' });
+      const file = new File([blob], `${entityCap}_Stock_${record.date}.png`, { type: 'image/png' });
 
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
-          title: `Battery Stock Register - ${record.date}`,
+          title: `${entityCap} Stock Register - ${record.date}`,
           text: messageText,
           files: [file],
         });
       } else {
         await navigator.share({
-          title: `Battery Stock Register - ${record.date}`,
+          title: `${entityCap} Stock Register - ${record.date}`,
           text: messageText,
         });
       }
@@ -387,7 +393,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
                   <div className="w-full h-full p-2.5 overflow-x-auto overflow-y-auto bg-slate-100 flex flex-col items-start justify-start border border-slate-200 rounded">
                     <img
                       src={photoDataUrl}
-                      alt="Daily Battery Excel Snapshot - All 14 Columns Full Width"
+                      alt={`Daily ${entityCap} Excel Snapshot - Full Width`}
                       className={`transition-all duration-150 block shadow-sm border border-slate-300 bg-white rounded ${
                         previewZoom === 'full'
                           ? 'min-w-[1050px] w-full max-w-none h-auto object-contain cursor-zoom-out'
@@ -405,7 +411,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
                 )}
               </div>
               <p className="text-[11px] text-slate-500">
-                💡 <span className="font-semibold text-slate-700">Full Width Captured:</span> Contains all 14 columns from <span className="font-mono text-slate-800">Date</span> through <span className="font-mono text-slate-800">SERVICE BATTERY TOTAL</span>. Copy or download below to share.
+                💡 <span className="font-semibold text-slate-700">Full Width Captured:</span> Contains all columns from <span className="font-mono text-slate-800">Date</span> through <span className="font-mono text-slate-800">SERVICE {isCharger ? 'CHARGER' : 'BATTERY'} TOTAL</span>. Copy or download below to share.
               </p>
             </div>
 

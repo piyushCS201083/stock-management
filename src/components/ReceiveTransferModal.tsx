@@ -68,6 +68,7 @@ interface ReceiveTransferModalProps {
   defaultReceivingDate: string;
   isSubmitting?: boolean;
   onConfirmSave: (payload: ReceiveTransferConfirmPayload) => Promise<void>;
+  category?: 'battery' | 'charger';
 }
 
 const parseSerials = (raw: string): string[] =>
@@ -89,7 +90,12 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
   defaultReceivingDate,
   isSubmitting = false,
   onConfirmSave,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const serialPrefix = isCharger ? 'CHG' : 'BAT';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
+  const entityLower = isCharger ? 'charger' : 'battery';
   const todayIST = getIndianTodayDate();
   const todayISO = getIndianTodayISODate();
 
@@ -146,9 +152,9 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
   const handleModelChange = (index: number, newModelId: string) => {
     let resolvedName = newModelId;
     if (newModelId === 'repair') {
-      resolvedName = 'OLD BATTERY FOR REPAIR';
+      resolvedName = isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR';
     } else if (newModelId === 'service') {
-      resolvedName = 'SERVICE BATTERY';
+      resolvedName = isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY';
     } else {
       const found = columns.find((c) => c.id === newModelId);
       if (found) resolvedName = found.name;
@@ -176,14 +182,14 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
     const needed = Math.max(0, target.quantity - existing.length);
     if (needed <= 0) return;
 
-    const cleanModel = (target.modelName || 'BAT')
+    const cleanModel = (target.modelName || serialPrefix)
       .replace(/[^A-Za-z0-9]/g, '')
       .toUpperCase()
       .slice(0, 6);
     const stamp = Date.now().toString().slice(-4);
     const generated = Array.from(
       { length: needed },
-      (_, idx) => `BAT-${cleanModel}-${stamp}${idx + 1}`
+      (_, idx) => `${serialPrefix}-${cleanModel}-${stamp}${idx + 1}`
     );
 
     const combined = [...existing, ...generated];
@@ -257,7 +263,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm sm:text-base font-bold">
-                Receive & Review Battery Details
+                Receive & Review {entityCap} Details
               </h2>
               <p className="text-[11px] text-slate-300 flex items-center gap-1.5 flex-wrap">
                 <span>{uniqueSenders.join(', ')}</span>
@@ -286,7 +292,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
                 Verify or Edit Details Before Adding to {activeBranch.shortName} Stock
               </span>
               <span className="text-[11px] text-emerald-800">
-                You can update the battery model, quantity, serial number(s), carrier name, or date below. Once you click <strong>Save & Add to Stock</strong>, it automatically updates {activeBranch.shortName}'s inward stock and closing balance.
+                You can update the {entityLower} model, quantity, serial number(s), carrier name, or date below. Once you click <strong>Save & Add to Stock</strong>, it automatically updates {activeBranch.shortName}'s inward stock and closing balance.
               </span>
             </div>
           </div>
@@ -345,7 +351,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs">
               <span className="font-extrabold text-slate-800 uppercase tracking-wide text-[11px]">
-                Incoming Battery Item(s) — Editable ({items.length})
+                Incoming {entityCap} Item(s) — Editable ({items.length})
               </span>
               <span className="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full text-[11px]">
                 Total to Add: +{totalUnits} unit{totalUnits === 1 ? '' : 's'}
@@ -372,7 +378,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="sm:col-span-2">
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      Battery Model / Category:
+                      {entityCap} Model / Category:
                     </label>
                     <select
                       value={item.modelId}
@@ -384,8 +390,8 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
                           {col.name}
                         </option>
                       ))}
-                      <option value="repair">OLD BATTERY FOR REPAIR</option>
-                      <option value="service">SERVICE BATTERY</option>
+                      <option value="repair">{isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR'}</option>
+                      <option value="service">{isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'}</option>
                     </select>
                   </div>
 
@@ -450,7 +456,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <label className="text-[11px] font-bold text-blue-900 flex items-center gap-1.5">
                       <Barcode className="w-3.5 h-3.5 text-blue-700" />
-                      <span>Battery Serial No.(s) (Comma separated)</span>
+                      <span>{entityCap} Serial No.(s) (Comma separated)</span>
                     </label>
                     <div className="flex items-center gap-2">
                       <button
@@ -481,7 +487,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
                         )
                       )
                     }
-                    placeholder="Enter or scan battery serial number(s)..."
+                    placeholder={`Enter or scan ${entityLower} serial number(s)...`}
                     className="w-full px-2.5 py-1.5 text-xs font-mono border border-blue-200 rounded-lg bg-white text-slate-900"
                   />
                 </div>
@@ -527,6 +533,7 @@ export const ReceiveTransferModal: React.FC<ReceiveTransferModalProps> = ({
         initialModelName={
           scannerItemIndex !== null ? items[scannerItemIndex]?.modelName : undefined
         }
+        category={category}
       />
     </div>
   );

@@ -15,6 +15,10 @@ import {
   saveRecords as saveLocalRecords,
   loadColumns as loadLocalColumns,
   saveColumns as saveLocalColumns,
+  loadChargerRecords as loadLocalChargerLedgers,
+  saveChargerRecords as saveLocalChargerLedgers,
+  loadChargerColumns as loadLocalChargerColumns,
+  saveChargerColumns as saveLocalChargerColumns,
   loadTeamMembers as loadLocalTeamMembers,
   saveTeamMembers as saveLocalTeamMembers,
   mergeRecordsByTimestamp,
@@ -567,6 +571,7 @@ export async function apiLogWhatsAppDispatch(payload: {
   recipients: string[];
   message: string;
   imageDataUrl?: string;
+  category?: 'battery' | 'charger';
 }) {
   const base = getApiBaseUrl();
   try {
@@ -1691,6 +1696,500 @@ export async function apiSaveChargerRecord(
   return { key: compositeKey, ...payload };
 }
 
+// =========================================================================
+// Full Charger Stock Ledger, Columns & Serials APIs (Parity with Battery Stock)
+// =========================================================================
+
+const STORAGE_KEY_PENDING_CHARGER_SYNC = 'charger_pending_sync_keys_v1';
+
+export function getPendingChargerSyncKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PENDING_CHARGER_SYNC);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {}
+  return [];
+}
+
+function setPendingChargerSyncKeys(keys: string[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY_PENDING_CHARGER_SYNC, JSON.stringify(Array.from(new Set(keys))));
+  } catch {}
+}
+
+export function addPendingChargerSyncKey(key: string) {
+  const current = getPendingChargerSyncKeys();
+  if (!current.includes(key)) {
+    setPendingChargerSyncKeys([...current, key]);
+  }
+}
+
+export function removePendingChargerSyncKey(key: string) {
+  const current = getPendingChargerSyncKeys();
+  if (current.includes(key)) {
+    setPendingChargerSyncKeys(current.filter((k) => k !== key));
+  }
+}
+
+export async function apiFetchChargerLedgersWithMeta(
+  protectedKeys?: Set<string>
+): Promise<FetchRecordsWithMetaResult> {
+  const base = getApiBaseUrl();
+  const localEpoch = getLocalResetEpoch();
+  const localResetDate = getLocalResetDateIST();
+  const local = prunePreResetRecords(loadLocalChargerLedgers(), localEpoch, localResetDate);
+
+  try {
+    const res = await fetch(`${base}/api/charger-records`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return {
+        records: {},
+        resetEpoch: localEpoch || undefined,
+        resetDateIST: localResetDate || undefined,
+        epochResetTriggered: false,
+        fromRemote: true,
+      };
+    }
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        const remoteEpoch: string | undefined = json.resetEpoch;
+        const remoteResetDate: string | undefined = json.resetDateIST;
+
+        if (remoteEpoch && localEpoch !== remoteEpoch) {
+          saveLocalChargerLedgers(json.data);
+          return {
+            records: json.data,
+            resetEpoch: remoteEpoch,
+            resetDateIST: remoteResetDate,
+            epochResetTriggered: true,
+            fromRemote: true,
+          };
+        }
+
+        const effectiveEpoch = remoteEpoch || localEpoch;
+        const effectiveDateIST = remoteResetDate || localResetDate;
+        const prunedLocal = prunePreResetRecords(local, effectiveEpoch, effectiveDateIST);
+        const combinedProtected = new Set([
+          ...getPendingChargerSyncKeys(),
+          ...(protectedKeys ? Array.from(protectedKeys) : []),
+        ]);
+        const { merged } = mergeRecordsByTimestamp(prunedLocal, json.data, combinedProtected);
+        saveLocalChargerLedgers(merged);
+        return {
+          records: merged,
+          resetEpoch: remoteEpoch,
+          resetDateIST: remoteResetDate,
+          epochResetTriggered: false,
+          fromRemote: true,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Could not fetch remote charger ledgers, using local cache:', err);
+  }
+  return {
+    records: local,
+    resetEpoch: localEpoch || undefined,
+    resetDateIST: localResetDate || undefined,
+    epochResetTriggered: false,
+    fromRemote: false,
+  };
+}
+
+export async function apiSaveChargerLedgerWithMeta(record: DayRecord): Promise<SaveRecordResponse> {
+  const key = getBatteryRecordKey(record.branchId, record.date);
+  const recordWithBranch: DayRecord = {
+    ...record,
+    branchId: record.branchId || DEFAULT_BRANCH_ID,
+    lastModified: record.lastModified || new Date().toISOString(),
+  };
+
+  const local = loadLocalChargerLedgers();
+  local[key] = recordWithBranch;
+  saveLocalChargerLedgers(local);
+  addPendingChargerSyncKey(key);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-records`, {
+      method: 'POST',
+      headers: buildBranchHeaders(true),
+      body: JSON.stringify(recordWithBranch),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        const persistedToRemote = Boolean(json.persistedToRemote);
+        const isIntentionalLocalMode = json.storage === 'local_file';
+        if (persistedToRemote || isIntentionalLocalMode) {
+          removePendingChargerSyncKey(key);
+        }
+        return {
+          record: json.data,
+          persistedToServer: true,
+          persistedToRemote,
+          storage: json.storage,
+          error: json.remoteError,
+        };
+      }
+      return {
+        record: recordWithBranch,
+        persistedToServer: false,
+        persistedToRemote: false,
+        error: json?.error || 'Server rejected save',
+      };
+    }
+    return {
+      record: recordWithBranch,
+      persistedToServer: false,
+      persistedToRemote: false,
+      error: `HTTP ${res.status}`,
+    };
+  } catch (err: any) {
+    console.warn('[API] Cloud charger save deferred, record queued locally:', err);
+    return {
+      record: recordWithBranch,
+      persistedToServer: false,
+      persistedToRemote: false,
+      error: err?.message || 'Network unavailable',
+    };
+  }
+}
+
+export async function flushPendingChargerLedgersToServer(
+  recordsSource?: Record<string, DayRecord>,
+  extraKeysToPush?: string[]
+): Promise<{ flushed: number; remaining: number }> {
+  const local = recordsSource || loadLocalChargerLedgers();
+  const keysToPush = Array.from(new Set([...getPendingChargerSyncKeys(), ...(extraKeysToPush || [])]));
+  if (keysToPush.length === 0) {
+    return { flushed: 0, remaining: 0 };
+  }
+
+  let flushed = 0;
+  for (const key of keysToPush) {
+    const rec = local[key];
+    if (!rec) {
+      removePendingChargerSyncKey(key);
+      continue;
+    }
+    const res = await apiSaveChargerLedgerWithMeta(rec);
+    if (res.persistedToServer && (res.persistedToRemote || res.storage === 'local_file')) {
+      flushed++;
+    }
+  }
+
+  return {
+    flushed,
+    remaining: getPendingChargerSyncKeys().length,
+  };
+}
+
+export async function apiDeleteChargerLedger(recordKey: string): Promise<boolean> {
+  const local = loadLocalChargerLedgers();
+  delete local[recordKey];
+  saveLocalChargerLedgers(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-records/${encodeURIComponent(recordKey)}`, {
+      method: 'DELETE',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function apiFetchChargerColumns(): Promise<BatteryColumn[]> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-columns`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocalChargerColumns(json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Charger columns fetch failed, using local fallback:', err);
+  }
+  return loadLocalChargerColumns();
+}
+
+export async function apiSaveChargerColumns(columns: BatteryColumn[]): Promise<BatteryColumn[]> {
+  saveLocalChargerColumns(columns);
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-columns`, {
+      method: 'POST',
+      headers: buildBranchHeaders(true),
+      body: JSON.stringify(columns),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) return json.data;
+    }
+  } catch (err) {
+    console.warn('[API] Cloud charger columns save deferred:', err);
+  }
+  return columns;
+}
+
+const STORAGE_KEY_CHARGER_SERIALS = 'charger_serials_v1';
+const STORAGE_KEY_PENDING_CHARGER_SERIAL_SYNC = 'charger_pending_serial_sync_keys_v1';
+
+export function getPendingChargerSerialSyncKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PENDING_CHARGER_SERIAL_SYNC);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {}
+  return [];
+}
+
+function setPendingChargerSerialSyncKeys(keys: string[]) {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY_PENDING_CHARGER_SERIAL_SYNC,
+      JSON.stringify(Array.from(new Set(keys)))
+    );
+  } catch {}
+}
+
+export function addPendingChargerSerialSyncKey(serialNo: string) {
+  const clean = serialNo.trim().toUpperCase();
+  if (!clean) return;
+  const current = getPendingChargerSerialSyncKeys();
+  if (!current.includes(clean)) {
+    setPendingChargerSerialSyncKeys([...current, clean]);
+  }
+}
+
+export function removePendingChargerSerialSyncKey(serialNo: string) {
+  const clean = serialNo.trim().toUpperCase();
+  const current = getPendingChargerSerialSyncKeys();
+  if (current.includes(clean)) {
+    setPendingChargerSerialSyncKeys(current.filter((k) => k !== clean));
+  }
+}
+
+export function loadLocalChargerSerials(): Record<string, BatterySerialItem> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CHARGER_SERIALS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load local charger serials', e);
+  }
+  return {};
+}
+
+export function saveLocalChargerSerials(serials: Record<string, BatterySerialItem>) {
+  try {
+    localStorage.setItem(STORAGE_KEY_CHARGER_SERIALS, JSON.stringify(serials));
+  } catch (e) {
+    console.error('Failed to save local charger serials', e);
+  }
+}
+
+export async function apiFetchChargerSerials(
+  protectedKeys?: Set<string>
+): Promise<Record<string, BatterySerialItem>> {
+  const base = getApiBaseUrl();
+  const localEpoch = getLocalResetEpoch();
+  const localResetDate = getLocalResetDateIST();
+  const local = prunePreResetSerials(loadLocalChargerSerials(), localEpoch, localResetDate);
+
+  try {
+    const res = await fetch(`${base}/api/charger-serials`, {
+      cache: 'no-store',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return {};
+    }
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        const remoteEpoch: string | undefined = json.resetEpoch;
+        const remoteResetDate: string | undefined = json.resetDateIST;
+        if (remoteEpoch && localEpoch !== remoteEpoch) {
+          saveLocalChargerSerials(json.data);
+          return json.data;
+        }
+        const prunedLocal = prunePreResetSerials(
+          local,
+          remoteEpoch || localEpoch,
+          remoteResetDate || localResetDate
+        );
+        const combinedProtected = new Set([
+          ...getPendingChargerSerialSyncKeys(),
+          ...(protectedKeys ? Array.from(protectedKeys) : []),
+        ]);
+        const { merged } = mergeSerialsByHistory(prunedLocal, json.data, combinedProtected);
+        saveLocalChargerSerials(merged);
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Charger serials fetch failed, using local cache:', err);
+  }
+  return local;
+}
+
+export async function apiSaveChargerSerial(item: BatterySerialItem): Promise<BatterySerialItem> {
+  const normalized: BatterySerialItem = {
+    ...item,
+    serialNo: item.serialNo.trim().toUpperCase(),
+  };
+  const local = loadLocalChargerSerials();
+  local[normalized.serialNo] = normalized;
+  saveLocalChargerSerials(local);
+  addPendingChargerSerialSyncKey(normalized.serialNo);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-serials`, {
+      method: 'POST',
+      headers: buildBranchHeaders(true),
+      body: JSON.stringify(normalized),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        removePendingChargerSerialSyncKey(normalized.serialNo);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Cloud save charger serial deferred:', err);
+  }
+  return normalized;
+}
+
+export async function apiBulkSaveChargerSerials(
+  items: BatterySerialItem[]
+): Promise<BatterySerialItem[]> {
+  const normalizedItems = items.map((item) => ({
+    ...item,
+    serialNo: item.serialNo.trim().toUpperCase(),
+  }));
+  const local = loadLocalChargerSerials();
+  normalizedItems.forEach((item) => {
+    local[item.serialNo] = item;
+    addPendingChargerSerialSyncKey(item.serialNo);
+  });
+  saveLocalChargerSerials(local);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-serials/bulk`, {
+      method: 'POST',
+      headers: buildBranchHeaders(true),
+      body: JSON.stringify(normalizedItems),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        normalizedItems.forEach((it) => removePendingChargerSerialSyncKey(it.serialNo));
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Cloud bulk save charger serials deferred:', err);
+  }
+  return normalizedItems;
+}
+
+export async function flushPendingChargerSerialsToServer(
+  serialsMap: Record<string, BatterySerialItem>,
+  explicitKeys?: string[]
+): Promise<number> {
+  const keysToFlush = Array.from(
+    new Set([...(explicitKeys || []), ...getPendingChargerSerialSyncKeys()])
+  );
+  const items = keysToFlush
+    .map((k) => serialsMap[k])
+    .filter((item): item is BatterySerialItem => Boolean(item && item.serialNo));
+
+  if (items.length === 0) return 0;
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-serials/bulk`, {
+      method: 'POST',
+      headers: buildBranchHeaders(true),
+      body: JSON.stringify(items),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success) {
+        items.forEach((it) => removePendingChargerSerialSyncKey(it.serialNo));
+        return items.length;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Pending charger serial flush deferred:', err);
+  }
+  return 0;
+}
+
+export async function apiDeleteChargerSerial(serialNo: string): Promise<boolean> {
+  const clean = serialNo.trim().toUpperCase();
+  if (!clean) return false;
+
+  const local = loadLocalChargerSerials();
+  if (local[clean] || local[serialNo]) {
+    delete local[clean];
+    delete local[serialNo];
+    saveLocalChargerSerials(local);
+  }
+  removePendingChargerSerialSyncKey(clean);
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/charger-serials/${encodeURIComponent(clean)}`, {
+      method: 'DELETE',
+      headers: buildBranchHeaders(),
+    });
+    handleMaybeUnauthorized(res);
+    if (res.ok) {
+      const json = await res.json();
+      return Boolean(json.success);
+    }
+  } catch (err) {
+    console.warn('[API] Cloud delete charger serial failed:', err);
+  }
+  return false;
+}
+
 const STORAGE_KEY_VEHICLES = 'vehicle_stock_records_v1';
 
 export function loadLocalVehicles(): Record<string, any> {
@@ -1879,6 +2378,12 @@ export interface RealtimeSyncCallbacks {
   onSerialsBulkUpdated?: (serials: BatterySerialItem[]) => void;
   onSerialDeleted?: (serialNo: string) => void;
   onColumnsUpdated?: (columns: BatteryColumn[]) => void;
+  onChargerLedgerUpdated?: (record: DayRecord) => void;
+  onChargerLedgerDeleted?: (key: string) => void;
+  onChargerColumnsUpdated?: (columns: BatteryColumn[]) => void;
+  onChargerSerialUpdated?: (serial: BatterySerialItem) => void;
+  onChargerSerialsBulkUpdated?: (serials: BatterySerialItem[]) => void;
+  onChargerSerialDeleted?: (serialNo: string) => void;
   onTeamUpdated?: (team: TeamMember[]) => void;
   onChargerUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedBy?: string; transactions?: any[]; updatedAt: string }) => void;
   onVehicleUpdated?: (payload: { key: string; branchId: string; date: string; record: Record<string, any>; updatedBy?: string; transactions?: any[]; updatedAt: string }) => void;
@@ -1968,6 +2473,63 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
         if (Array.isArray(payload)) {
           saveLocalColumns(payload);
           callbacks.onColumnsUpdated?.(payload);
+        }
+        break;
+      case 'CHARGER_RECORD_UPDATED':
+        if (payload?.date) {
+          const key = getBatteryRecordKey(payload.branchId, payload.date);
+          if (getPendingChargerSyncKeys().includes(key)) {
+            break;
+          }
+          const local = loadLocalChargerLedgers();
+          const existingLocal = local[key];
+          const localTs = existingLocal?.lastModified ? Date.parse(existingLocal.lastModified) : 0;
+          const incomingTs = payload.lastModified ? Date.parse(payload.lastModified) : 0;
+          if (!existingLocal || incomingTs >= localTs) {
+            local[key] = payload;
+            saveLocalChargerLedgers(local);
+            callbacks.onChargerLedgerUpdated?.(payload);
+          }
+        }
+        break;
+      case 'CHARGER_RECORD_DELETED':
+        if (payload?.date) {
+          const local = loadLocalChargerLedgers();
+          delete local[payload.date];
+          saveLocalChargerLedgers(local);
+          callbacks.onChargerLedgerDeleted?.(payload.date);
+        }
+        break;
+      case 'CHARGER_COLUMNS_UPDATED':
+        if (Array.isArray(payload)) {
+          saveLocalChargerColumns(payload);
+          callbacks.onChargerColumnsUpdated?.(payload);
+        }
+        break;
+      case 'CHARGER_SERIAL_UPDATED':
+        if (payload?.serialNo) {
+          const local = loadLocalChargerSerials();
+          local[payload.serialNo] = payload;
+          saveLocalChargerSerials(local);
+          callbacks.onChargerSerialUpdated?.(payload);
+        }
+        break;
+      case 'CHARGER_SERIALS_BULK_UPDATED':
+        if (Array.isArray(payload)) {
+          const local = loadLocalChargerSerials();
+          payload.forEach((s: BatterySerialItem) => {
+            local[s.serialNo] = s;
+          });
+          saveLocalChargerSerials(local);
+          callbacks.onChargerSerialsBulkUpdated?.(payload);
+        }
+        break;
+      case 'CHARGER_SERIAL_DELETED':
+        if (payload?.serialNo) {
+          const local = loadLocalChargerSerials();
+          delete local[payload.serialNo];
+          saveLocalChargerSerials(local);
+          callbacks.onChargerSerialDeleted?.(payload.serialNo);
         }
         break;
       case 'TEAM_UPDATED':
@@ -2087,5 +2649,71 @@ export function subscribeRealtimeSync(callbacks: RealtimeSyncCallbacks): () => v
       channel.close();
       channel = null;
     }
+  };
+}
+
+export interface AiSerialScanResult {
+  serialNo: string;
+  serialNos: string[];
+  model?: string;
+  batchNo?: string;
+  confidence?: 'high' | 'medium' | 'low';
+  rawText?: string;
+  engine?: string;
+}
+
+export async function apiScanSerialFromPhoto(params: {
+  imageBase64: string;
+  mimeType?: string;
+  category?: 'battery' | 'charger';
+  modelHint?: string;
+}): Promise<AiSerialScanResult> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/scan-barcode-ocr`, {
+    method: 'POST',
+    headers: buildBranchHeaders(true),
+    body: JSON.stringify({
+      imageBase64: params.imageBase64,
+      mimeType: params.mimeType || 'image/jpeg',
+      category: params.category || 'battery',
+      modelHint: params.modelHint || '',
+    }),
+  });
+  handleMaybeUnauthorized(res);
+
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`AI OCR server returned invalid response (HTTP ${res.status}).`);
+  }
+
+  if (!res.ok || !data?.success) {
+    throw new Error(data?.error || `AI OCR request failed (HTTP ${res.status}).`);
+  }
+
+  const payload = data.data || {};
+  const serialNos: string[] = Array.isArray(payload.serialNos)
+    ? payload.serialNos.map((s: any) => String(s || '').trim()).filter(Boolean)
+    : [];
+
+  if (serialNos.length === 0 && typeof payload.serialNo === 'string' && payload.serialNo.trim()) {
+    payload.serialNo
+      .split(/[\n,;]+/)
+      .map((s: string) => s.trim())
+      .filter(Boolean)
+      .forEach((s: string) => {
+        if (!serialNos.includes(s)) serialNos.push(s);
+      });
+  }
+
+  return {
+    serialNo: serialNos.join(', '),
+    serialNos,
+    model: typeof payload.model === 'string' ? payload.model : '',
+    batchNo: typeof payload.batchNo === 'string' ? payload.batchNo : '',
+    confidence: payload.confidence,
+    rawText: typeof payload.rawText === 'string' ? payload.rawText : '',
+    engine: typeof data.engine === 'string' ? data.engine : undefined,
   };
 }

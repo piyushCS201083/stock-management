@@ -22,6 +22,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
+import { AiSerialCameraModal } from './AiSerialCameraModal';
+import { AiSerialScanResult } from '../services/api';
 import {
   toISODateString,
   fromISODateString,
@@ -74,6 +76,7 @@ interface QuickEntryModalProps {
   onSelectDate?: (date: string) => void;
   serials?: Record<string, BatterySerialItem>;
   closingStock?: Record<string, number>;
+  category?: 'battery' | 'charger';
 }
 
 export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
@@ -88,13 +91,20 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   onSelectDate,
   serials = {},
   closingStock,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const serialPrefix = isCharger ? 'CHG' : 'BAT';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
+  const entityLower = isCharger ? 'charger' : 'battery';
+  const defaultFallbackColId = columns[0]?.id || (isCharger ? '48v3ah' : '60x24_old');
+
   const [entryType, setEntryType] = useState<'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service'>(
     initialEntryType === 'transfer' ? 'out' : initialEntryType
   );
 
   // Primary fields (used for IN / OUT / Repair / Service, and as OUT side when entryType === 'both')
-  const [selectedColId, setSelectedColId] = useState<string>(columns[0]?.id || '60x24_old');
+  const [selectedColId, setSelectedColId] = useState<string>(defaultFallbackColId);
   const [quantity, setQuantity] = useState<number>(1);
   const [cause, setCause] = useState<string>('');
   const [partnerName, setPartnerName] = useState<string>('');
@@ -107,7 +117,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [extraOutItems, setExtraOutItems] = useState<Array<{ modelId: string; quantity: number }>>([]);
 
   // Additional INWARD fields used exclusively when entryType === 'both'
-  const [inColId, setInColId] = useState<string>(columns[0]?.id || '60x24_old');
+  const [inColId, setInColId] = useState<string>(defaultFallbackColId);
   const [inQuantity, setInQuantity] = useState<number>(1);
   const [inPartner, setInPartner] = useState<string>('');
   const [inCauseText, setInCauseText] = useState<string>('');
@@ -115,17 +125,21 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
   const [scannerTarget, setScannerTarget] = useState<'primary' | 'both_in'>('primary');
   const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
+  const [isAiCameraOpen, setIsAiCameraOpen] = useState<boolean>(false);
+  const [isAiTypingSerial, setIsAiTypingSerial] = useState<boolean>(false);
   const [lastScannedSerial, setLastScannedSerial] = useState<string | null>(null);
   const [validationAttempted, setValidationAttempted] = useState<boolean>(false);
   const serialInputRef = React.useRef<HTMLInputElement>(null);
   const batchInputRef = React.useRef<HTMLInputElement>(null);
   const isBatchCustomRef = React.useRef<boolean>(false);
+  const aiTypingTimerRef = React.useRef<number | null>(null);
+  const aiTypingTargetRef = React.useRef<string | null>(null);
 
   const otherBranches = BRANCHES.filter((b) => b.id !== activeBranch.id);
 
   const resolveModel = (id: string): BatteryColumn | undefined =>
     id === 'service'
-      ? { id: 'service', name: 'SERVICE BATTERY', isSpecial: true }
+      ? { id: 'service', name: isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY', isSpecial: true }
       : columns.find((c) => c.id === id);
 
   const liveClosingStock = useMemo(() => {
@@ -148,8 +162,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     mode: 'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service',
     colId: string
   ): string => {
-    if (mode === 'repair_in' || mode === 'repair_out') return 'OLD BATTERY FOR REPAIR';
-    if (mode === 'service') return 'SERVICE BATTERY';
+    if (mode === 'repair_in' || mode === 'repair_out') {
+      return isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR';
+    }
+    if (mode === 'service') {
+      return isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY';
+    }
     return resolveModel(colId)?.name || '';
   };
 
@@ -202,7 +220,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const inStockSerialsForOutModel = useMemo(() => {
     const col =
       selectedColId === 'service'
-        ? { id: 'service', name: 'SERVICE BATTERY' }
+        ? { id: 'service', name: isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY' }
         : columns.find((c) => c.id === selectedColId);
     return Object.values(serials).filter(
       (s) =>
@@ -213,7 +231,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         (s.modelId === selectedColId ||
           (col && (s.modelName === col.name || s.batchNo === col.name)))
     );
-  }, [serials, activeBranch.id, selectedColId, columns]);
+  }, [serials, activeBranch.id, selectedColId, columns, isCharger]);
 
   const toggleOutSerialChip = (sn: string) => {
     setSerialInput((prev) => {
@@ -257,10 +275,95 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     }, 5000);
   };
 
+  const cancelAiTyping = (commitFull = false) => {
+    if (aiTypingTimerRef.current !== null) {
+      window.clearInterval(aiTypingTimerRef.current);
+      aiTypingTimerRef.current = null;
+    }
+    setIsAiTypingSerial(false);
+    if (commitFull && aiTypingTargetRef.current !== null) {
+      setSerialInput(aiTypingTargetRef.current);
+    }
+    aiTypingTargetRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!isOpen) {
+      cancelAiTyping(false);
+      setIsAiCameraOpen(false);
+    }
+    return () => {
+      if (aiTypingTimerRef.current !== null) {
+        window.clearInterval(aiTypingTimerRef.current);
+        aiTypingTimerRef.current = null;
+      }
+    };
+  }, [isOpen]);
+
+  const handleAiCameraDetected = (result: AiSerialScanResult) => {
+    const incoming = (result.serialNos && result.serialNos.length > 0
+      ? result.serialNos
+      : (result.serialNo || '').split(/[\n,;]+/)
+    )
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    if (incoming.length === 0) return;
+
+    const currentRaw = aiTypingTargetRef.current ?? serialInput;
+    const existingList = currentRaw
+      .split(/[\n,;]+/)
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    const existingSet = new Set(existingList);
+    const newlyAdded: string[] = [];
+    incoming.forEach((sn) => {
+      if (!existingSet.has(sn)) {
+        existingSet.add(sn);
+        newlyAdded.push(sn);
+      }
+    });
+
+    if (newlyAdded.length === 0) {
+      serialInputRef.current?.focus();
+      setLastScannedSerial(incoming.join(', '));
+      setTimeout(() => setLastScannedSerial(null), 4000);
+      return;
+    }
+
+    const basePrefix = existingList.join(', ');
+    const addition = basePrefix ? `, ${newlyAdded.join(', ')}` : newlyAdded.join(', ');
+    const targetFull = `${basePrefix}${addition}`;
+
+    cancelAiTyping(false);
+    aiTypingTargetRef.current = targetFull;
+    setIsAiTypingSerial(true);
+    setValidationAttempted(false);
+
+    requestAnimationFrame(() => {
+      serialInputRef.current?.focus();
+    });
+
+    const stepSize = Math.max(1, Math.ceil(addition.length / 16));
+    let cursor = 0;
+
+    setSerialInput(basePrefix);
+    aiTypingTimerRef.current = window.setInterval(() => {
+      cursor = Math.min(addition.length, cursor + stepSize);
+      setSerialInput(`${basePrefix}${addition.slice(0, cursor)}`);
+      if (cursor >= addition.length) {
+        cancelAiTyping(true);
+        setLastScannedSerial(newlyAdded.join(', '));
+        setTimeout(() => setLastScannedSerial(null), 5000);
+      }
+    }, 18);
+  };
+
   if (!isOpen) return null;
 
   const handleAutoGenerateSerials = (colId: string, qty: number, target: 'primary' | 'both_in') => {
-    const colName = columns.find((c) => c.id === colId)?.name || 'BAT';
+    const colName = columns.find((c) => c.id === colId)?.name || serialPrefix;
     const cleanPrefix = colName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase();
     const generated: string[] = [];
     const baseNum = Math.floor(1000 + Math.random() * 9000);
@@ -270,6 +373,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     if (target === 'both_in') {
       setInSerialInput(generated.join(', '));
     } else {
+      cancelAiTyping(false);
       setSerialInput(generated.join(', '));
     }
   };
@@ -339,7 +443,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           .replace(/[×x\s]/g, '')
           .replace(/[^A-Za-z0-9]/g, '')
           .toUpperCase()
-          .slice(0, 6) || 'BAT';
+          .slice(0, 6) || serialPrefix;
       const suffixTag =
         mode === 'out' || mode === 'repair_out'
           ? 'OUT-'
@@ -351,7 +455,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       let counter = 0;
       let randomBase = Math.floor(1000 + Math.random() * 9000);
       while (result.length < qty) {
-        const candidate = `BAT-${cleanPrefix}-${suffixTag}${randomBase + counter}`;
+        const candidate = `${serialPrefix}-${cleanPrefix}-${suffixTag}${randomBase + counter}`;
         counter += 1;
         if (!alreadyAllocated.has(candidate) && !serials[candidate]) {
           result.push(candidate);
@@ -364,8 +468,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   };
 
   const handleSave = async (andSendWhatsApp = false) => {
+    const effectiveSerialInput = aiTypingTargetRef.current ?? serialInput;
+    if (aiTypingTargetRef.current !== null) {
+      cancelAiTyping(true);
+    }
+
     if (entryType !== 'both') {
-      const missingSerial = buildSerialList(serialInput).length === 0;
+      const missingSerial = buildSerialList(effectiveSerialInput).length === 0;
       const missingBatch = !batchNo.trim();
       if (missingSerial || missingBatch) {
         setValidationAttempted(true);
@@ -547,7 +656,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
             }),
         ];
 
-        const manualOutSerials = buildSerialList(serialInput);
+        const manualOutSerials = buildSerialList(effectiveSerialInput);
         const itemSerialsMap: Record<number, string[]> = {};
 
         outItems.forEach((item, idx) => {
@@ -612,7 +721,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         updated.inCause['service'] = updated.inCause['service']
           ? `${updated.inCause['service']}\n${fullCause}`
           : fullCause;
-        const svcLine = `SERVICE BATTERY: ${fullCause}`;
+        const svcLine = `${isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'}: ${fullCause}`;
         updated.totalInCause = updated.totalInCause
           ? `${updated.totalInCause}\n${svcLine}`
           : svcLine;
@@ -621,13 +730,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       if (entryType !== 'out') {
         const targetModel =
           entryType === 'repair_in' || entryType === 'repair_out'
-            ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
+            ? { id: 'repair', name: isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR' }
             : entryType === 'service'
-            ? { id: 'service', name: 'SERVICE BATTERY' }
+            ? { id: 'service', name: isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY' }
             : resolveModel(selectedColId) || { id: selectedColId, name: selectedColId };
 
         const finalSerials = allocateSerialsForMovement({
-          providedSerials: buildSerialList(serialInput),
+          providedSerials: buildSerialList(effectiveSerialInput),
           modelId: targetModel.id,
           modelName: targetModel.name,
           qty: quantity,
@@ -697,7 +806,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         <div className="sticky top-0 z-20 flex items-center justify-between px-5 sm:px-6 py-3.5 bg-slate-900 text-white shrink-0 rounded-t-2xl gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-sm sm:text-base font-bold whitespace-nowrap">
-              Log Battery IN / OUT ({activeBranch.shortName})
+              Log {entityCap} IN / OUT ({activeBranch.shortName})
             </h2>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded-lg text-xs font-mono transition-colors">
               <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -825,7 +934,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                 }`}
               >
                 <Wrench className="w-5 h-5 text-amber-600 mb-1" />
-                <span>Repair Battery</span>
+                <span>Repair {entityCap}</span>
                 <span className="text-[10px] text-amber-600 font-normal">Maa Sati/Morar</span>
               </button>
 
@@ -883,7 +992,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         </option>
                       ))}
                       <option value="service">
-                        SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                        {isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'} (Closing: {getModelCurrentClosing('service')} units)
                       </option>
                     </select>
                   </div>
@@ -978,7 +1087,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         </option>
                       ))}
                       <option value="service">
-                        SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                        {isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'} (Closing: {getModelCurrentClosing('service')} units)
                       </option>
                     </select>
                   </div>
@@ -1087,12 +1196,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                 </div>
               )}
 
-              {/* Battery Model & Quantity Selection (for In/Out) */}
+              {/* Model & Quantity Selection (for In/Out) */}
               {entryType !== 'repair_in' && entryType !== 'repair_out' && entryType !== 'service' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                      Battery Specification / Model:
+                      {entityCap} Specification / Model:
                     </label>
                     <select
                       value={selectedColId}
@@ -1105,7 +1214,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         </option>
                       ))}
                       <option value="service">
-                        SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                        {isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'} (Closing: {getModelCurrentClosing('service')} units)
                       </option>
                     </select>
                   </div>
@@ -1190,7 +1299,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                               </option>
                             ))}
                             <option value="service">
-                              SERVICE BATTERY (Closing: {getModelCurrentClosing('service')} units)
+                              {isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'} (Closing: {getModelCurrentClosing('service')} units)
                             </option>
                           </select>
                           <input
@@ -1223,13 +1332,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         onClick={() =>
                           setExtraOutItems((prev) => [
                             ...prev,
-                            { modelId: columns[1]?.id || columns[0]?.id || '60x24_flat', quantity: 1 },
+                            { modelId: columns[1]?.id || columns[0]?.id || defaultFallbackColId, quantity: 1 },
                           ])
                         }
                         className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
                       >
                         <Plus className="w-3 h-3" />
-                        <span>Add another battery model to this branch transfer</span>
+                        <span>Add another {entityLower} model to this branch transfer</span>
                       </button>
                     </div>
                   )}
@@ -1267,7 +1376,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                 <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                   <span className="text-amber-900 font-semibold flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>
-                    <span>Repair Battery Pool Impact:</span>
+                    <span>Repair {entityCap} Pool Impact:</span>
                   </span>
                   <div className="flex items-center gap-2 font-mono">
                     {(() => {
@@ -1367,20 +1476,21 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-1.5 font-bold text-xs text-blue-900">
                     <Barcode className="w-4 h-4 text-blue-700" />
-                    <span>Battery Serial Numbers & Batch Tracking (In-App Only)</span>
+                    <span>{entityCap} Serial Numbers & Batch Tracking (In-App Only)</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         setScannerTarget('primary');
-                        setIsScannerOpen(true);
+                        setIsAiCameraOpen(true);
                       }}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-xs font-bold rounded-md shadow-xs transition-colors cursor-pointer"
-                      title="Scan barcode with camera or capture battery label photo"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-md shadow-xs transition-colors cursor-pointer"
+                      title={`AI Camera: capture or upload a ${entityLower} photo to read the serial and type it below`}
                     >
                       <Camera className="w-3.5 h-3.5" />
-                      <span>Scan Barcode (Camera)</span>
+                      <span>AI Camera</span>
+                      <Sparkles className="w-3 h-3 text-amber-300" />
                     </button>
                     <button
                       type="button"
@@ -1444,14 +1554,23 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         Serial Number(s) <span className="text-rose-600 font-bold">*</span>{' '}
                         <span className="text-slate-400 font-normal">(required · comma or enter separated)</span>:
                       </label>
-                      {serialInput.trim() && (
-                        <button
-                          type="button"
-                          onClick={() => setSerialInput('')}
-                          className="text-[10px] text-rose-600 hover:text-rose-800 underline cursor-pointer"
-                        >
-                          Clear
-                        </button>
+                      {isAiTypingSerial ? (
+                        <span className="text-[10px] font-semibold text-indigo-700 animate-pulse">
+                          AI typing into box...
+                        </span>
+                      ) : (
+                        serialInput.trim() && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              cancelAiTyping(false);
+                              setSerialInput('');
+                            }}
+                            className="text-[10px] text-rose-600 hover:text-rose-800 underline cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        )
                       )}
                     </div>
                     <div className="relative flex items-center">
@@ -1460,11 +1579,20 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         type="text"
                         required
                         aria-required="true"
-                        placeholder="Required: e.g. 6024-FLAT-001 (or click Camera to scan)"
+                        placeholder={
+                          isCharger
+                            ? 'Required: e.g. CHG-48V3AH-001 (or click AI Camera above)'
+                            : 'Required: e.g. 6024-FLAT-001 (or click AI Camera above)'
+                        }
                         value={serialInput}
-                        onChange={(e) => setSerialInput(e.target.value)}
-                        className={`w-full pl-2.5 pr-24 py-2 text-xs font-mono font-medium border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs ${
-                          validationAttempted && buildSerialList(serialInput).length === 0
+                        onChange={(e) => {
+                          cancelAiTyping(false);
+                          setSerialInput(e.target.value);
+                        }}
+                        className={`w-full pl-2.5 pr-24 py-2 text-xs font-mono font-medium border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs transition-all ${
+                          isAiTypingSerial
+                            ? 'border-indigo-500 ring-2 ring-indigo-500/30 focus:ring-indigo-500'
+                            : validationAttempted && buildSerialList(serialInput).length === 0
                             ? 'border-rose-500 ring-2 ring-rose-500/20 focus:ring-rose-500'
                             : 'border-blue-300 focus:ring-blue-500'
                         }`}
@@ -1476,7 +1604,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                           setIsScannerOpen(true);
                         }}
                         className="absolute right-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-md text-[11px] font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
-                        title="Open Camera to scan battery barcode or label"
+                        title={`Open Camera to scan ${entityLower} barcode or label`}
                       >
                         <Camera className="w-3.5 h-3.5" />
                         <span>Scan</span>
@@ -1491,14 +1619,14 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      Batch (Battery Model) <span className="text-rose-600 font-bold">*</span>:
+                      Batch ({entityCap} Model) <span className="text-rose-600 font-bold">*</span>:
                     </label>
                     <input
                       ref={batchInputRef}
                       type="text"
                       required
                       aria-required="true"
-                      placeholder={`Required: ${selectedCol?.name || 'e.g. 60×24 FLAT'}`}
+                      placeholder={`Required: ${selectedCol?.name || (isCharger ? 'e.g. 48V 3AH' : 'e.g. 60×24 FLAT')}`}
                       value={batchNo}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -1515,7 +1643,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     />
                     {validationAttempted && !batchNo.trim() && (
                       <p className="mt-1 text-[11px] font-semibold text-rose-600">
-                        Batch (Battery Model) is mandatory.
+                        Batch ({entityCap} Model) is mandatory.
                       </p>
                     )}
                   </div>
@@ -1577,6 +1705,16 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         onClose={() => setIsScannerOpen(false)}
         onScanComplete={handleScanComplete}
         initialModelName={selectedCol?.name}
+        category={category}
+      />
+
+      {/* AI Camera Serial Photo Reader Modal */}
+      <AiSerialCameraModal
+        isOpen={isAiCameraOpen}
+        onClose={() => setIsAiCameraOpen(false)}
+        onSerialsDetected={handleAiCameraDetected}
+        category={category}
+        modelHint={selectedCol?.name}
       />
     </div>
   );

@@ -14,6 +14,7 @@ interface ExcelGridProps {
   serials?: Record<string, BatterySerialItem>;
   activeBranchId?: string;
   onInspectModelSerials?: (modelId: string, modelName: string, currentStock: number) => void;
+  category?: 'battery' | 'charger';
 }
 
 export const ExcelGrid: React.FC<ExcelGridProps> = ({
@@ -27,7 +28,10 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
   serials,
   activeBranchId = DEFAULT_BRANCH_ID,
   onInspectModelSerials,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
   const totals = calculateRecordTotals(record, columns);
   const [editingCell, setEditingCell] = useState<{ row: string; colId: string } | null>(null);
   const [tempValue, setTempValue] = useState<string>('');
@@ -151,13 +155,13 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 transition-colors cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Add Battery Model</span>
+                    <span>Add {entityCap} Model</span>
                   </button>
                 ) : (
                   <form onSubmit={handleAddColumnSubmit} className="flex items-center gap-1.5">
                     <input
                       type="text"
-                      placeholder="e.g. 72×30 OLD"
+                      placeholder={isCharger ? 'e.g. 48V 5AH' : 'e.g. 72×30 OLD'}
                       value={newColName}
                       onChange={(e) => setNewColName(e.target.value)}
                       className="px-2 py-1 text-xs border border-blue-400 rounded bg-white text-slate-800 focus:outline-none"
@@ -188,7 +192,7 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
       <div className="w-full overflow-x-auto border border-slate-300 shadow-sm bg-white rounded-none">
         <div
           ref={tableRef}
-          id="battery-stock-sheet-table"
+          id={isCharger ? 'charger-stock-sheet-table' : 'battery-stock-sheet-table'}
           className="w-max min-w-[1430px] select-text bg-white"
           style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}
         >
@@ -253,19 +257,23 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                   </div>
                 </th>
 
-                {/* OLD BATTERY FOR REPAIR - 2 lines, centered, no filter */}
+                {/* OLD BATTERY/CHARGER FOR REPAIR - 2 lines, centered, no filter */}
                 <th className="w-[126px] min-w-[120px] p-0 border border-[#20498b] text-center font-bold">
                   <div className="flex flex-col items-center justify-center min-h-[56px] py-1.5 px-1 leading-snug">
-                    <span className="text-[11.5px] font-bold text-white text-center">OLD BATTERY</span>
+                    <span className="text-[11.5px] font-bold text-white text-center">
+                      {isCharger ? 'OLD CHARGER' : 'OLD BATTERY'}
+                    </span>
                     <span className="text-[11.5px] font-bold text-white text-center">FOR REPAIR</span>
                   </div>
                 </th>
 
-                {/* SERVICE BATTERY TOTAL - 3 lines, centered, no filter */}
+                {/* SERVICE BATTERY/CHARGER TOTAL - 3 lines, centered, no filter */}
                 <th className="w-[110px] min-w-[105px] p-0 border border-[#20498b] text-center font-bold">
                   <div className="flex flex-col items-center justify-center min-h-[56px] py-1.5 px-1 leading-tight">
                     <span className="text-[11px] font-bold text-white text-center">SERVICE</span>
-                    <span className="text-[11px] font-bold text-white text-center">BATTERY</span>
+                    <span className="text-[11px] font-bold text-white text-center">
+                      {isCharger ? 'CHARGER' : 'BATTERY'}
+                    </span>
                     <span className="text-[11px] font-bold text-white text-center">TOTAL</span>
                   </div>
                 </th>
@@ -811,9 +819,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <td
                       onClick={() =>
                         isInteractive &&
-                        onInspectModelSerials?.('repair', 'OLD BATTERY FOR REPAIR', totals.repair.closing)
+                        onInspectModelSerials?.(
+                          'repair',
+                          isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR',
+                          totals.repair.closing
+                        )
                       }
-                      title={isInteractive ? 'Click to view serial numbers for repair batteries' : undefined}
+                      title={
+                        isInteractive
+                          ? `Click to view serial numbers for repair ${isCharger ? 'chargers' : 'batteries'}`
+                          : undefined
+                      }
                       className={`border border-slate-400 text-center font-extrabold text-slate-900 py-2 px-1 tabular-nums text-[13px] ${
                         isInteractive ? 'cursor-pointer hover:bg-[#cde4c2] transition-colors' : ''
                       }`}
@@ -843,9 +859,17 @@ export const ExcelGrid: React.FC<ExcelGridProps> = ({
                     <td
                       onClick={() =>
                         isInteractive &&
-                        onInspectModelSerials?.('service', 'SERVICE BATTERY TOTAL', totals.service.closing)
+                        onInspectModelSerials?.(
+                          'service',
+                          isCharger ? 'SERVICE CHARGER TOTAL' : 'SERVICE BATTERY TOTAL',
+                          totals.service.closing
+                        )
                       }
-                      title={isInteractive ? 'Click to view serial numbers for service batteries' : undefined}
+                      title={
+                        isInteractive
+                          ? `Click to view serial numbers for service ${isCharger ? 'chargers' : 'batteries'}`
+                          : undefined
+                      }
                       className={`border border-slate-400 text-center font-extrabold text-slate-900 py-2 px-1 tabular-nums text-[13px] ${
                         isInteractive ? 'cursor-pointer hover:bg-[#cde4c2] transition-colors' : ''
                       }`}

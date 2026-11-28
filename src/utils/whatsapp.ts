@@ -2,8 +2,14 @@ import { BatteryColumn, DayRecord, TeamMember } from '../types/stock';
 import { calculateRecordTotals } from './storage';
 import { getIndianCurrentTime } from './date';
 
-export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[]): string {
+export function formatWhatsAppMessage(
+  record: DayRecord,
+  columns: BatteryColumn[],
+  category: 'battery' | 'charger' = 'battery'
+): string {
   const totals = calculateRecordTotals(record, columns);
+  const isCharger = category === 'charger';
+  const upperItem = isCharger ? 'CHARGER' : 'BATTERY';
 
   // Collect inward items
   const inItems: string[] = [];
@@ -21,12 +27,11 @@ export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[
     const val = record.outStock[col.id];
     if (val && val !== 0) {
       const cause = record.outCause[col.id] ? ` _(${record.outCause[col.id]})_` : '';
-      inItems;
       outItems.push(`  • *${col.name}:* ${val}${cause}`);
     }
   });
 
-  // Repair battery info
+  // Repair item info
   const repairInfo: string[] = [];
   if (record.inStock['repair'] && record.inStock['repair'] > 0) {
     const cause = record.repairInCause ? ` (${record.repairInCause.replace(/\n/g, ', ')})` : '';
@@ -47,7 +52,7 @@ export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[
   });
 
   const lines = [
-    `📊 *DAILY BATTERY STOCK REGISTER*`,
+    `📊 *DAILY ${upperItem} STOCK REGISTER*`,
     `📅 *Date:* ${record.date}`,
     `━━━━━━━━━━━━━━━━━━━━━━━━━`,
     `📦 *OPENING STOCK:* ${totals.openingStockTotal} units`,
@@ -63,10 +68,10 @@ export function formatWhatsAppMessage(record: DayRecord, columns: BatteryColumn[
     `⚡ *TODAY'S CLOSING STOCK:* ${totals.closingStockTotal} units`,
     stockBreakdown.length > 0 ? `  ${stockBreakdown.join(' | ')}` : '  • 0 units',
     ``,
-    `🔧 *OLD BATTERY FOR REPAIR:* Closing: *${totals.repair.closing}* units`,
+    `🔧 *OLD ${upperItem} FOR REPAIR:* Closing: *${totals.repair.closing}* units`,
     repairInfo.length > 0 ? repairInfo.join('\n') : '',
     ``,
-    `🛠 *SERVICE BATTERY TOTAL:* *${totals.service.closing}* units`,
+    `🛠 *SERVICE ${upperItem} TOTAL:* *${totals.service.closing}* units`,
     `━━━━━━━━━━━━━━━━━━━━━━━━━`,
     `📷 *Excel sheet snapshot photo updated & verified.*`,
     `⏱ _Updated at: ${getIndianCurrentTime()}_`,

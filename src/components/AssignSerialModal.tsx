@@ -27,6 +27,7 @@ interface AssignSerialModalProps {
   initialTab?: 'assign_missing' | 'manage_existing';
   onSaveSerials: (items: BatterySerialItem[]) => void;
   onUpdateSerial: (item: BatterySerialItem, previousSerialNo?: string) => void;
+  category?: 'battery' | 'charger';
 }
 
 export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
@@ -40,7 +41,13 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
   initialTab,
   onSaveSerials,
   onUpdateSerial,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const serialPrefix = isCharger ? 'CHG' : 'BAT';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
+  const entityLower = isCharger ? 'charger' : 'battery';
+  const entityPluralCap = isCharger ? 'Chargers' : 'Batteries';
   // In-stock serials for this model
   const inStockSerials = existingSerials.filter((s) => s.status === 'in_stock');
   const missingCount = Math.max(0, currentStock - inStockSerials.length);
@@ -113,7 +120,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
           .slice(0, 6);
 
         const initialRows = Array.from({ length: Math.min(missingCount, 10) }, (_, i) => ({
-          serialNo: `BAT-${cleanPrefix}-${String(existingSerials.length + i + 1).padStart(3, '0')}`,
+          serialNo: `${serialPrefix}-${cleanPrefix}-${String(existingSerials.length + i + 1).padStart(3, '0')}`,
           inwardPartner: '',
           inwardCause: 'Current stock inventory baseline',
         }));
@@ -125,7 +132,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
       }
       setEditingSerial(null);
     }
-  }, [isOpen, missingCount, modelId, modelName, initialTab]);
+  }, [isOpen, missingCount, modelId, modelName, initialTab, serialPrefix]);
 
   const handleAddRow = () => {
     const cleanPrefix = modelName
@@ -136,7 +143,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
     setNewSerials((prev) => [
       ...prev,
       {
-        serialNo: `BAT-${cleanPrefix}-${String(existingSerials.length + prev.length + 1).padStart(3, '0')}`,
+        serialNo: `${serialPrefix}-${cleanPrefix}-${String(existingSerials.length + prev.length + 1).padStart(3, '0')}`,
         inwardPartner: '',
         inwardCause: '',
       },
@@ -372,20 +379,20 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
                       : `All current ${currentStock} stock units have serial numbers assigned!`}
                   </span>
                   <p className="text-[11px] text-amber-800 mt-0.5">
-                    Enter the unique serial number for each battery. You can also edit the suggested serials or add more rows below.
+                    Enter the unique serial number for each {entityLower}. You can also edit the suggested serials or add more rows below.
                   </p>
                 </div>
               </div>
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                  <span>Battery Serial Number Rows</span>
+                  <span>{entityCap} Serial Number Rows</span>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setIsScannerOpen(true)}
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-all cursor-pointer shadow-2xs"
-                      title="Scan battery barcodes or QR codes with camera"
+                      title={`Scan ${entityLower} barcodes or QR codes with camera`}
                     >
                       <Camera className="w-3.5 h-3.5" />
                       <span>Scan Barcode</span>
@@ -421,7 +428,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
                           required
                           value={row.serialNo}
                           onChange={(e) => handleRowChange(idx, 'serialNo', e.target.value)}
-                          placeholder="e.g. BAT-6024-001"
+                          placeholder={isCharger ? 'e.g. CHG-48V3AH-001' : 'e.g. BAT-6024-001'}
                           className="w-full px-2.5 py-1.5 text-xs font-mono font-bold text-blue-800 bg-white border border-slate-300 rounded focus:border-blue-500 focus:outline-none"
                         />
                       </div>
@@ -501,9 +508,9 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-bold text-slate-800">
-                  Existing Batteries Tracked for {modelName} ({existingSerials.length})
+                  Existing {entityPluralCap} Tracked for {modelName} ({existingSerials.length})
                 </span>
-                <span className="text-slate-500">Click any battery to edit or update status</span>
+                <span className="text-slate-500">Click any {entityLower} to edit or update status</span>
               </div>
 
               {existingSerials.length === 0 ? (
@@ -571,7 +578,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
               <div className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs">
                 <div>
                   <span className="font-bold text-blue-900 block">
-                    Editing Battery: {editingSerial.serialNo}
+                    Editing {entityCap}: {editingSerial.serialNo}
                   </span>
                   <span className="text-[11px] text-blue-700">Batch / Model: {modelName}</span>
                 </div>
@@ -612,7 +619,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
                     <option value="in_stock">In Stock (Available in Inventory)</option>
                     <option value="dispatched">Dispatched (Out to Customer / Vehicle / Dealer)</option>
                     <option value="in_repair">In Repair (Under service)</option>
-                    <option value="service_standby">Service Standby (Temporary swap battery)</option>
+                    <option value="service_standby">Service Standby (Temporary swap {entityLower})</option>
                   </select>
                 </div>
 
@@ -719,7 +726,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs cursor-pointer"
                 >
                   <Save className="w-3.5 h-3.5" />
-                  <span>Update Battery Details</span>
+                  <span>Update {entityCap} Details</span>
                 </button>
               </div>
             </form>
@@ -732,6 +739,7 @@ export const AssignSerialModal: React.FC<AssignSerialModalProps> = ({
         onClose={() => setIsScannerOpen(false)}
         initialModelName={modelName}
         onScanComplete={handleScanComplete}
+        category={category}
       />
     </div>
   );

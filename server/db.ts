@@ -81,6 +81,9 @@ interface DatabaseState {
   columns: BatteryColumn[];
   teamMembers: TeamMember[];
   serials: Record<string, BatterySerialItem>;
+  chargerLedgers?: Record<string, DayRecord>;
+  chargerColumns?: BatteryColumn[];
+  chargerSerials?: Record<string, BatterySerialItem>;
   chargerRecords?: Record<string, any>;
   vehicleRecords?: Record<string, any>;
   branchTransfers?: BranchTransfer[];
@@ -276,6 +279,25 @@ function readLocalFile(): DatabaseState {
       if (parsed) {
         parsed.records = parsed.records || {};
         parsed.serials = parsed.serials || {};
+        if (!parsed.chargerLedgers || typeof parsed.chargerLedgers !== 'object') {
+          const todayIST = getIndianTodayDateServer();
+          const now = new Date().toISOString();
+          const freshChargerLedgers: Record<string, DayRecord> = {};
+          for (const branch of BRANCHES) {
+            freshChargerLedgers[getBatteryRecordKey(branch.id, todayIST)] = buildEmptyServerDayRecord(
+              todayIST,
+              branch.id,
+              DEFAULT_CHARGER_COLUMNS,
+              now
+            );
+          }
+          parsed.chargerLedgers = freshChargerLedgers;
+        }
+        parsed.chargerColumns =
+          Array.isArray(parsed.chargerColumns) && parsed.chargerColumns.length > 0
+            ? parsed.chargerColumns
+            : DEFAULT_CHARGER_COLUMNS;
+        parsed.chargerSerials = parsed.chargerSerials || {};
         if (parsed.resetEpoch && !currentResetEpoch) {
           currentResetEpoch = parsed.resetEpoch;
         }
@@ -312,11 +334,18 @@ function readLocalFile(): DatabaseState {
   const todayIST = getIndianTodayDateServer();
   const now = new Date().toISOString();
   const freshRecords: Record<string, DayRecord> = {};
+  const freshChargerLedgers: Record<string, DayRecord> = {};
   for (const branch of BRANCHES) {
     freshRecords[getBatteryRecordKey(branch.id, todayIST)] = buildEmptyServerDayRecord(
       todayIST,
       branch.id,
       DEFAULT_BATTERY_COLUMNS,
+      now
+    );
+    freshChargerLedgers[getBatteryRecordKey(branch.id, todayIST)] = buildEmptyServerDayRecord(
+      todayIST,
+      branch.id,
+      DEFAULT_CHARGER_COLUMNS,
       now
     );
   }
@@ -328,6 +357,9 @@ function readLocalFile(): DatabaseState {
     columns: DEFAULT_BATTERY_COLUMNS,
     teamMembers: DEFAULT_TEAM_MEMBERS,
     serials: {},
+    chargerLedgers: freshChargerLedgers,
+    chargerColumns: DEFAULT_CHARGER_COLUMNS,
+    chargerSerials: {},
     chargerRecords: {},
     vehicleRecords: {},
     branchTransfers: [],
@@ -489,7 +521,26 @@ async function seedSupabaseBaseline(client: SupabaseClient): Promise<void> {
       data: local.teamMembers?.length ? local.teamMembers : DEFAULT_TEAM_MEMBERS,
       updated_at: now,
     },
+    {
+      key: 'charger_columns',
+      data: local.chargerColumns?.length ? local.chargerColumns : DEFAULT_CHARGER_COLUMNS,
+      updated_at: now,
+    },
   ];
+  if (local.chargerLedgers && Object.keys(local.chargerLedgers).length > 0) {
+    metaRows.push({
+      key: 'charger_ledgers',
+      data: local.chargerLedgers,
+      updated_at: now,
+    });
+  }
+  if (local.chargerSerials && Object.keys(local.chargerSerials).length > 0) {
+    metaRows.push({
+      key: 'charger_serials',
+      data: local.chargerSerials,
+      updated_at: now,
+    });
+  }
   if (local.chargerRecords && Object.keys(local.chargerRecords).length > 0) {
     metaRows.push({
       key: 'charger_records',
@@ -1795,6 +1846,440 @@ export async function deleteSerial(serialNo: string): Promise<boolean> {
   return true;
 }
 
+// =========================================================================
+// Charger Stock Register Ledger, Columns & Serial Tracker Functions
+// =========================================================================
+
+async function readMetadataMap<T>(key: string): Promise<Record<string, T> | null> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query('SELECT data FROM battery_metadata WHERE key = $1', [key]);
+      if (res.rows.length > 0 && res.rows[0].data) {
+        return typeof res.rows[0].data === 'string'
+          ? JSON.parse(res.rows[0].data)
+          : res.rows[0].data;
+      }
+      return {};
+    } catch (err) {
+      console.error(`[DBMS] PG readMetadataMap(${key}) error:`, err);
+    }
+  } else if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', key)
+        .maybeSingle();
+      if (!error) {
+        if (!data?.data) return {};
+        return typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      }
+      console.error(`[DBMS] Supabase readMetadataMap(${key}) error:`, error.message);
+    } catch (err) {
+      console.error(`[DBMS] Supabase readMetadataMap(${key}) exception:`, err);
+    }
+  }
+  return null;
+}
+
+async function writeMetadataValue(
+  key: string,
+  value: any,
+  reason: string
+): Promise<{ persistedToRemote: boolean; remoteError?: string }> {
+  let persistedToRemote = false;
+  let remoteError: string | undefined;
+
+  if (isPostgresConnected && pgPool) {
+    try {
+      await pgPool.query(
+        `INSERT INTO battery_metadata (key, data, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $2, updated_at = NOW()`,
+        [key, JSON.stringify(value)]
+      );
+      persistedToRemote = true;
+    } catch (err: any) {
+      remoteError = err?.message || `PostgreSQL write failed for ${key}`;
+      console.error(`[DBMS] PG writeMetadataValue(${key}) error:`, remoteError);
+    }
+  } else if (isSupabaseReady && supabaseClient) {
+    try {
+      const { error } = await supabaseClient.from('battery_metadata').upsert(
+        {
+          key,
+          data: value,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+      if (!error) {
+        persistedToRemote = true;
+      } else {
+        remoteError = error.message || `Supabase upsert failed for ${key}`;
+        console.error(`[DBMS] Supabase writeMetadataValue(${key}) error:`, remoteError);
+      }
+    } catch (err: any) {
+      remoteError = err?.message || `Supabase upsert exception for ${key}`;
+      console.error(`[DBMS] Supabase writeMetadataValue(${key}) exception:`, remoteError);
+    }
+  }
+
+  scheduleCloudSpaceBackup(reason);
+  return { persistedToRemote, remoteError };
+}
+
+export async function getChargerColumns(): Promise<BatteryColumn[]> {
+  if (isPostgresConnected && pgPool) {
+    try {
+      const res = await pgPool.query("SELECT data FROM battery_metadata WHERE key = 'charger_columns'");
+      if (res.rows.length > 0 && res.rows[0].data) {
+        const parsed = typeof res.rows[0].data === 'string' ? JSON.parse(res.rows[0].data) : res.rows[0].data;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (err) {
+      console.error('[DBMS] PG getChargerColumns error:', err);
+    }
+  }
+
+  if (isSupabaseReady && supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('battery_metadata')
+        .select('data')
+        .eq('key', 'charger_columns')
+        .maybeSingle();
+      if (!error && data?.data) {
+        const parsed = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (err) {
+      console.error('[DBMS] Supabase getChargerColumns error:', err);
+    }
+  }
+
+  const local = readLocalFile();
+  return Array.isArray(local.chargerColumns) && local.chargerColumns.length > 0
+    ? local.chargerColumns
+    : DEFAULT_CHARGER_COLUMNS;
+}
+
+export async function saveChargerColumns(columns: BatteryColumn[]): Promise<BatteryColumn[]> {
+  mirrorToLocalFile((local) => {
+    local.chargerColumns = columns;
+  });
+  await writeMetadataValue('charger_columns', columns, 'saveChargerColumns');
+  return columns;
+}
+
+export async function getAllChargerLedgers(): Promise<Record<string, DayRecord>> {
+  const local = readLocalFile();
+  const remoteMap = await readMetadataMap<DayRecord>('charger_ledgers');
+  const normalized: Record<string, DayRecord> = {};
+  if (remoteMap) {
+    mergeNormalizedRecordMap(normalized, remoteMap);
+  }
+  mergeNormalizedRecordMap(normalized, local.chargerLedgers || {});
+  return normalized;
+}
+
+export async function getChargerLedger(date: string): Promise<DayRecord | null> {
+  if (typeof date !== 'string' || !date.trim()) return null;
+  const all = await getAllChargerLedgers();
+  return all[date] || null;
+}
+
+export async function saveChargerLedgerWithStatus(
+  record: DayRecord,
+  actorLoginId?: string
+): Promise<SaveRecordResult> {
+  if (!record || typeof record.date !== 'string' || !record.date.trim()) {
+    throw new Error('Valid record date is required');
+  }
+
+  const branchId =
+    typeof record.branchId === 'string' && record.branchId.trim()
+      ? record.branchId.trim()
+      : DEFAULT_BRANCH_ID;
+  const storageKey = getBatteryRecordKey(branchId, record.date);
+  const nowIso = new Date().toISOString();
+  const cleanActor = actorLoginId ? String(actorLoginId).trim().toLowerCase() : '';
+
+  const [allLedgers, columns] = await Promise.all([
+    getAllChargerLedgers(),
+    getChargerColumns().catch(() => DEFAULT_CHARGER_COLUMNS),
+  ]);
+  const prevRecord = allLedgers[storageKey] || null;
+
+  const prevTxIds = new Set((prevRecord?.transactions || []).map((t) => t.id));
+  const incomingTx = Array.isArray(record.transactions) ? record.transactions : [];
+  const stampedIncomingTx: StockTransactionEntry[] = incomingTx.map((tx) =>
+    prevTxIds.has(tx.id)
+      ? tx
+      : {
+          ...tx,
+          category: 'charger',
+          branchId: tx.branchId || branchId,
+          performedBy: cleanActor || tx.performedBy || 'system',
+        }
+  );
+  const mergedTx = mergeServerTransactions(prevRecord?.transactions || [], stampedIncomingTx);
+  const newlyAddedTx = stampedIncomingTx.filter((tx) => !prevTxIds.has(tx.id));
+
+  const trackedModels: Array<{ id: string; name: string }> = [
+    ...(columns.length > 0 ? columns : DEFAULT_CHARGER_COLUMNS).map((c) => ({ id: c.id, name: c.name })),
+    { id: 'repair', name: 'OLD CHARGER FOR REPAIR' },
+    { id: 'service', name: 'SERVICE CHARGER' },
+  ];
+
+  const hasNewTxFor = (modelId: string, isOut: boolean) =>
+    newlyAddedTx.some(
+      (t) =>
+        t.modelId === modelId &&
+        (isOut ? t.quantity < 0 || t.action === 'out' || t.action === 'repair_out' : t.quantity > 0)
+    );
+
+  const syntheticTx: StockTransactionEntry[] = [];
+  const effectiveActor = cleanActor || record.lastModifiedBy || prevRecord?.lastModifiedBy || '';
+
+  if (effectiveActor) {
+    trackedModels.forEach((m) => {
+      const prevIn = Number(prevRecord?.inStock?.[m.id] || 0);
+      const nextIn = Number(record.inStock?.[m.id] || 0);
+      const deltaIn = nextIn - prevIn;
+      const inCause =
+        (m.id === 'repair' ? record.repairInCause : record.inCause?.[m.id]) ||
+        record.totalInCause ||
+        '';
+
+      if (deltaIn !== 0 && !hasNewTxFor(m.id, false)) {
+        syntheticTx.push({
+          id: `tx_chg_srv_${Date.now()}_${m.id}_in_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: nowIso,
+          date: record.date,
+          branchId,
+          category: 'charger',
+          action: m.id === 'repair' ? 'repair_in' : m.id === 'service' ? 'service' : 'in',
+          modelId: m.id,
+          modelName: m.name,
+          quantity: deltaIn,
+          cause: inCause || undefined,
+          performedBy: effectiveActor,
+        });
+      } else if (deltaIn === 0 && nextIn > 0 && inCause) {
+        const latestIdx = [...mergedTx]
+          .reverse()
+          .findIndex(
+            (t) =>
+              t.category === 'charger' &&
+              t.modelId === m.id &&
+              t.quantity > 0 &&
+              t.performedBy === effectiveActor
+          );
+        if (latestIdx !== -1) {
+          const actualIdx = mergedTx.length - 1 - latestIdx;
+          mergedTx[actualIdx] = { ...mergedTx[actualIdx], cause: inCause };
+        }
+      }
+
+      const prevOut = Number(prevRecord?.outStock?.[m.id] || 0);
+      const nextOut = Number(record.outStock?.[m.id] || 0);
+      const deltaOut = nextOut - prevOut;
+      const outCause =
+        (m.id === 'repair' ? record.repairOutCause : record.outCause?.[m.id]) ||
+        record.totalOutCause ||
+        '';
+
+      if (deltaOut !== 0 && !hasNewTxFor(m.id, true)) {
+        syntheticTx.push({
+          id: `tx_chg_srv_${Date.now()}_${m.id}_out_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: nowIso,
+          date: record.date,
+          branchId,
+          category: 'charger',
+          action: m.id === 'repair' ? 'repair_out' : m.id === 'service' ? 'service' : 'out',
+          modelId: m.id,
+          modelName: m.name,
+          quantity: deltaOut,
+          cause: outCause || undefined,
+          performedBy: effectiveActor,
+        });
+      } else if (deltaOut === 0 && nextOut !== 0 && outCause) {
+        const latestIdx = [...mergedTx]
+          .reverse()
+          .findIndex(
+            (t) =>
+              t.category === 'charger' &&
+              t.modelId === m.id &&
+              t.quantity < 0 &&
+              t.performedBy === effectiveActor
+          );
+        if (latestIdx !== -1) {
+          const actualIdx = mergedTx.length - 1 - latestIdx;
+          mergedTx[actualIdx] = { ...mergedTx[actualIdx], cause: outCause };
+        }
+      }
+    });
+  }
+
+  const finalTransactions = mergeServerTransactions(mergedTx, syntheticTx).slice(-500);
+
+  const updatedRecord: DayRecord = {
+    ...record,
+    branchId,
+    isAutoGenerated: false,
+    lastModified: nowIso,
+    lastModifiedBy: cleanActor || record.lastModifiedBy || prevRecord?.lastModifiedBy,
+    transactions: finalTransactions,
+  };
+
+  const mergedLedgers: Record<string, DayRecord> = {
+    ...allLedgers,
+    [storageKey]: updatedRecord,
+  };
+
+  mirrorToLocalFile((local) => {
+    local.chargerLedgers = mergedLedgers;
+    local.logs.unshift({
+      action: 'SAVE_CHARGER_LEDGER',
+      date: storageKey,
+      performedBy: updatedRecord.lastModifiedBy || 'system',
+      timestamp: updatedRecord.lastModified,
+    });
+    if (local.logs.length > 200) local.logs = local.logs.slice(0, 200);
+  });
+
+  await logAudit('SAVE_CHARGER_LEDGER', {
+    key: storageKey,
+    date: record.date,
+    branchId,
+    performedBy: updatedRecord.lastModifiedBy || 'system',
+  });
+
+  const writeRes = await writeMetadataValue(
+    'charger_ledgers',
+    mergedLedgers,
+    `saveChargerLedger:${storageKey}`
+  );
+
+  return {
+    record: updatedRecord,
+    persistedToRemote: writeRes.persistedToRemote,
+    remoteError: writeRes.remoteError,
+  };
+}
+
+export async function deleteChargerLedger(date: string): Promise<boolean> {
+  if (typeof date !== 'string' || !date.trim()) return false;
+  const all = await getAllChargerLedgers();
+  if (all[date]) {
+    delete all[date];
+  }
+  mirrorToLocalFile((local) => {
+    if (local.chargerLedgers && local.chargerLedgers[date]) {
+      delete local.chargerLedgers[date];
+    }
+  });
+  await writeMetadataValue('charger_ledgers', all, `deleteChargerLedger:${date}`);
+  return true;
+}
+
+export async function getAllChargerSerials(): Promise<Record<string, BatterySerialItem>> {
+  const local = readLocalFile();
+  const remoteMap = await readMetadataMap<BatterySerialItem>('charger_serials');
+  const merged: Record<string, BatterySerialItem> = {};
+  if (remoteMap) {
+    Object.entries(remoteMap).forEach(([k, item]) => {
+      if (item && item.serialNo) merged[k] = item;
+    });
+  }
+  Object.entries(local.chargerSerials || {}).forEach(([k, item]) => {
+    if (!item || !item.serialNo) return;
+    const prev = merged[k];
+    if (!prev) {
+      merged[k] = item;
+    } else {
+      merged[k] = applySerialActorAttribution(item, prev);
+    }
+  });
+  return merged;
+}
+
+export async function getChargerSerial(serialNo: string): Promise<BatterySerialItem | null> {
+  if (typeof serialNo !== 'string' || !serialNo.trim()) return null;
+  const all = await getAllChargerSerials();
+  return all[serialNo] || null;
+}
+
+export async function saveChargerSerial(
+  item: BatterySerialItem,
+  actorLoginId?: string
+): Promise<BatterySerialItem> {
+  if (!item || typeof item.serialNo !== 'string' || !item.serialNo.trim()) {
+    throw new Error('Valid serialNo is required');
+  }
+  const existingAll = await getAllChargerSerials();
+  const prevItem = existingAll[item.serialNo];
+  const attributedItem = applySerialActorAttribution(item, prevItem, actorLoginId);
+
+  const merged = {
+    ...existingAll,
+    [attributedItem.serialNo]: attributedItem,
+  };
+
+  mirrorToLocalFile((local) => {
+    local.chargerSerials = merged;
+  });
+
+  await writeMetadataValue('charger_serials', merged, `saveChargerSerial:${attributedItem.serialNo}`);
+  return attributedItem;
+}
+
+export async function bulkSaveChargerSerials(
+  items: BatterySerialItem[],
+  actorLoginId?: string
+): Promise<BatterySerialItem[]> {
+  const validItems = items.filter(
+    (item) => item && typeof item.serialNo === 'string' && item.serialNo.trim()
+  );
+  if (validItems.length === 0) return [];
+
+  const existingAll = await getAllChargerSerials();
+  const attributedItems = validItems.map((item) =>
+    applySerialActorAttribution(item, existingAll[item.serialNo], actorLoginId)
+  );
+  const merged = { ...existingAll };
+  attributedItems.forEach((item) => {
+    merged[item.serialNo] = item;
+  });
+
+  mirrorToLocalFile((local) => {
+    local.chargerSerials = merged;
+  });
+
+  await writeMetadataValue(
+    'charger_serials',
+    merged,
+    `bulkSaveChargerSerials:${attributedItems.length}`
+  );
+  return attributedItems;
+}
+
+export async function deleteChargerSerial(serialNo: string): Promise<boolean> {
+  if (typeof serialNo !== 'string' || !serialNo.trim()) return false;
+  const existingAll = await getAllChargerSerials();
+  if (existingAll[serialNo]) {
+    delete existingAll[serialNo];
+  }
+  mirrorToLocalFile((local) => {
+    if (local.chargerSerials && local.chargerSerials[serialNo]) {
+      delete local.chargerSerials[serialNo];
+    }
+  });
+  await writeMetadataValue('charger_serials', existingAll, `deleteChargerSerial:${serialNo}`);
+  return true;
+}
+
 export async function getChargerRecords(): Promise<Record<string, any>> {
   const local = readLocalFile();
   let remoteMap: Record<string, any> | null = null;
@@ -2183,16 +2668,29 @@ export async function saveVehicleRecord(
 }
 
 export async function exportFullDatabaseSnapshot(reason = 'manual') {
-  const [records, columns, teamMembers, serials, chargerRecords, vehicleRecords, branchTransfers] =
-    await Promise.all([
-      getAllRecords(),
-      getColumns(),
-      getTeamMembers(),
-      getAllSerials(),
-      getChargerRecords(),
-      getVehicleRecords(),
-      getBranchTransfers(),
-    ]);
+  const [
+    records,
+    columns,
+    teamMembers,
+    serials,
+    chargerLedgers,
+    chargerColumns,
+    chargerSerials,
+    chargerRecords,
+    vehicleRecords,
+    branchTransfers,
+  ] = await Promise.all([
+    getAllRecords(),
+    getColumns(),
+    getTeamMembers(),
+    getAllSerials(),
+    getAllChargerLedgers(),
+    getChargerColumns(),
+    getAllChargerSerials(),
+    getChargerRecords(),
+    getVehicleRecords(),
+    getBranchTransfers(),
+  ]);
 
   return {
     version: 1,
@@ -2202,6 +2700,8 @@ export async function exportFullDatabaseSnapshot(reason = 'manual') {
     stats: {
       records: Object.keys(records).length,
       serials: Object.keys(serials).length,
+      chargerLedgers: Object.keys(chargerLedgers).length,
+      chargerSerials: Object.keys(chargerSerials).length,
       chargers: Object.keys(chargerRecords).length,
       vehicles: Object.keys(vehicleRecords).length,
       transfers: branchTransfers.length,
@@ -2211,6 +2711,9 @@ export async function exportFullDatabaseSnapshot(reason = 'manual') {
       columns,
       teamMembers,
       serials,
+      chargerLedgers,
+      chargerColumns,
+      chargerSerials,
       chargerRecords,
       vehicleRecords,
       branchTransfers,
@@ -2273,6 +2776,17 @@ export async function restoreFullDatabaseSnapshot(
   const incomingSerials = (state.serials || {}) as Record<string, BatterySerialItem>;
   const incomingColumns = Array.isArray(state.columns) ? (state.columns as BatteryColumn[]) : undefined;
   const incomingTeam = Array.isArray(state.teamMembers) ? (state.teamMembers as TeamMember[]) : undefined;
+  const incomingChargerLedgers =
+    state.chargerLedgers && typeof state.chargerLedgers === 'object'
+      ? (state.chargerLedgers as Record<string, DayRecord>)
+      : undefined;
+  const incomingChargerColumns = Array.isArray(state.chargerColumns)
+    ? (state.chargerColumns as BatteryColumn[])
+    : undefined;
+  const incomingChargerSerials =
+    state.chargerSerials && typeof state.chargerSerials === 'object'
+      ? (state.chargerSerials as Record<string, BatterySerialItem>)
+      : undefined;
   const incomingChargers =
     state.chargerRecords && typeof state.chargerRecords === 'object' ? state.chargerRecords : undefined;
   const incomingVehicles =
@@ -2285,8 +2799,27 @@ export async function restoreFullDatabaseSnapshot(
   if (incomingColumns && incomingColumns.length > 0) {
     await saveColumns(incomingColumns);
   }
+  if (incomingChargerColumns && incomingChargerColumns.length > 0) {
+    await saveChargerColumns(incomingChargerColumns);
+  }
   if (incomingTeam && incomingTeam.length > 0) {
     await saveTeamMembers(incomingTeam);
+  }
+  if (incomingChargerLedgers) {
+    const currentChargerLedgers = await getAllChargerLedgers();
+    const mergedChargerLedgers = { ...currentChargerLedgers, ...incomingChargerLedgers };
+    mirrorToLocalFile((local) => {
+      local.chargerLedgers = mergedChargerLedgers;
+    });
+    await writeMetadataValue('charger_ledgers', mergedChargerLedgers, 'restoreChargerLedgers');
+  }
+  if (incomingChargerSerials) {
+    const currentChargerSerials = await getAllChargerSerials();
+    const mergedChargerSerials = { ...currentChargerSerials, ...incomingChargerSerials };
+    mirrorToLocalFile((local) => {
+      local.chargerSerials = mergedChargerSerials;
+    });
+    await writeMetadataValue('charger_serials', mergedChargerSerials, 'restoreChargerSerials');
   }
   if (incomingChargers) {
     const currentChargers = await getChargerRecords();
@@ -2727,10 +3260,15 @@ export async function factoryResetAllData(): Promise<{
   currentResetDateIST = todayIST;
 
   const freshRecords: Record<string, DayRecord> = {};
+  const freshChargerLedgers: Record<string, DayRecord> = {};
   for (const branch of BRANCHES) {
     const rec = buildEmptyServerDayRecord(todayIST, branch.id, DEFAULT_BATTERY_COLUMNS, resetEpoch);
     rec.notes = `Fresh register started on ${todayIST} (Factory Reset)`;
     freshRecords[getBatteryRecordKey(branch.id, todayIST)] = rec;
+
+    const chgRec = buildEmptyServerDayRecord(todayIST, branch.id, DEFAULT_CHARGER_COLUMNS, resetEpoch);
+    chgRec.notes = `Fresh register started on ${todayIST} (Factory Reset)`;
+    freshChargerLedgers[getBatteryRecordKey(branch.id, todayIST)] = chgRec;
   }
 
   const prevLocal = readLocalFile();
@@ -2740,6 +3278,9 @@ export async function factoryResetAllData(): Promise<{
     columns: DEFAULT_BATTERY_COLUMNS,
     teamMembers: DEFAULT_TEAM_MEMBERS,
     serials: {},
+    chargerLedgers: freshChargerLedgers,
+    chargerColumns: DEFAULT_CHARGER_COLUMNS,
+    chargerSerials: {},
     chargerRecords: {},
     vehicleRecords: {},
     branchTransfers: [],
@@ -2774,6 +3315,9 @@ export async function factoryResetAllData(): Promise<{
       const metaPairs: Array<[string, any]> = [
         ['columns', DEFAULT_BATTERY_COLUMNS],
         ['team_members', DEFAULT_TEAM_MEMBERS],
+        ['charger_ledgers', freshChargerLedgers],
+        ['charger_columns', DEFAULT_CHARGER_COLUMNS],
+        ['charger_serials', {}],
         ['charger_records', {}],
         ['vehicle_records', {}],
         ['branch_transfers', []],
@@ -2836,6 +3380,9 @@ export async function factoryResetAllData(): Promise<{
       const metaRows = [
         { key: 'columns', data: DEFAULT_BATTERY_COLUMNS, updated_at: resetEpoch },
         { key: 'team_members', data: DEFAULT_TEAM_MEMBERS, updated_at: resetEpoch },
+        { key: 'charger_ledgers', data: freshChargerLedgers, updated_at: resetEpoch },
+        { key: 'charger_columns', data: DEFAULT_CHARGER_COLUMNS, updated_at: resetEpoch },
+        { key: 'charger_serials', data: {}, updated_at: resetEpoch },
         { key: 'charger_records', data: {}, updated_at: resetEpoch },
         { key: 'vehicle_records', data: {}, updated_at: resetEpoch },
         { key: 'branch_transfers', data: [], updated_at: resetEpoch },
@@ -2861,6 +3408,8 @@ export async function factoryResetAllData(): Promise<{
     stats: {
       records: Object.keys(freshRecords).length,
       serials: 0,
+      chargerLedgers: Object.keys(freshChargerLedgers).length,
+      chargerSerials: 0,
       chargers: 0,
       vehicles: 0,
       transfers: 0,
@@ -2870,6 +3419,9 @@ export async function factoryResetAllData(): Promise<{
       columns: DEFAULT_BATTERY_COLUMNS,
       teamMembers: DEFAULT_TEAM_MEMBERS,
       serials: {},
+      chargerLedgers: freshChargerLedgers,
+      chargerColumns: DEFAULT_CHARGER_COLUMNS,
+      chargerSerials: {},
       chargerRecords: {},
       vehicleRecords: {},
       branchTransfers: [],
@@ -3945,6 +4497,8 @@ export async function getBackendAnalyticsSnapshot() {
     columns,
     teamMembers,
     serialsMap,
+    chargerLedgers,
+    chargerColumns,
     chargerRecords,
     vehicleRecords,
     branchTransfers,
@@ -3955,6 +4509,8 @@ export async function getBackendAnalyticsSnapshot() {
     getColumns(),
     getTeamMembers(),
     getAllSerials(),
+    getAllChargerLedgers(),
+    getChargerColumns(),
     getChargerRecords(),
     getVehicleRecords(),
     getBranchTransfers(),
@@ -3968,6 +4524,7 @@ export async function getBackendAnalyticsSnapshot() {
   const dbStatus = getDbStatus();
   const serialList = Object.values(serialsMap);
   const allCols = columns.length > 0 ? columns : DEFAULT_BATTERY_COLUMNS;
+  const allChargerCols = chargerColumns.length > 0 ? chargerColumns : DEFAULT_CHARGER_COLUMNS;
 
   let localDbBytes = 0;
   try {
@@ -4003,13 +4560,13 @@ export async function getBackendAnalyticsSnapshot() {
   });
 
   // Helper to compute totals for one record (mirrors calculateRecordTotals)
-  const computeTotals = (rec: DayRecord) => {
+  const computeTotals = (rec: DayRecord, colsToUse: BatteryColumn[] = allCols) => {
     let open = 0;
     let inQty = 0;
     let outQty = 0;
     let close = 0;
     const closingByCol: Record<string, number> = {};
-    allCols.forEach((col) => {
+    colsToUse.forEach((col) => {
       const o = Number(rec.stock?.[col.id] || 0);
       const i = Number(rec.inStock?.[col.id] || 0);
       const ou = Number(rec.outStock?.[col.id] || 0);
@@ -4079,6 +4636,20 @@ export async function getBackendAnalyticsSnapshot() {
     });
     return latestByBranch;
   };
+
+  const chargerLedgerLatestByBranch = new Map<string, { iso: string; totalClosing: number }>();
+  Object.entries(chargerLedgers || {}).forEach(([key, rec]) => {
+    if (!rec || !rec.date) return;
+    const parsed = parseBatteryRecordKey(key);
+    const bId = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    const iso = toIsoDateServer(rec.date);
+    const t = computeTotals(rec, allChargerCols);
+    const totalClosing = Math.max(0, t.close + t.repairClose + t.serviceClose);
+    const prev = chargerLedgerLatestByBranch.get(bId);
+    if (!prev || iso >= prev.iso) {
+      chargerLedgerLatestByBranch.set(bId, { iso, totalClosing });
+    }
+  });
 
   const chargerLatestByBranch = computeSecondaryLatest(chargerRecords);
   const vehicleLatestByBranch = computeSecondaryLatest(vehicleRecords);
@@ -4152,6 +4723,9 @@ export async function getBackendAnalyticsSnapshot() {
       (t) => t.fromBranchId === branch.id
     ).length;
 
+    const chargerLedgerTotal = chargerLedgerLatestByBranch.get(branch.id)?.totalClosing || 0;
+    const chargerLegacyTotal = chargerLatestByBranch.get(branch.id)?.totalClosing || 0;
+
     return {
       branchId: branch.id,
       branchNumber: branch.number,
@@ -4179,7 +4753,7 @@ export async function getBackendAnalyticsSnapshot() {
       incomingPendingTransfers: incomingPending.length,
       incomingPendingUnits,
       outgoingTransfersCount,
-      chargerClosingTotal: chargerLatestByBranch.get(branch.id)?.totalClosing || 0,
+      chargerClosingTotal: chargerLedgerTotal || chargerLegacyTotal,
       vehicleClosingTotal: vehicleLatestByBranch.get(branch.id)?.totalClosing || 0,
     };
   });
@@ -4377,8 +4951,10 @@ export async function getBackendAnalyticsSnapshot() {
   };
 
   let totalChargerModelsLatest = 0;
-  chargerLatestByBranch.forEach((v) => {
-    totalChargerModelsLatest += v.totalClosing;
+  BRANCHES.forEach((b) => {
+    const ledgerTotal = chargerLedgerLatestByBranch.get(b.id)?.totalClosing || 0;
+    const legacyTotal = chargerLatestByBranch.get(b.id)?.totalClosing || 0;
+    totalChargerModelsLatest += ledgerTotal || legacyTotal;
   });
   let totalVehicleModelsLatest = 0;
   vehicleLatestByBranch.forEach((v) => {

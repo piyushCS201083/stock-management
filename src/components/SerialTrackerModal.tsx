@@ -33,6 +33,7 @@ interface SerialTrackerModalProps {
   initialStatusFilter?: 'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby';
   onDownloadSerialExcel?: () => void;
   isAdminAuthenticated?: boolean;
+  category?: 'battery' | 'charger';
 }
 
 export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
@@ -45,7 +46,13 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   initialStatusFilter = 'all',
   onDownloadSerialExcel,
   isAdminAuthenticated = false,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
+  const entityLower = isCharger ? 'charger' : 'battery';
+  const entityPluralCap = isCharger ? 'Chargers' : 'Batteries';
+
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'>(initialStatusFilter);
   const [modelFilter, setModelFilter] = useState<string>('all');
@@ -53,18 +60,25 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   const [selectedSerial, setSelectedSerial] = useState<BatterySerialItem | null>(null);
   const [copiedSerial, setCopiedSerial] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (isOpen) {
-      setStatusFilter(initialStatusFilter);
-    }
-  }, [isOpen, initialStatusFilter]);
-
   // New Serial Quick Add Form
   const [showAddModal, setShowAddModal] = useState(false);
   const [newSerialNo, setNewSerialNo] = useState('');
-  const [newModelId, setNewModelId] = useState(columns[0]?.id || '60x24_flat');
+  const [newModelId, setNewModelId] = useState(columns[0]?.id || (isCharger ? '48v3ah' : '60x24_flat'));
   const [newBatchNo, setNewBatchNo] = useState('');
   const [newStatus, setNewStatus] = useState<'in_stock' | 'dispatched' | 'in_repair' | 'service_standby'>('in_stock');
+
+  useEffect(() => {
+    if (isOpen) {
+      setStatusFilter(initialStatusFilter);
+      if (
+        newModelId !== 'repair' &&
+        newModelId !== 'service' &&
+        !columns.some((c) => c.id === newModelId)
+      ) {
+        setNewModelId(columns[0]?.id || (isCharger ? '48v3ah' : '60x24_flat'));
+      }
+    }
+  }, [isOpen, initialStatusFilter, columns, isCharger, newModelId]);
   const [newPartner, setNewPartner] = useState('');
   const [newCause, setNewCause] = useState('');
 
@@ -143,7 +157,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
   const batchSummary = useMemo(() => {
     const summary: Record<string, { total: number; inStock: number; dispatched: number; repair: number }> = {};
     serialList.forEach((item) => {
-      const b = item.modelName || item.batchNo || 'Battery Model';
+      const b = item.modelName || item.batchNo || `${entityCap} Model`;
       if (!summary[b]) {
         summary[b] = { total: 0, inStock: 0, dispatched: 0, repair: 0 };
       }
@@ -153,7 +167,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
       if (item.status === 'in_repair') summary[b].repair += 1;
     });
     return summary;
-  }, [serialList]);
+  }, [serialList, entityCap]);
 
   const handleCopySerial = (s: string) => {
     navigator.clipboard.writeText(s);
@@ -167,9 +181,9 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
 
     const col =
       newModelId === 'repair'
-        ? { id: 'repair', name: 'OLD BATTERY FOR REPAIR' }
+        ? { id: 'repair', name: isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR' }
         : newModelId === 'service'
-        ? { id: 'service', name: 'SERVICE BATTERY' }
+        ? { id: 'service', name: isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY' }
         : columns.find((c) => c.id === newModelId) || { id: newModelId, name: newModelId };
     const nowIso = new Date().toISOString();
     const today = getIndianTodayDate();
@@ -234,7 +248,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold">Battery Serial & Batch Inventory Tracker</h2>
+                <h2 className="text-base font-bold">{entityCap} Serial & Batch Inventory Tracker</h2>
                 <span className="text-[11px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">
                   In-App Private Details
                 </span>
@@ -267,7 +281,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Add Battery Serial</span>
+              <span>Add {entityCap} Serial</span>
             </button>
             <button
               onClick={onClose}
@@ -283,10 +297,10 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
               <Tag className="w-3.5 h-3.5 text-blue-600" />
-              Batch-wise Stock Breakdown (Batch = Battery Model)
+              Batch-wise Stock Breakdown (Batch = {entityCap} Model)
             </span>
             <span className="text-xs text-slate-500">
-              Total Tracked Batteries: <strong className="text-slate-900">{serialList.length}</strong>
+              Total Tracked {entityPluralCap}: <strong className="text-slate-900">{serialList.length}</strong>
             </span>
           </div>
 
@@ -352,7 +366,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                     setIsScannerOpen(true);
                   }}
                   className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded text-[11px] font-semibold cursor-pointer transition-colors"
-                  title="Scan barcode with camera to find battery"
+                  title={`Scan barcode with camera to find ${entityLower}`}
                 >
                   <Camera className="w-3 h-3 text-blue-600" />
                   <span>Scan</span>
@@ -367,7 +381,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                 onChange={(e) => setModelFilter(e.target.value)}
                 className="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-slate-700 font-medium"
               >
-                <option value="all">All Battery Models</option>
+                <option value="all">All {entityCap} Models</option>
                 {columns.map((col) => (
                   <option key={col.id} value={col.id}>
                     {col.name}
@@ -422,9 +436,9 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
           {filteredSerials.length === 0 ? (
             <div className="py-12 text-center space-y-3">
               <Barcode className="w-10 h-10 text-slate-300 mx-auto" />
-              <div className="text-sm font-bold text-slate-700">No matching battery serials found</div>
+              <div className="text-sm font-bold text-slate-700">No matching {entityLower} serials found</div>
               <p className="text-xs text-slate-500 max-w-md mx-auto">
-                Whenever you log Inward or Outward battery transactions, enter the serial number to automatically track its complete history here!
+                Whenever you log Inward or Outward {entityLower} transactions, enter the serial number to automatically track its complete history here!
               </p>
               <button
                 onClick={() => setShowAddModal(true)}
@@ -756,7 +770,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
             <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0 rounded-t-xl">
               <div className="flex items-center gap-2">
                 <Plus className="w-5 h-5 text-blue-400" />
-                <h3 className="text-sm font-bold">Register Battery Serial</h3>
+                <h3 className="text-sm font-bold">Register {entityCap} Serial</h3>
               </div>
               <button
                 onClick={() => setShowAddModal(false)}
@@ -788,7 +802,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                   <input
                     type="text"
                     required
-                    placeholder="e.g. 6024-FLAT-0091"
+                    placeholder={isCharger ? 'e.g. CHG-48V3AH-0091' : 'e.g. 6024-FLAT-0091'}
                     value={newSerialNo}
                     onChange={(e) => setNewSerialNo(e.target.value)}
                     className="w-full pl-2.5 pr-18 py-1.5 border border-slate-300 rounded font-mono uppercase bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -821,8 +835,8 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
                         {c.name}
                       </option>
                     ))}
-                    <option value="repair">OLD BATTERY FOR REPAIR</option>
-                    <option value="service">SERVICE BATTERY</option>
+                    <option value="repair">{isCharger ? 'OLD CHARGER FOR REPAIR' : 'OLD BATTERY FOR REPAIR'}</option>
+                    <option value="service">{isCharger ? 'SERVICE CHARGER' : 'SERVICE BATTERY'}</option>
                   </select>
                 </div>
 
@@ -907,6 +921,7 @@ export const SerialTrackerModal: React.FC<SerialTrackerModalProps> = ({
         isOpen={isScannerOpen}
         onClose={() => setIsScannerOpen(false)}
         onScanComplete={handleScanCompleted}
+        category={category}
       />
     </div>
   );

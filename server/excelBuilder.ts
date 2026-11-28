@@ -91,6 +91,9 @@ export interface FullExcelInputState {
   records: Record<string, DayRecord>;
   columns: BatteryColumn[];
   serials?: Record<string, BatterySerialItem>;
+  chargerLedgers?: Record<string, DayRecord>;
+  chargerColumns?: BatteryColumn[];
+  chargerSerials?: Record<string, BatterySerialItem>;
   chargerRecords?: Record<string, any>;
   vehicleRecords?: Record<string, any>;
   branchTransfers?: BranchTransfer[];
@@ -367,7 +370,188 @@ function collectUnifiedMovementRows(state: FullExcelInputState, columns: Battery
     });
   };
 
-  appendSecondary(state.chargerRecords, 'CHARGER STOCK', DEFAULT_CHARGER_COLUMNS);
+  // Charger Stock Ledgers & Charger Serials in consolidated movement feed
+  const chgCols =
+    Array.isArray(state.chargerColumns) && state.chargerColumns.length > 0
+      ? state.chargerColumns
+      : DEFAULT_CHARGER_COLUMNS;
+  const chgModelLabel = (item: BatterySerialItem) =>
+    item.modelName ||
+    (item.modelId === 'repair'
+      ? 'OLD CHARGER FOR REPAIR'
+      : item.modelId === 'service'
+      ? 'SERVICE CHARGER'
+      : chgCols.find((c) => c.id === item.modelId)?.name || item.modelId);
+
+  Object.values(state.chargerSerials || {}).forEach((s) => {
+    const events = Array.isArray(s.history) ? s.history : [];
+    const statusText = formatStatus(s.status);
+    if (events.length === 0) {
+      if (s.inwardDate) {
+        movementEntries.push({
+          isoDate: toIsoDate(s.inwardDate),
+          timestamp: '',
+          row: [
+            s.inwardDate,
+            'CHARGER SERIAL',
+            branchLabel(s.branchId),
+            'IN',
+            chgModelLabel(s),
+            1,
+            s.serialNo,
+            s.inwardPartner || '',
+            s.inwardCause || '',
+            statusText,
+            s.inwardBy || s.lastUpdatedBy || '',
+            '',
+          ],
+        });
+      }
+      if (s.outwardDate) {
+        movementEntries.push({
+          isoDate: toIsoDate(s.outwardDate),
+          timestamp: '',
+          row: [
+            s.outwardDate,
+            'CHARGER SERIAL',
+            branchLabel(s.branchId),
+            'OUT (DISPATCHED)',
+            chgModelLabel(s),
+            -1,
+            s.serialNo,
+            s.outwardPartner || '',
+            s.outwardCause || '',
+            statusText,
+            s.outwardBy || s.lastUpdatedBy || '',
+            '',
+          ],
+        });
+      }
+    } else {
+      events.forEach((evt) => {
+        const isOut = evt.type === 'out' || evt.type === 'repair_out';
+        const actor =
+          evt.performedBy || (isOut ? s.outwardBy : s.inwardBy) || s.lastUpdatedBy || '';
+        movementEntries.push({
+          isoDate: toIsoDate(evt.date || s.inwardDate || ''),
+          timestamp: evt.timestamp || '',
+          row: [
+            evt.date || '',
+            'CHARGER SERIAL',
+            branchLabel(evt.branchId || s.branchId),
+            String(evt.type || '').toUpperCase().replace(/_/g, ' '),
+            chgModelLabel(s),
+            isOut ? -1 : 1,
+            s.serialNo,
+            evt.partner || evt.vehicleOrLocation || '',
+            evt.cause || evt.notes || '',
+            statusText,
+            actor,
+            evt.timestamp || '',
+          ],
+        });
+      });
+    }
+  });
+
+  const chgTrackedModels: Array<{ id: string; name: string }> = [
+    ...chgCols.map((c) => ({ id: c.id, name: c.name })),
+    { id: 'repair', name: 'OLD CHARGER FOR REPAIR' },
+    { id: 'service', name: 'SERVICE CHARGER' },
+  ];
+
+  Object.entries(state.chargerLedgers || {}).forEach(([key, rec]) => {
+    if (!rec) return;
+    const parsed = parseBatteryRecordKey(key);
+    const recBranch = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    const recDate = rec.date || parsed.date;
+    if (!recDate) return;
+    const branchName = branchLabel(recBranch);
+    const isoDate = toIsoDate(recDate);
+    const ts = rec.lastModified || '';
+    const txList = Array.isArray(rec.transactions) ? rec.transactions : [];
+
+    if (txList.length > 0) {
+      txList.forEach((tx) => {
+        movementEntries.push({
+          isoDate: toIsoDate(tx.date || recDate),
+          timestamp: tx.timestamp || ts,
+          row: [
+            tx.date || recDate,
+            'CHARGER LEDGER',
+            branchLabel(tx.branchId || recBranch),
+            formatTxAction(tx),
+            tx.modelName || tx.modelId,
+            tx.quantity,
+            (tx.serialNos || []).join(', '),
+            tx.partner || '',
+            tx.cause || '',
+            'RECORDED',
+            tx.performedBy || rec.lastModifiedBy || '',
+            tx.timestamp || ts,
+          ],
+        });
+      });
+      return;
+    }
+
+    chgTrackedModels.forEach((col) => {
+      const inQty = Number(rec.inStock?.[col.id] || 0);
+      const outQty = Number(rec.outStock?.[col.id] || 0);
+      if (inQty !== 0) {
+        const causeStr =
+          (col.id === 'repair' ? rec.repairInCause : rec.inCause?.[col.id]) ||
+          rec.totalInCause ||
+          rec.notes ||
+          '';
+        movementEntries.push({
+          isoDate,
+          timestamp: ts,
+          row: [
+            recDate,
+            'CHARGER LEDGER',
+            branchName,
+            col.id === 'repair' ? 'REPAIR IN (+)' : col.id === 'service' ? 'SERVICE IN (+)' : 'IN STOCK (+)',
+            col.name,
+            inQty,
+            '',
+            '',
+            causeStr,
+            'RECORDED',
+            rec.lastModifiedBy || '',
+            ts,
+          ],
+        });
+      }
+      if (outQty !== 0) {
+        const causeStr =
+          (col.id === 'repair' ? rec.repairOutCause : rec.outCause?.[col.id]) ||
+          rec.totalOutCause ||
+          rec.notes ||
+          '';
+        movementEntries.push({
+          isoDate,
+          timestamp: ts,
+          row: [
+            recDate,
+            'CHARGER LEDGER',
+            branchName,
+            col.id === 'repair' ? 'REPAIR OUT (-)' : col.id === 'service' ? 'SERVICE OUT (-)' : 'OUT STOCK (-)',
+            col.name,
+            outQty > 0 ? -outQty : outQty,
+            '',
+            '',
+            causeStr,
+            'RECORDED',
+            rec.lastModifiedBy || '',
+            ts,
+          ],
+        });
+      }
+    });
+  });
+
+  appendSecondary(state.chargerRecords, 'CHARGER STOCK', chgCols);
   appendSecondary(state.vehicleRecords, 'VEHICLE STOCK', DEFAULT_VEHICLE_COLUMNS);
 
   (state.branchTransfers || []).forEach((trf) => {
@@ -787,8 +971,173 @@ export function buildStockDatabaseExcelBuffer(state: FullExcelInputState): Buffe
     return rows;
   };
 
+  const chgColumns =
+    Array.isArray(state.chargerColumns) && state.chargerColumns.length > 0
+      ? state.chargerColumns
+      : DEFAULT_CHARGER_COLUMNS;
+
+  const chargerLedgerEntries: Array<{
+    branchId: string;
+    branchName: string;
+    date: string;
+    iso: string;
+    record: DayRecord;
+  }> = [];
+  Object.entries(state.chargerLedgers || {}).forEach(([key, rec]) => {
+    if (!rec) return;
+    const parsed = parseBatteryRecordKey(key);
+    const branchId = rec.branchId || parsed.branchId || DEFAULT_BRANCH_ID;
+    const date = rec.date || parsed.date;
+    if (!date) return;
+    const branch = BRANCHES.find((b) => b.id === branchId);
+    chargerLedgerEntries.push({
+      branchId,
+      branchName: branch?.name || branchId,
+      date,
+      iso: toIsoDate(date),
+      record: { ...rec, branchId, date },
+    });
+  });
+  chargerLedgerEntries.sort((a, b) => {
+    if (a.branchId !== b.branchId) return a.branchId.localeCompare(b.branchId);
+    return a.iso.localeCompare(b.iso);
+  });
+
+  const chgLedgerRows: any[][] = [
+    [
+      'Branch',
+      'Date',
+      'Particulars',
+      ...chgColumns.map((c) => c.name),
+      'Total',
+      'OLD CHARGER FOR REPAIR',
+      'SERVICE CHARGER TOTAL',
+      'Updated By (Login ID)',
+      'Last Modified',
+      'Notes',
+    ],
+  ];
+  chargerLedgerEntries.forEach(({ branchName, date, record }) => {
+    const t = computeTotals(record, chgColumns);
+    chgLedgerRows.push([
+      branchName,
+      date,
+      'Stock',
+      ...chgColumns.map((c) => record.stock?.[c.id] || 0),
+      t.openingStockTotal,
+      record.stock?.['repair'] || 0,
+      record.stock?.['service'] || 0,
+      record.lastModifiedBy || '',
+      record.lastModified || '',
+      record.notes || '',
+    ]);
+    chgLedgerRows.push([
+      branchName,
+      date,
+      'In Stock',
+      ...chgColumns.map((c) => record.inStock?.[c.id] || 0),
+      t.inStockTotal,
+      record.inStock?.['repair'] || 0,
+      record.inStock?.['service'] || 0,
+      '',
+      '',
+      '',
+    ]);
+    chgLedgerRows.push([
+      branchName,
+      date,
+      'CAUSE (In)',
+      ...chgColumns.map((c) => record.inCause?.[c.id] || ''),
+      record.totalInCause || '',
+      record.repairInCause || '',
+      record.inCause?.['service'] || '',
+      '',
+      '',
+      '',
+    ]);
+    chgLedgerRows.push([
+      branchName,
+      date,
+      'Out Stock',
+      ...chgColumns.map((c) => record.outStock?.[c.id] || 0),
+      t.outStockTotal,
+      record.outStock?.['repair'] || 0,
+      record.outStock?.['service'] || 0,
+      '',
+      '',
+      '',
+    ]);
+    chgLedgerRows.push([
+      branchName,
+      date,
+      'CAUSE (Out)',
+      ...chgColumns.map((c) => record.outCause?.[c.id] || ''),
+      record.totalOutCause || '',
+      record.repairOutCause || '',
+      record.outCause?.['service'] || '',
+      '',
+      '',
+      '',
+    ]);
+    chgLedgerRows.push([
+      branchName,
+      date,
+      "Today's Stock",
+      ...chgColumns.map((c) => t.closingStock[c.id] || 0),
+      t.closingStockTotal,
+      t.repairClosing,
+      t.serviceClosing,
+      '',
+      '',
+      '',
+    ]);
+    chgLedgerRows.push([]);
+  });
+  const chgLedgerSheet = XLSX.utils.aoa_to_sheet(chgLedgerRows);
+  XLSX.utils.book_append_sheet(wb, chgLedgerSheet, 'Charger_Stock_Ledger');
+
+  const chgSerialItems = Object.values(state.chargerSerials || {});
+  const chgSerialRows: any[][] = [
+    [
+      'Serial No',
+      'Branch',
+      'Model',
+      'Batch No',
+      'Status',
+      'Inward Date',
+      'Inward Partner',
+      'Inward Cause',
+      'Inward By (Login ID)',
+      'Outward Date',
+      'Outward Partner',
+      'Outward Cause',
+      'Outward By (Login ID)',
+      'Last Updated By (Login ID)',
+    ],
+  ];
+  chgSerialItems.forEach((s) => {
+    chgSerialRows.push([
+      s.serialNo,
+      branchLabel(s.branchId),
+      s.modelName || s.modelId,
+      s.batchNo || '',
+      s.status,
+      s.inwardDate || '',
+      s.inwardPartner || '',
+      s.inwardCause || '',
+      s.inwardBy || '',
+      s.outwardDate || '',
+      s.outwardPartner || '',
+      s.outwardCause || '',
+      s.outwardBy || '',
+      s.lastUpdatedBy || '',
+    ]);
+  });
+  const chgSerialSheet = XLSX.utils.aoa_to_sheet(chgSerialRows);
+  XLSX.utils.book_append_sheet(wb, chgSerialSheet, 'Charger_Serials');
+
   const chargerSheet = XLSX.utils.aoa_to_sheet(
-    buildSecondarySheetRows(state.chargerRecords, DEFAULT_CHARGER_COLUMNS)
+    buildSecondarySheetRows(state.chargerRecords, chgColumns)
   );
   XLSX.utils.book_append_sheet(wb, chargerSheet, 'Charger_Stock');
 

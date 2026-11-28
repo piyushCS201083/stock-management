@@ -86,12 +86,12 @@ export const BRANCHES: BranchInfo[] = [
 ];
 
 export const DEFAULT_CHARGER_COLUMNS: BatteryColumn[] = [
-  { id: '48v_15a_smart', name: '48V 15A Smart' },
-  { id: '60v_20a_fast', name: '60V 20A Fast' },
-  { id: '72v_25a_heavy', name: '72V 25A Heavy Duty' },
-  { id: '48_60v_universal', name: '48V/60V Universal' },
-  { id: '72v_30a_lithium', name: '72V 30A Lithium' },
-  { id: 'old_charger_repair', name: 'Charger for Repair' },
+  { id: '48v3ah', name: '48V 3AH' },
+  { id: '48v6ah', name: '48V 6AH' },
+  { id: '60v3ah', name: '60V 3AH' },
+  { id: '67v6ah', name: '67V 6AH' },
+  { id: '69v6ah', name: '69V 6AH' },
+  { id: '72v3ah', name: '72V 3AH' },
 ];
 
 export const DEFAULT_VEHICLE_COLUMNS: BatteryColumn[] = [

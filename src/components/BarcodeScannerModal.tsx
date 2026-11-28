@@ -31,6 +31,7 @@ interface BarcodeScannerModalProps {
   onClose: () => void;
   onScanComplete: (serialNo: string, batchOrModel?: string) => void;
   initialModelName?: string;
+  category?: 'battery' | 'charger';
 }
 
 // Crisp audio feedback on successful barcode recognition
@@ -62,7 +63,11 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   onClose,
   onScanComplete,
   initialModelName,
+  category = 'battery',
 }) => {
+  const isCharger = category === 'charger';
+  const entityCap = isCharger ? 'Charger' : 'Battery';
+  const entityLower = isCharger ? 'charger' : 'battery';
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerId = 'html5-barcode-scanner-viewfinder';
@@ -265,12 +270,12 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       if (err.name === 'NotAllowedError' || String(err).includes('Permission')) {
         msg = 'Camera permission denied. Please enable camera access in your browser or upload a photo.';
       } else if (err.name === 'NotFoundError' || String(err).includes('NotFound')) {
-        msg = 'No camera found. You can upload a battery barcode photo or type the serial manually.';
+        msg = `No camera found. You can upload a ${entityLower} barcode photo or type the serial manually.`;
       }
       setCameraError(msg);
       setIsCameraActive(false);
     }
-  }, [facingMode, handleBarcodeDetected]);
+  }, [facingMode, handleBarcodeDetected, entityLower]);
 
   // Clean stop of scanner
   const stopScanner = useCallback(async () => {
@@ -387,6 +392,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
             body: JSON.stringify({
               imageBase64: base64Data,
               mimeType: file.type || 'image/jpeg',
+              category: category || 'battery',
             }),
           });
 
@@ -477,7 +483,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                Instantly scans Code 128, Code 39, EAN-13, QR & all battery barcodes
+                Instantly scans Code 128, Code 39, EAN-13, QR & all {entityLower} barcodes
               </p>
             </div>
           </div>
@@ -524,7 +530,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>Multi-Battery Batch</span>
+              <span>Multi-{entityCap} Batch</span>
               {batchScannedList.length > 0 && (
                 <span className="ml-1 bg-white text-purple-900 rounded-full text-[10px] px-1.5 font-bold">
                   {batchScannedList.length}
@@ -620,7 +626,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                     ? 'bg-slate-700 text-white font-bold'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
-                title="Standard Battery Label Box"
+                title={`Standard ${entityCap} Label Box`}
               >
                 Standard Box
               </button>
@@ -757,7 +763,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               {/* Detected Serial Display */}
               <div className="my-3 px-4 py-3 bg-slate-900 border-2 border-emerald-500 rounded-xl text-center shadow-2xl w-full max-w-sm">
                 <div className="text-[10px] uppercase font-mono text-slate-400 flex items-center justify-between">
-                  <span>Battery Serial Number</span>
+                  <span>{entityCap} Serial Number</span>
                   <button
                     type="button"
                     onClick={handleCopy}
@@ -911,7 +917,11 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               type="text"
               value={manualSerialInput}
               onChange={(e) => setManualSerialInput(e.target.value)}
-              placeholder="Or type/paste barcode serial (e.g. BAT-6024-001)..."
+              placeholder={
+                isCharger
+                  ? 'Or type/paste barcode serial (e.g. CHG-48V3AH-001)...'
+                  : 'Or type/paste barcode serial (e.g. BAT-6024-001)...'
+              }
               className="flex-1 px-3 py-1.5 text-xs font-mono bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:border-blue-500 focus:outline-none"
             />
             <button
