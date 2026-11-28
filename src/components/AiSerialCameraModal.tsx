@@ -12,6 +12,7 @@ import {
   Loader2,
   Image as ImageIcon,
 } from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
 import { apiScanSerialFromPhoto, AiSerialScanResult } from '../services/api';
 
 interface AiSerialCameraModalProps {
@@ -22,12 +23,32 @@ interface AiSerialCameraModalProps {
   modelHint?: string;
 }
 
-// Resize large photos to <= 1600px JPEG for rapid upload & crystal-clear OCR
+function canvasToFileAndDataUrl(
+  canvas: HTMLCanvasElement
+): Promise<{ dataUrl: string; mimeType: string; file?: File }> {
+  return new Promise((resolve) => {
+    canvas.toBlob(
+      (blob) => {
+        const file = blob
+          ? new File([blob], 'ai-camera-capture.jpg', { type: 'image/jpeg' })
+          : undefined;
+        resolve({
+          dataUrl: canvas.toDataURL('image/jpeg', 0.92),
+          mimeType: 'image/jpeg',
+          file,
+        });
+      },
+      'image/jpeg',
+      0.92
+    );
+  });
+}
+
 async function compressImageDataUrl(
   source: HTMLImageElement | HTMLVideoElement,
   naturalWidth: number,
   naturalHeight: number
-): Promise<{ dataUrl: string; mimeType: string }> {
+): Promise<{ dataUrl: string; mimeType: string; file?: File }> {
   const maxDim = 1600;
   let targetW = naturalWidth || 1280;
   let targetH = naturalHeight || 720;
@@ -50,13 +71,10 @@ async function compressImageDataUrl(
     throw new Error('Could not prepare image canvas.');
   }
   ctx.drawImage(source, 0, 0, targetW, targetH);
-  return {
-    dataUrl: canvas.toDataURL('image/jpeg', 0.92),
-    mimeType: 'image/jpeg',
-  };
+  return await canvasToFileAndDataUrl(canvas);
 }
 
-function fileToCompressedDataUrl(file: File): Promise<{ dataUrl: string; mimeType: string }> {
+function fileToCompressedDataUrl(file: File): Promise<{ dataUrl: string; mimeType: string; file: File }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Failed to read selected photo.'));
@@ -70,9 +88,13 @@ function fileToCompressedDataUrl(file: File): Promise<{ dataUrl: string; mimeTyp
             img.naturalWidth || img.width,
             img.naturalHeight || img.height
           );
-          resolve(compressed);
+          resolve({
+            dataUrl: compressed.dataUrl,
+            mimeType: compressed.mimeType,
+            file: compressed.file || file,
+          });
         } catch {
-          resolve({ dataUrl: rawUrl, mimeType: file.type || 'image/jpeg' });
+          resolve({ dataUrl: rawUrl, mimeType: file.type || 'image/jpeg', file });
         }
       };
       img.onerror = () => reject(new Error('Unsupported or corrupted photo file.'));
@@ -80,6 +102,61 @@ function fileToCompressedDataUrl(file: File): Promise<{ dataUrl: string; mimeTyp
     };
     reader.readAsDataURL(file);
   });
+}
+
+async function tryDecodeBarcodesOnDevice(
+  dataUrl: string,
+  file?: File,
+  decoderElementId = 'ai-serial-barcode-decoder'
+): Promise<string[]> {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const addCode = (val: string) => {
+    const clean = val.trim().toUpperCase();
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      found.push(clean);
+    }
+  };
+
+  // 1. Native browser BarcodeDetector (supports multiple barcodes in a single photo)
+  try {
+    const BarcodeDetectorCtor = (window as unknown as { BarcodeDetector?: new () => { detect: (src: HTMLImageElement) => Promise<Array<{ rawValue?: string }>> } }).BarcodeDetector;
+    if (BarcodeDetectorCtor) {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = dataUrl;
+      });
+      const detector = new BarcodeDetectorCtor();
+      const detected = await detector.detect(img);
+      for (const item of detected) {
+        if (item.rawValue) addCode(item.rawValue);
+      }
+      if (found.length > 0) return found;
+    }
+  } catch {
+    // Fallback to Html5Qrcode file decode
+  }
+
+  // 2. Html5Qrcode / ZXing file decoder
+  if (file) {
+    try {
+      const scanner = new Html5Qrcode(decoderElementId, { verbose: false });
+      const decoded = await scanner.scanFile(file, false);
+      try {
+        scanner.clear();
+      } catch {
+        // ignore clear error
+      }
+      if (decoded) addCode(decoded);
+    } catch {
+      // No readable 1D/2D barcode; fall through to Gemini AI OCR for printed text
+    }
+  }
+
+  return found;
 }
 
 export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
@@ -183,13 +260,27 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
   }, [isOpen, startCameraStream, stopCameraStream]);
 
   const analyzePhoto = useCallback(
-    async (dataUrl: string, mimeType: string) => {
+    async (dataUrl: string, mimeType: string, file?: File) => {
       setCapturedPhotoUrl(dataUrl);
       setIsAnalyzing(true);
       setErrorMsg(null);
       stopCameraStream();
 
       try {
+        // 1. Fast on-device barcode / QR decode first (works offline without API key)
+        const barcodeHits = await tryDecodeBarcodesOnDevice(dataUrl, file);
+        if (barcodeHits.length > 0) {
+          onSerialsDetected({
+            serialNo: barcodeHits.join(', '),
+            serialNos: barcodeHits,
+            confidence: 'high',
+            engine: 'on-device-barcode',
+          });
+          onClose();
+          return;
+        }
+
+        // 2. Gemini AI Vision OCR for printed / etched / stamped serial text
         const result = await apiScanSerialFromPhoto({
           imageBase64: dataUrl,
           mimeType,
@@ -224,21 +315,21 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
     try {
       const vw = video.videoWidth || 1280;
       const vh = video.videoHeight || 720;
-      const { dataUrl, mimeType } = await compressImageDataUrl(video, vw, vh);
-      await analyzePhoto(dataUrl, mimeType);
+      const { dataUrl, mimeType, file } = await compressImageDataUrl(video, vw, vh);
+      await analyzePhoto(dataUrl, mimeType, file);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Failed to capture camera frame.');
     }
   };
 
   const handleFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const picked = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    if (!picked) return;
 
     try {
-      const { dataUrl, mimeType } = await fileToCompressedDataUrl(file);
-      await analyzePhoto(dataUrl, mimeType);
+      const { dataUrl, mimeType, file } = await fileToCompressedDataUrl(picked);
+      await analyzePhoto(dataUrl, mimeType, file);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Could not process the selected photo.');
     }
@@ -250,11 +341,11 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
       if (!items || isAnalyzing) return;
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.startsWith('image/')) {
-          const file = items[i].getAsFile();
-          if (file) {
+          const picked = items[i].getAsFile();
+          if (picked) {
             e.preventDefault();
-            const { dataUrl, mimeType } = await fileToCompressedDataUrl(file);
-            await analyzePhoto(dataUrl, mimeType);
+            const { dataUrl, mimeType, file } = await fileToCompressedDataUrl(picked);
+            await analyzePhoto(dataUrl, mimeType, file);
             return;
           }
         }
@@ -320,7 +411,8 @@ export const AiSerialCameraModal: React.FC<AiSerialCameraModalProps> = ({
           </button>
         </div>
 
-        {/* Hidden file inputs */}
+        {/* Hidden inputs & offscreen barcode decoder container */}
+        <div id="ai-serial-barcode-decoder" className="hidden" />
         <input
           ref={nativeCameraInputRef}
           type="file"

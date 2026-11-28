@@ -1806,11 +1806,16 @@ app.post('/api/scan-barcode-ocr', requireBranchAccess, async (req: express.Reque
       return res.status(400).json({ success: false, error: 'Invalid image payload.' });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    const apiKey = (
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.API_KEY ||
+      ''
+    ).trim();
     if (!apiKey) {
       return res.status(503).json({
         success: false,
-        error: 'AI OCR is unavailable because GEMINI_API_KEY is not configured in Settings > Secrets.',
+        error: 'AI text OCR requires GEMINI_API_KEY in Settings > Secrets (barcode/QR photos still scan locally).',
       });
     }
 
