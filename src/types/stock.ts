@@ -105,6 +105,8 @@ export const DEFAULT_VEHICLE_COLUMNS: BatteryColumn[] = [
 
 export const DEFAULT_BRANCH_ID = 'chandravadni_naka';
 
+export const ALL_STOCK_CATEGORIES: StockCategoryId[] = ['battery', 'charger', 'vehicle'];
+
 export type BranchAccessRole = 'branch' | 'master';
 
 export interface BranchLoginAccountMeta {
@@ -112,8 +114,10 @@ export interface BranchLoginAccountMeta {
   role: BranchAccessRole;
   branchId: string | null;
   allowedBranchIds: string[];
+  allowedCategories: StockCategoryId[];
   label: string;
   shortLabel: string;
+  isBuiltIn?: boolean;
 }
 
 export interface BranchAuthSession {
@@ -121,6 +125,7 @@ export interface BranchAuthSession {
   role: BranchAccessRole;
   branchId: string | null;
   allowedBranchIds: string[];
+  allowedCategories: StockCategoryId[];
   label: string;
   expiresAt: string;
 }
@@ -130,7 +135,9 @@ export interface BranchCredentialSummary {
   role: BranchAccessRole;
   branchId: string | null;
   allowedBranchIds: string[];
+  allowedCategories: StockCategoryId[];
   label: string;
+  isBuiltIn: boolean;
   isCustomPassword: boolean;
   version: number;
   updatedAt: string;
@@ -142,48 +149,60 @@ export const BRANCH_LOGIN_ACCOUNTS: BranchLoginAccountMeta[] = [
     role: 'master',
     branchId: null,
     allowedBranchIds: BRANCHES.map((b) => b.id),
+    allowedCategories: ['battery', 'charger', 'vehicle'],
     label: 'Administrator (Master — All 5 Branches)',
     shortLabel: 'Master (All Branches)',
+    isBuiltIn: true,
   },
   {
     loginId: 'c',
     role: 'branch',
     branchId: 'chandravadni_naka',
     allowedBranchIds: ['chandravadni_naka'],
+    allowedCategories: ['battery', 'charger', 'vehicle'],
     label: '1 - Chandravadni Naka',
     shortLabel: 'Chandravadni Naka',
+    isBuiltIn: true,
   },
   {
     loginId: 'm',
     role: 'branch',
     branchId: 'morar',
     allowedBranchIds: ['morar'],
+    allowedCategories: ['battery', 'charger', 'vehicle'],
     label: '2 - Morar Battery Factory',
     shortLabel: 'Morar Battery Factory',
+    isBuiltIn: true,
   },
   {
     loginId: 'y',
     role: 'branch',
     branchId: 'yard_city_center',
     allowedBranchIds: ['yard_city_center'],
+    allowedCategories: ['battery', 'charger', 'vehicle'],
     label: '3 - Yard City Center',
     shortLabel: 'Yard City Center',
+    isBuiltIn: true,
   },
   {
     loginId: 's',
     role: 'branch',
     branchId: 'service_center',
     allowedBranchIds: ['service_center'],
+    allowedCategories: ['battery', 'charger', 'vehicle'],
     label: '4 - Service Center',
     shortLabel: 'Service Center',
+    isBuiltIn: true,
   },
   {
     loginId: 'v',
     role: 'branch',
     branchId: 'vehicle_factory',
     allowedBranchIds: ['vehicle_factory'],
+    allowedCategories: ['battery', 'charger', 'vehicle'],
     label: '5 - Vehicle Manufacturing Factory',
     shortLabel: 'Vehicle Factory',
+    isBuiltIn: true,
   },
 ];
 

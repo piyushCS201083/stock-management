@@ -27,6 +27,11 @@ import {
   HardDrive,
   GitBranch,
   ExternalLink,
+  UserPlus,
+  Trash2,
+  BatteryCharging,
+  Zap,
+  Car,
 } from 'lucide-react';
 import {
   AdminSessionInfo,
@@ -40,6 +45,8 @@ import {
   apiBulkUpdateBranchPasswords,
   apiChangeAdminPassword,
   apiClaimAdminPassword,
+  apiCreateBranchUser,
+  apiDeleteBranchUser,
   apiDownloadAdminFile,
   apiFactoryReset,
   apiFetchAdminAnalytics,
@@ -49,14 +56,17 @@ import {
   apiRestoreCloudinaryBackup,
   apiTriggerCloudinaryBackup,
   apiUpdateBranchPassword,
+  apiUpdateBranchUserPermissions,
 } from '../services/api';
 import {
+  ALL_STOCK_CATEGORIES,
   BatteryColumn,
   BatterySerialItem,
   BranchCredentialSummary,
   BranchTransfer,
   BRANCHES,
   DayRecord,
+  StockCategoryId,
 } from '../types/stock';
 import { exportRecordToExcel, exportSerialHistoryToExcel } from '../utils/excelExport';
 
@@ -149,6 +159,19 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   const [pwdVisibleMap, setPwdVisibleMap] = useState<Record<string, boolean>>({});
   const [masterBulkPwd, setMasterBulkPwd] = useState('');
   const [savingLoginId, setSavingLoginId] = useState<string | null>(null);
+  const [permDrafts, setPermDrafts] = useState<Record<string, StockCategoryId[]>>({});
+  const [savingPermsId, setSavingPermsId] = useState<string | null>(null);
+  const [newUserBranchId, setNewUserBranchId] = useState<string>(BRANCHES[0].id);
+  const [newUserLoginId, setNewUserLoginId] = useState('');
+  const [newUserLabel, setNewUserLabel] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [showNewUserPwd, setShowNewUserPwd] = useState(false);
+  const [newUserCategories, setNewUserCategories] = useState<StockCategoryId[]>([
+    ...ALL_STOCK_CATEGORIES,
+  ]);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [confirmDeleteLoginId, setConfirmDeleteLoginId] = useState<string | null>(null);
+  const [deletingLoginId, setDeletingLoginId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -194,6 +217,14 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
       setBackups(bkRes.backups || []);
       if (credsRes.success && credsRes.credentials) {
         setBranchCreds(credsRes.credentials);
+        const drafts: Record<string, StockCategoryId[]> = {};
+        credsRes.credentials.forEach((c) => {
+          drafts[c.loginId] =
+            c.allowedCategories && c.allowedCategories.length > 0
+              ? [...c.allowedCategories]
+              : [...ALL_STOCK_CATEGORIES];
+        });
+        setPermDrafts(drafts);
         if (credsRes.githubStatus) {
           setGithubStatus(credsRes.githubStatus);
         }
@@ -545,6 +576,209 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     await handleBulkUpdatePasswords(updates);
   };
 
+  const handleToggleNewUserCategory = (cat: StockCategoryId) => {
+    setNewUserCategories((prev) => {
+      if (prev.includes(cat)) {
+        if (prev.length === 1) {
+          setActionMessage({
+            type: 'err',
+            text: 'Select at least one stock category for the new branch user.',
+          });
+          return prev;
+        }
+        return prev.filter((c) => c !== cat);
+      }
+      return [...prev, cat];
+    });
+  };
+
+  const handleCreateBranchUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminToken) return;
+    const cleanLoginId = newUserLoginId.trim().toLowerCase();
+    const cleanPwd = newUserPassword.trim();
+    if (!/^[a-z0-9._-]{2,40}$/.test(cleanLoginId)) {
+      setActionMessage({
+        type: 'err',
+        text: 'Login ID must be 2-40 lowercase characters (letters, numbers, ".", "_", "-").',
+      });
+      return;
+    }
+    if (cleanPwd.length < 4) {
+      setActionMessage({
+        type: 'err',
+        text: 'Password must be at least 4 characters.',
+      });
+      return;
+    }
+    if (newUserCategories.length === 0) {
+      setActionMessage({
+        type: 'err',
+        text: 'Select at least one stock category (Battery, Charger, or Vehicle).',
+      });
+      return;
+    }
+
+    setCreatingUser(true);
+    setActionMessage(null);
+    const res = await apiCreateBranchUser(
+      {
+        loginId: cleanLoginId,
+        branchId: newUserBranchId,
+        label: newUserLabel.trim() || undefined,
+        password: cleanPwd,
+        allowedCategories: newUserCategories,
+      },
+      adminToken
+    );
+    setCreatingUser(false);
+
+    if (res.unauthorized) {
+      onSignedOut();
+      return;
+    }
+    if (res.success && res.credential) {
+      const created = res.credential;
+      setBranchCreds((prev) => [...prev, created]);
+      setPermDrafts((prev) => ({
+        ...prev,
+        [created.loginId]: [...created.allowedCategories],
+      }));
+      setNewUserLoginId('');
+      setNewUserLabel('');
+      setNewUserPassword('');
+      setNewUserCategories([...ALL_STOCK_CATEGORIES]);
+      if (res.githubSync) {
+        setLastGithubSync(res.githubSync);
+      }
+      const ghSuffix = res.githubSync?.synced
+        ? ` GitHub committed (${res.githubSync.commitSha?.slice(0, 7)}).`
+        : '';
+      setActionMessage({
+        type: 'ok',
+        text: `Created branch user "${created.loginId}" for ${created.allowedBranchIds[0]} with access to ${created.allowedCategories.join(', ')}.${ghSuffix}`,
+      });
+      onShowToast(`Created login "${created.loginId}"!`);
+    } else {
+      setActionMessage({
+        type: 'err',
+        text: res.error || 'Failed to create branch user.',
+      });
+    }
+  };
+
+  const handleTogglePermCategory = (loginId: string, cat: StockCategoryId) => {
+    setPermDrafts((prev) => {
+      const existing = prev[loginId] || [...ALL_STOCK_CATEGORIES];
+      if (existing.includes(cat)) {
+        if (existing.length <= 1) {
+          setActionMessage({
+            type: 'err',
+            text: `Account "${loginId}" must keep access to at least 1 stock category.`,
+          });
+          return prev;
+        }
+        return { ...prev, [loginId]: existing.filter((c) => c !== cat) };
+      }
+      const ordered = ALL_STOCK_CATEGORIES.filter((c) => existing.includes(c) || c === cat);
+      return { ...prev, [loginId]: ordered };
+    });
+  };
+
+  const handleSaveUserPermissions = async (loginId: string) => {
+    if (!adminToken) return;
+    const targetCats = permDrafts[loginId] || [];
+    if (targetCats.length === 0) {
+      setActionMessage({
+        type: 'err',
+        text: `Select at least one stock category for "${loginId}".`,
+      });
+      return;
+    }
+
+    setSavingPermsId(loginId);
+    setActionMessage(null);
+    const res = await apiUpdateBranchUserPermissions(
+      { loginId, allowedCategories: targetCats },
+      adminToken
+    );
+    setSavingPermsId(null);
+
+    if (res.unauthorized) {
+      onSignedOut();
+      return;
+    }
+    if (res.success && res.credential) {
+      const updated = res.credential;
+      setBranchCreds((prev) =>
+        prev.map((c) => (c.loginId === updated.loginId ? updated : c))
+      );
+      setPermDrafts((prev) => ({
+        ...prev,
+        [updated.loginId]: [...updated.allowedCategories],
+      }));
+      if (res.githubSync) {
+        setLastGithubSync(res.githubSync);
+      }
+      const ghSuffix = res.githubSync?.synced
+        ? ` GitHub committed (${res.githubSync.commitSha?.slice(0, 7)}).`
+        : '';
+      setActionMessage({
+        type: 'ok',
+        text: `Updated stock permissions for "${loginId}" (${updated.allowedCategories.join(', ')}). Active sessions refreshed.${ghSuffix}`,
+      });
+      onShowToast(`Saved stock access for "${loginId}"!`);
+    } else {
+      setActionMessage({
+        type: 'err',
+        text: res.error || `Failed to update permissions for "${loginId}".`,
+      });
+    }
+  };
+
+  const handleDeleteCustomUser = async (loginId: string) => {
+    if (!adminToken) return;
+    setDeletingLoginId(loginId);
+    setActionMessage(null);
+    const res = await apiDeleteBranchUser(loginId, adminToken);
+    setDeletingLoginId(null);
+    setConfirmDeleteLoginId(null);
+
+    if (res.unauthorized) {
+      onSignedOut();
+      return;
+    }
+    if (res.success) {
+      setBranchCreds((prev) => prev.filter((c) => c.loginId !== loginId));
+      setPermDrafts((prev) => {
+        const next = { ...prev };
+        delete next[loginId];
+        return next;
+      });
+      setPwdDrafts((prev) => {
+        const next = { ...prev };
+        delete next[loginId];
+        return next;
+      });
+      if (res.githubSync) {
+        setLastGithubSync(res.githubSync);
+      }
+      const ghSuffix = res.githubSync?.synced
+        ? ` GitHub committed (${res.githubSync.commitSha?.slice(0, 7)}).`
+        : '';
+      setActionMessage({
+        type: 'ok',
+        text: `Removed custom branch user "${loginId}" and revoked its active sessions.${ghSuffix}`,
+      });
+      onShowToast(`Deleted branch user "${loginId}"`);
+    } else {
+      setActionMessage({
+        type: 'err',
+        text: res.error || `Could not delete user "${loginId}".`,
+      });
+    }
+  };
+
   const filteredMovements = useMemo(() => {
     const list = analytics?.recentMovements || [];
     const q = movementSearch.trim().toLowerCase();
@@ -583,7 +817,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     { id: 'exports', label: 'Excel & Exports', icon: <FileSpreadsheet className="w-4 h-4" /> },
     { id: 'backend', label: 'Backend Data', icon: <Database className="w-4 h-4" /> },
     { id: 'backups', label: 'Backups & Audit', icon: <Cloud className="w-4 h-4" /> },
-    { id: 'passwords', label: 'Password Manager', icon: <KeyRound className="w-4 h-4" /> },
+    { id: 'passwords', label: 'Users & Passwords', icon: <KeyRound className="w-4 h-4" /> },
     { id: 'security', label: 'Factory Reset & Access', icon: <RotateCcw className="w-4 h-4" /> },
   ];
 
@@ -1873,10 +2107,10 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
               )}
 
               {/* =========================================================
-                  TAB 5: REAL-TIME PASSWORD MANAGER & GITHUB AUTO-SYNC
+                  TAB 5: MULTI-USER ACCESS, PERMISSIONS & PASSWORD MANAGER
                  ========================================================= */}
               {activeTab === 'passwords' && (
-                <div className="space-y-5 max-w-5xl">
+                <div className="space-y-5 max-w-6xl">
                   {/* Live Sync & GitHub Codebase Status Banner */}
                   <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 space-y-3">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1886,10 +2120,10 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                         </div>
                         <div>
                           <h3 className="text-sm font-bold text-slate-900">
-                            Branch & Master Login Password Manager
+                            Branch Users, Stock Permissions & Password Manager
                           </h3>
                           <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                            Rotate passwords for individual branches (<code className="font-mono bg-slate-100 px-1 rounded">c, m, y, s, v</code>) or the master account (<code className="font-mono bg-slate-100 px-1 rounded">administrator</code>). Changes take effect immediately, wipe previous password hashes, invalidate old branch sessions, and commit <code className="font-mono bg-slate-100 px-1 rounded">data/branch-credentials.json</code> to GitHub.
+                            Create additional login IDs for any branch, choose which stock registers (<code className="font-mono bg-slate-100 px-1 rounded">Battery</code>, <code className="font-mono bg-slate-100 px-1 rounded">Charger</code>, <code className="font-mono bg-slate-100 px-1 rounded">Vehicle</code>) each user can access, and rotate passwords live. Changes invalidate old sessions immediately and commit <code className="font-mono bg-slate-100 px-1 rounded">data/branch-credentials.json</code> to GitHub.
                           </p>
                         </div>
                       </div>
@@ -1936,14 +2170,176 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     )}
                   </div>
 
-                  {/* Quick Apply Same Password to All 6 Accounts */}
+                  {/* Create New Branch User & Assign Stock Permissions */}
+                  <form
+                    onSubmit={handleCreateBranchUser}
+                    className="bg-white border border-blue-200 rounded-xl p-4 sm:p-5 space-y-4 text-xs shadow-2xs"
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
+                          <UserPlus className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                            Create New User Credential for a Branch
+                          </h4>
+                          <p className="text-[11px] text-slate-500">
+                            Add multiple staff logins for the same branch and restrict which stock categories they can open.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          Assign to Branch
+                        </label>
+                        <select
+                          value={newUserBranchId}
+                          onChange={(e) => setNewUserBranchId(e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        >
+                          {BRANCHES.map((b) => (
+                            <option key={b.id} value={b.id}>
+                              {b.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          New Login ID
+                        </label>
+                        <input
+                          type="text"
+                          value={newUserLoginId}
+                          onChange={(e) => setNewUserLoginId(e.target.value.toLowerCase())}
+                          placeholder="e.g. c2, m_charger, y_staff"
+                          required
+                          minLength={2}
+                          maxLength={40}
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          User / Role Label (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={newUserLabel}
+                          onChange={(e) => setNewUserLabel(e.target.value)}
+                          placeholder="e.g. Chandravadni Charger Staff"
+                          maxLength={80}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          Password (min 4 chars)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showNewUserPwd ? 'text' : 'password'}
+                            value={newUserPassword}
+                            onChange={(e) => setNewUserPassword(e.target.value)}
+                            placeholder="Set password"
+                            required
+                            minLength={4}
+                            autoComplete="new-password"
+                            className="w-full pl-3 pr-8 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewUserPwd((v) => !v)}
+                            className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                            aria-label="Toggle new user password visibility"
+                          >
+                            {showNewUserPwd ? (
+                              <EyeOff className="w-3.5 h-3.5" />
+                            ) : (
+                              <Eye className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 border-t border-slate-100">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-700 mr-1">
+                          Permitted Stock Access:
+                        </span>
+                        {(
+                          [
+                            {
+                              id: 'battery' as StockCategoryId,
+                              label: 'Battery Stock',
+                              icon: <BatteryCharging className="w-3.5 h-3.5" />,
+                              activeCls: 'bg-blue-600 text-white border-blue-600',
+                            },
+                            {
+                              id: 'charger' as StockCategoryId,
+                              label: 'Charger Stock',
+                              icon: <Zap className="w-3.5 h-3.5" />,
+                              activeCls: 'bg-amber-600 text-white border-amber-600',
+                            },
+                            {
+                              id: 'vehicle' as StockCategoryId,
+                              label: 'Vehicle Stock',
+                              icon: <Car className="w-3.5 h-3.5" />,
+                              activeCls: 'bg-emerald-600 text-white border-emerald-600',
+                            },
+                          ]
+                        ).map((cat) => {
+                          const selected = newUserCategories.includes(cat.id);
+                          return (
+                            <button
+                              key={cat.id}
+                              type="button"
+                              onClick={() => handleToggleNewUserCategory(cat.id)}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold transition-colors cursor-pointer ${
+                                selected
+                                  ? cat.activeCls
+                                  : 'bg-slate-50 text-slate-500 border-slate-300 hover:bg-slate-100'
+                              }`}
+                            >
+                              {cat.icon}
+                              <span>{cat.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={
+                          creatingUser ||
+                          newUserLoginId.trim().length < 2 ||
+                          newUserPassword.trim().length < 4
+                        }
+                        className="inline-flex items-center justify-center gap-1.5 px-4 py-2 font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg cursor-pointer shrink-0"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>{creatingUser ? 'Creating User...' : 'Create Branch User'}</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Quick Apply Same Password to All Accounts */}
                   <form
                     onSubmit={handleApplyOnePasswordToAllAccounts}
                     className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-end justify-between gap-3 text-xs"
                   >
                     <div className="flex-1">
                       <label className="block font-bold text-slate-800 mb-1">
-                        Set One New Password Across All 6 Accounts ({branchCreds.length})
+                        Set One New Password Across All Accounts ({branchCreds.length})
                       </label>
                       <input
                         type="password"
@@ -1961,20 +2357,22 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       <span>
-                        {savingLoginId === '__ALL__' ? 'Rotating All...' : 'Rotate All 6 Live'}
+                        {savingLoginId === '__ALL__'
+                          ? 'Rotating All...'
+                          : `Rotate All (${branchCreds.length}) Live`}
                       </span>
                     </button>
                   </form>
 
-                  {/* Per-Account Credentials Table */}
+                  {/* Per-Account Credentials & Stock Permissions Table */}
                   <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                     <div className="px-4 py-3 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <div>
                         <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                          Per-Branch & Master Credentials ({branchCreds.length})
+                          Branch Credentials & Stock Access Control ({branchCreds.length})
                         </h4>
                         <p className="text-[11px] text-slate-500">
-                          Type a new password for any specific row and click Update Live, or enter multiple rows and click Update All Entered.
+                          Toggle Battery / Charger / Vehicle access per user and click Save Access, or rotate any password below.
                         </p>
                       </div>
                       <button
@@ -1985,7 +2383,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                       >
                         <KeyRound className="w-3.5 h-3.5" />
                         <span>
-                          {savingLoginId === '__ALL__' ? 'Updating...' : 'Update All Entered'}
+                          {savingLoginId === '__ALL__' ? 'Updating...' : 'Update All Entered Passwords'}
                         </span>
                       </button>
                     </div>
@@ -2000,10 +2398,11 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                           <thead>
                             <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
                               <th className="py-2.5 px-3 text-left">Login ID</th>
-                              <th className="py-2.5 px-3 text-left">Access Scope</th>
+                              <th className="py-2.5 px-3 text-left">Branch & Role</th>
+                              <th className="py-2.5 px-3 text-left min-w-[230px]">Stock Permissions</th>
                               <th className="py-2.5 px-3 text-left">Password State</th>
-                              <th className="py-2.5 px-3 text-left min-w-[210px]">New Password</th>
-                              <th className="py-2.5 px-3 text-right">Action</th>
+                              <th className="py-2.5 px-3 text-left min-w-[185px]">New Password</th>
+                              <th className="py-2.5 px-3 text-right">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -2012,18 +2411,42 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                               const isVis = Boolean(pwdVisibleMap[cred.loginId]);
                               const isSavingThis =
                                 savingLoginId === cred.loginId || savingLoginId === '__ALL__';
+                              const draftCats =
+                                permDrafts[cred.loginId] ||
+                                cred.allowedCategories || [...ALL_STOCK_CATEGORIES];
+                              const savedCats =
+                                cred.allowedCategories || [...ALL_STOCK_CATEGORIES];
+                              const isPermDirty =
+                                ALL_STOCK_CATEGORIES.some(
+                                  (c) => draftCats.includes(c) !== savedCats.includes(c)
+                                );
+                              const isSavingPerms = savingPermsId === cred.loginId;
+                              const isConfirmingDelete = confirmDeleteLoginId === cred.loginId;
+                              const isDeleting = deletingLoginId === cred.loginId;
+
                               return (
                                 <tr key={cred.loginId} className="hover:bg-slate-50">
                                   <td className="py-2.5 px-3 whitespace-nowrap">
-                                    <span
-                                      className={`inline-flex items-center px-2.5 py-1 rounded-md font-mono font-extrabold text-xs ${
-                                        cred.role === 'master'
-                                          ? 'bg-slate-900 text-amber-300'
-                                          : 'bg-blue-50 text-blue-900 border border-blue-200'
-                                      }`}
-                                    >
-                                      {cred.loginId}
-                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span
+                                        className={`inline-flex items-center px-2.5 py-1 rounded-md font-mono font-extrabold text-xs ${
+                                          cred.role === 'master'
+                                            ? 'bg-slate-900 text-amber-300'
+                                            : 'bg-blue-50 text-blue-900 border border-blue-200'
+                                        }`}
+                                      >
+                                        {cred.loginId}
+                                      </span>
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                          cred.isBuiltIn !== false
+                                            ? 'bg-slate-100 text-slate-600'
+                                            : 'bg-indigo-100 text-indigo-800'
+                                        }`}
+                                      >
+                                        {cred.isBuiltIn !== false ? 'Built-in' : 'Custom'}
+                                      </span>
+                                    </div>
                                   </td>
                                   <td className="py-2.5 px-3 font-semibold text-slate-900">
                                     <div>{cred.label}</div>
@@ -2032,6 +2455,65 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                                         ? 'Unrestricted access to all 5 branches'
                                         : `Locked strictly to ${cred.allowedBranchIds.join(', ')}`}
                                     </div>
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    {cred.role === 'master' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 text-slate-700 font-bold text-[11px]">
+                                        All 3 Stock Registers
+                                      </span>
+                                    ) : (
+                                      <div className="flex items-center gap-1 flex-wrap">
+                                        {(
+                                          [
+                                            {
+                                              id: 'battery' as StockCategoryId,
+                                              label: 'Battery',
+                                              activeCls: 'bg-blue-600 text-white border-blue-600',
+                                            },
+                                            {
+                                              id: 'charger' as StockCategoryId,
+                                              label: 'Charger',
+                                              activeCls: 'bg-amber-600 text-white border-amber-600',
+                                            },
+                                            {
+                                              id: 'vehicle' as StockCategoryId,
+                                              label: 'Vehicle',
+                                              activeCls: 'bg-emerald-600 text-white border-emerald-600',
+                                            },
+                                          ]
+                                        ).map((cat) => {
+                                          const enabled = draftCats.includes(cat.id);
+                                          return (
+                                            <button
+                                              key={cat.id}
+                                              type="button"
+                                              disabled={isSavingPerms}
+                                              onClick={() =>
+                                                handleTogglePermCategory(cred.loginId, cat.id)
+                                              }
+                                              className={`px-2 py-1 rounded-md border text-[11px] font-bold transition-colors cursor-pointer ${
+                                                enabled
+                                                  ? cat.activeCls
+                                                  : 'bg-white text-slate-400 border-slate-200 line-through hover:text-slate-600'
+                                              }`}
+                                              title={`Toggle ${cat.label} stock access for ${cred.loginId}`}
+                                            >
+                                              {cat.label}
+                                            </button>
+                                          );
+                                        })}
+                                        {isPermDirty && (
+                                          <button
+                                            type="button"
+                                            disabled={isSavingPerms}
+                                            onClick={() => handleSaveUserPermissions(cred.loginId)}
+                                            className="ml-1 px-2 py-1 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                                          >
+                                            {isSavingPerms ? 'Saving...' : 'Save Access'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="py-2.5 px-3 whitespace-nowrap">
                                     <div className="flex items-center gap-1.5">
@@ -2087,14 +2569,51 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                                     </div>
                                   </td>
                                   <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateSingleBranchPassword(cred.loginId)}
-                                      disabled={isSavingThis || draftVal.trim().length < 4}
-                                      className="px-3 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-40 rounded-lg cursor-pointer"
-                                    >
-                                      {savingLoginId === cred.loginId ? 'Saving...' : 'Update Live'}
-                                    </button>
+                                    <div className="inline-flex items-center gap-1.5 justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleUpdateSingleBranchPassword(cred.loginId)
+                                        }
+                                        disabled={isSavingThis || draftVal.trim().length < 4}
+                                        className="px-3 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-40 rounded-lg cursor-pointer"
+                                      >
+                                        {savingLoginId === cred.loginId ? 'Saving...' : 'Update Live'}
+                                      </button>
+
+                                      {cred.isBuiltIn === false && (
+                                        isConfirmingDelete ? (
+                                          <>
+                                            <button
+                                              type="button"
+                                              disabled={isDeleting}
+                                              onClick={() => handleDeleteCustomUser(cred.loginId)}
+                                              className="px-2.5 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 rounded-lg cursor-pointer"
+                                            >
+                                              {isDeleting ? 'Deleting...' : 'Confirm'}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              disabled={isDeleting}
+                                              onClick={() => setConfirmDeleteLoginId(null)}
+                                              className="px-2 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                                            >
+                                              Cancel
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => setConfirmDeleteLoginId(cred.loginId)}
+                                            className="p-1.5 text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg cursor-pointer"
+                                            title={`Delete custom user "${cred.loginId}"`}
+                                            aria-label={`Delete custom user ${cred.loginId}`}
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        )
+                                      )}
+                                    </div>
                                   </td>
                                 </tr>
                               );

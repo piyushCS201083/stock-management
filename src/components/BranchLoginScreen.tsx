@@ -121,12 +121,12 @@ export const BranchLoginScreen: React.FC<BranchLoginScreenProps> = ({
 
             {/* Account Quick Select (Login IDs only) */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="font-bold text-slate-700 uppercase tracking-wider text-[11px]">
-                  Select Account ID
+                  Quick Select ID
                 </span>
-                <span className="text-[11px] text-slate-500">
-                  1st letter for branch · master for all 5
+                <span className="text-[11px] text-slate-500 text-right">
+                  Or type any custom user ID created by Admin
                 </span>
               </div>
 
@@ -194,7 +194,7 @@ export const BranchLoginScreen: React.FC<BranchLoginScreenProps> = ({
                     setLoginId(e.target.value);
                     if (error) setError(null);
                   }}
-                  placeholder="Enter branch letter (c, m, y, s, v) or administrator"
+                  placeholder="Enter branch letter (c, m, y, s, v), custom user ID, or administrator"
                   autoComplete="username"
                   autoCapitalize="none"
                   autoCorrect="off"
@@ -202,11 +202,15 @@ export const BranchLoginScreen: React.FC<BranchLoginScreenProps> = ({
                   autoFocus
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-lg bg-white font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
-                {selectedMeta && (
+                {selectedMeta ? (
                   <p className="mt-1 text-[11px] font-medium text-blue-700">
                     Access Scope: {selectedMeta.label}
                   </p>
-                )}
+                ) : loginId.trim() ? (
+                  <p className="mt-1 text-[11px] font-medium text-slate-500">
+                    Custom branch user Login ID — branch & stock permissions verified on sign-in
+                  </p>
+                ) : null}
               </div>
 
               <div>

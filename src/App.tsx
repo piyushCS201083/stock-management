@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
+  ALL_STOCK_CATEGORIES,
   BatteryColumn,
   BatterySerialItem,
   BranchAuthSession,
@@ -227,6 +228,12 @@ export default function App() {
 
   const isMasterSession = branchSession?.role === 'master';
   const allowedBranchIds = branchSession?.allowedBranchIds || [];
+  const allowedCategories = useMemo<StockCategoryId[]>(() => {
+    if (!branchSession || isMasterSession) return ALL_STOCK_CATEGORIES;
+    return branchSession.allowedCategories && branchSession.allowedCategories.length > 0
+      ? branchSession.allowedCategories
+      : ALL_STOCK_CATEGORIES;
+  }, [branchSession, isMasterSession]);
 
   const [columns, setColumns] = useState<BatteryColumn[]>(() => loadColumns());
   const [activeBranchId, setActiveBranchId] = useState<string>(DEFAULT_BRANCH_ID);
@@ -281,11 +288,29 @@ export default function App() {
         ? (localStorage.getItem('active_branch_id') as string)
         : DEFAULT_BRANCH_ID;
 
+    const sessionCats: StockCategoryId[] =
+      session.role === 'master'
+        ? ALL_STOCK_CATEGORIES
+        : session.allowedCategories && session.allowedCategories.length > 0
+        ? session.allowedCategories
+        : ALL_STOCK_CATEGORIES;
+    const savedCategory = localStorage.getItem('active_stock_category') as StockCategoryId | null;
+    const targetCategory: StockCategoryId =
+      savedCategory && sessionCats.includes(savedCategory)
+        ? savedCategory
+        : sessionCats[0] || 'battery';
+
     setActiveBranchId(targetBranch);
+    setActiveCategory(targetCategory);
     localStorage.setItem('active_branch_id', targetBranch);
+    localStorage.setItem('active_stock_category', targetCategory);
     const cols = loadColumns();
     setColumns(cols);
-    setRecords(ensureTodayLedger({}, cols, false, targetBranch));
+    setRecords(
+      sessionCats.includes('battery')
+        ? ensureTodayLedger({}, cols, false, targetBranch)
+        : {}
+    );
     setSerials({});
     setChargerRecords({});
     setVehicleRecords({});
@@ -299,6 +324,15 @@ export default function App() {
       setIsBranchPortalOpen(false);
     }
   };
+
+  useEffect(() => {
+    if (!branchSession) return;
+    if (!allowedCategories.includes(activeCategory)) {
+      const fallback = allowedCategories[0] || 'battery';
+      setActiveCategory(fallback);
+      localStorage.setItem('active_stock_category', fallback);
+    }
+  }, [branchSession, allowedCategories, activeCategory]);
 
   const handleBranchLogout = (notice?: string) => {
     const tokenToRevoke = branchTokenRef.current;
@@ -405,10 +439,36 @@ export default function App() {
     items: [],
   });
 
+  const handleSelectCategory = (categoryId: StockCategoryId) => {
+    const session = branchSessionRef.current;
+    const sessionCats: StockCategoryId[] =
+      !session || session.role === 'master'
+        ? ALL_STOCK_CATEGORIES
+        : session.allowedCategories && session.allowedCategories.length > 0
+        ? session.allowedCategories
+        : ALL_STOCK_CATEGORIES;
+    if (!sessionCats.includes(categoryId)) {
+      showToast('Access restricted: your login ID does not have permission for that stock register.');
+      return;
+    }
+    setActiveCategory(categoryId);
+    localStorage.setItem('active_stock_category', categoryId);
+  };
+
   const handleSelectBranchAndCategory = (branchId: string, categoryId: StockCategoryId) => {
     const session = branchSessionRef.current;
     if (session && session.role === 'branch' && !session.allowedBranchIds.includes(branchId)) {
       showToast('Access restricted: your login ID can only open your assigned branch.');
+      return;
+    }
+    const sessionCats: StockCategoryId[] =
+      !session || session.role === 'master'
+        ? ALL_STOCK_CATEGORIES
+        : session.allowedCategories && session.allowedCategories.length > 0
+        ? session.allowedCategories
+        : ALL_STOCK_CATEGORIES;
+    if (!sessionCats.includes(categoryId)) {
+      showToast('Access restricted: your login ID does not have permission for that stock register.');
       return;
     }
     setActiveBranchId(branchId);
@@ -418,9 +478,11 @@ export default function App() {
     sessionStorage.setItem('has_selected_branch_session', 'true');
     setIsBranchPortalOpen(false);
     setDismissedPopupSignature(null);
-    setRecords((prev) => ensureTodayLedger(prev, columns, isCloudDbConnected, branchId));
+    if (sessionCats.includes('battery')) {
+      setRecords((prev) => ensureTodayLedger(prev, columns, isCloudDbConnected, branchId));
+    }
     const branchName = BRANCHES.find((b) => b.id === branchId)?.name || branchId;
-    const pendingCount = pendingTransfersByBranch[branchId] || 0;
+    const pendingCount = sessionCats.includes('battery') ? pendingTransfersByBranch[branchId] || 0 : 0;
     if (pendingCount > 0) {
       showToast(`Opened ${branchName} — ${pendingCount} incoming batter${pendingCount === 1 ? 'y' : 'ies'} ready to receive!`);
     } else {
@@ -592,15 +654,34 @@ export default function App() {
             ...Array.from(inFlightSerialKeysRef.current),
           ]);
 
+      const sessionCats: StockCategoryId[] =
+        !branchSessionRef.current || branchSessionRef.current.role === 'master'
+          ? ALL_STOCK_CATEGORIES
+          : branchSessionRef.current.allowedCategories &&
+            branchSessionRef.current.allowedCategories.length > 0
+          ? branchSessionRef.current.allowedCategories
+          : ALL_STOCK_CATEGORIES;
+      const canBattery = sessionCats.includes('battery');
+      const canCharger = sessionCats.includes('charger');
+      const canVehicle = sessionCats.includes('vehicle');
+
       const [recordsMeta, remoteCols, remoteTeam, remoteSerials, remoteChargers, remoteVehicles, remoteTransfers] =
         await Promise.all([
-          apiFetchRecordsWithMeta(protectedKeys),
+          canBattery
+            ? apiFetchRecordsWithMeta(protectedKeys)
+            : Promise.resolve({
+                records: {},
+                resetEpoch: health.resetEpoch || initialEpochBeforeSync || undefined,
+                resetDateIST: health.resetDateIST || getLocalResetDateIST() || undefined,
+                epochResetTriggered: false,
+                fromRemote: true,
+              }),
           apiFetchColumns(),
           apiFetchTeam(),
-          apiFetchSerials(protectedSerialKeys),
-          apiFetchChargers(),
-          apiFetchVehicles(),
-          apiFetchTransfers(),
+          canBattery ? apiFetchSerials(protectedSerialKeys) : Promise.resolve({}),
+          canCharger ? apiFetchChargers() : Promise.resolve({}),
+          canVehicle ? apiFetchVehicles() : Promise.resolve({}),
+          canBattery ? apiFetchTransfers() : Promise.resolve([]),
         ]);
 
       const remoteRecords = recordsMeta.records;
@@ -763,7 +844,7 @@ export default function App() {
           const check = await apiGetBranchSession(activeToken);
           if (!check.authenticated) {
             handleBranchLogout(
-              `Password for "${activeLoginId}" was updated by Admin. Sign in with the new password.`
+              `Permissions or password for "${activeLoginId}" updated by Admin. Please sign in again.`
             );
           }
         }
@@ -1829,10 +1910,12 @@ export default function App() {
         activeBranch={activeBranch}
         activeCategory={activeCategory}
         onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
-        onSelectCategory={(cat) => setActiveCategory(cat)}
+        onSelectCategory={handleSelectCategory}
         isRealtimeActive={isRealtimeActive}
         isCloudDbConnected={isCloudDbConnected}
-        pendingReceiveCount={pendingTransfersByBranch[activeBranchId] || 0}
+        pendingReceiveCount={
+          allowedCategories.includes('battery') ? pendingTransfersByBranch[activeBranchId] || 0 : 0
+        }
         isAdminAuthenticated={Boolean(adminToken)}
         onOpenAdminPortal={() => openAdminPortal(null, 'analytics')}
         branchLoginId={branchSession.loginId}
@@ -1855,12 +1938,13 @@ export default function App() {
               <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-normal">
                 Switch Branch (1-5)
               </span>
-              {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
-                  <BellRing className="w-3 h-3" />
-                  <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
-                </span>
-              )}
+              {allowedCategories.includes('battery') &&
+                (pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
+                  <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                    <BellRing className="w-3 h-3" />
+                    <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
+                  </span>
+                )}
             </button>
           ) : (
             <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900/40 border border-blue-500/30 text-blue-100 font-bold text-xs">
@@ -1869,52 +1953,59 @@ export default function App() {
               <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono">
                 ID: {branchSession.loginId}
               </span>
-              {(pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
-                  <BellRing className="w-3 h-3" />
-                  <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
-                </span>
-              )}
+              {allowedCategories.includes('battery') &&
+                (pendingTransfersByBranch[activeBranchId] || 0) > 0 && (
+                  <span className="inline-flex items-center gap-1 text-[10px] bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                    <BellRing className="w-3 h-3" />
+                    <span>{pendingTransfersByBranch[activeBranchId]} Receive Goods</span>
+                  </span>
+                )}
             </div>
           )}
 
           <span className="text-slate-600">/</span>
 
-          {/* Quick Category Switcher */}
+          {/* Quick Category Switcher (Permitted Stock Registers Only) */}
           <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg border border-slate-700 flex-wrap">
-            <button
-              onClick={() => setActiveCategory('battery')}
-              className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
-                activeCategory === 'battery'
-                  ? 'bg-blue-600 text-white shadow-2xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <BatteryCharging className="w-3.5 h-3.5" />
-              <span>Battery Stock</span>
-            </button>
-            <button
-              onClick={() => setActiveCategory('charger')}
-              className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
-                activeCategory === 'charger'
-                  ? 'bg-amber-600 text-white shadow-2xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>Charger Stock</span>
-            </button>
-            <button
-              onClick={() => setActiveCategory('vehicle')}
-              className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
-                activeCategory === 'vehicle'
-                  ? 'bg-emerald-600 text-white shadow-2xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Car className="w-3.5 h-3.5" />
-              <span>Vehicle Stock</span>
-            </button>
+            {allowedCategories.includes('battery') && (
+              <button
+                onClick={() => handleSelectCategory('battery')}
+                className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                  activeCategory === 'battery'
+                    ? 'bg-blue-600 text-white shadow-2xs'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <BatteryCharging className="w-3.5 h-3.5" />
+                <span>Battery Stock</span>
+              </button>
+            )}
+            {allowedCategories.includes('charger') && (
+              <button
+                onClick={() => handleSelectCategory('charger')}
+                className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                  activeCategory === 'charger'
+                    ? 'bg-amber-600 text-white shadow-2xs'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>Charger Stock</span>
+              </button>
+            )}
+            {allowedCategories.includes('vehicle') && (
+              <button
+                onClick={() => handleSelectCategory('vehicle')}
+                className={`px-3 py-1 rounded-md font-bold transition-all cursor-pointer flex items-center gap-1.5 text-xs ${
+                  activeCategory === 'vehicle'
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Car className="w-3.5 h-3.5" />
+                <span>Vehicle Stock</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1935,7 +2026,7 @@ export default function App() {
               onClick={() => setIsBranchPortalOpen(true)}
               className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer flex items-center gap-1"
             >
-              <span>Branch Categories</span>
+              <span>Branch Categories ({allowedCategories.length})</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           )}
@@ -1943,7 +2034,8 @@ export default function App() {
       </div>
 
       {/* Top Pop-up Notification at Receiver Branch when another branch sent batteries */}
-      {!isBranchPortalOpen &&
+      {allowedCategories.includes('battery') &&
+        !isBranchPortalOpen &&
         pendingIncomingForActiveBranch.length > 0 &&
         dismissedPopupSignature !== pendingPopupSignature && (
           <div className="sticky top-[57px] z-25 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 border-b-2 border-amber-600 shadow-lg px-4 sm:px-6 py-2.5 animate-in fade-in slide-in-from-top-2">
@@ -1998,17 +2090,22 @@ export default function App() {
             currentBranchId={activeBranchId}
             currentCategoryId={activeCategory}
             allowedBranchIds={allowedBranchIds}
-            pendingTransfersByBranch={pendingTransfersByBranch}
+            allowedCategories={allowedCategories}
+            pendingTransfersByBranch={
+              allowedCategories.includes('battery') ? pendingTransfersByBranch : {}
+            }
             onSelectBranchAndCategory={handleSelectBranchAndCategory}
             onClose={() => setIsBranchPortalOpen(false)}
             isModal={false}
           />
         </main>
-      ) : activeCategory === 'charger' ? (
+      ) : activeCategory === 'charger' && allowedCategories.includes('charger') ? (
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
           <ChargerStockView
             branch={activeBranch}
-            onSwitchStockCategory={(cat) => setActiveCategory(cat)}
+            allowedCategories={allowedCategories}
+            canSwitchBranch={isMasterSession}
+            onSwitchStockCategory={handleSelectCategory}
             onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
             activeDate={currentDate}
             remoteChargerRecords={chargerRecords}
@@ -2031,11 +2128,13 @@ export default function App() {
             }}
           />
         </main>
-      ) : activeCategory === 'vehicle' ? (
+      ) : activeCategory === 'vehicle' && allowedCategories.includes('vehicle') ? (
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
           <VehicleStockView
             branch={activeBranch}
-            onSwitchStockCategory={(cat) => setActiveCategory(cat)}
+            allowedCategories={allowedCategories}
+            canSwitchBranch={isMasterSession}
+            onSwitchStockCategory={handleSelectCategory}
             onOpenBranchPortal={() => setIsBranchPortalOpen(true)}
             activeDate={currentDate}
             remoteVehicleRecords={vehicleRecords}
@@ -2058,7 +2157,7 @@ export default function App() {
             }}
           />
         </main>
-      ) : (
+      ) : allowedCategories.includes('battery') ? (
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6 space-y-6">
           {/* TOP: Incoming Goods Notification Banner for Active Branch */}
           <ReceiveGoodsBanner
@@ -2613,26 +2712,45 @@ export default function App() {
           </div>
         </section>
       </main>
+      ) : (
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-20 md:pb-6">
+          <BranchCategoryPortal
+            currentBranchId={activeBranchId}
+            currentCategoryId={activeCategory}
+            allowedBranchIds={allowedBranchIds}
+            allowedCategories={allowedCategories}
+            pendingTransfersByBranch={
+              allowedCategories.includes('battery') ? pendingTransfersByBranch : {}
+            }
+            onSelectBranchAndCategory={handleSelectBranchAndCategory}
+            onClose={() => setIsBranchPortalOpen(false)}
+            isModal={false}
+          />
+        </main>
       )}
 
-      {/* Mobile/Compact Persistent Sticky Action Bar - Always easily accessible when scrolling */}
-      <div className="md:hidden fixed bottom-3 left-3 right-3 z-40 bg-white/95 backdrop-blur-md border border-slate-300 rounded-xl p-2 shadow-xl flex items-center justify-between gap-2.5">
-        <button
-          onClick={() => setIsQuickEntryOpen(true)}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold text-blue-800 bg-blue-50 active:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
-        >
-          <Plus className="w-4 h-4 text-blue-600" />
-          <span>Update Ledger</span>
-        </button>
+      {/* Mobile/Compact Persistent Sticky Action Bar for Battery Ledger */}
+      {!isBranchPortalOpen &&
+        activeCategory === 'battery' &&
+        allowedCategories.includes('battery') && (
+          <div className="md:hidden fixed bottom-3 left-3 right-3 z-40 bg-white/95 backdrop-blur-md border border-slate-300 rounded-xl p-2 shadow-xl flex items-center justify-between gap-2.5">
+            <button
+              onClick={() => setIsQuickEntryOpen(true)}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold text-blue-800 bg-blue-50 active:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4 text-blue-600" />
+              <span>Update Ledger</span>
+            </button>
 
-        <button
-          onClick={() => setIsWhatsAppOpen(true)}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-extrabold text-white bg-emerald-600 active:bg-emerald-700 rounded-lg shadow-sm transition-colors cursor-pointer"
-        >
-          <Send className="w-4 h-4" />
-          <span>Send WhatsApp</span>
-        </button>
-      </div>
+            <button
+              onClick={() => setIsWhatsAppOpen(true)}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-extrabold text-white bg-emerald-600 active:bg-emerald-700 rounded-lg shadow-sm transition-colors cursor-pointer"
+            >
+              <Send className="w-4 h-4" />
+              <span>Send WhatsApp</span>
+            </button>
+          </div>
+        )}
 
       {/* Floating Notification Toast */}
       {notificationToast && (

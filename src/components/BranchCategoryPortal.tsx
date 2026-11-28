@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  ALL_STOCK_CATEGORIES,
   BRANCHES,
   BranchInfo,
   StockCategoryId,
@@ -29,6 +30,7 @@ interface BranchCategoryPortalProps {
   currentBranchId: string;
   currentCategoryId: StockCategoryId;
   allowedBranchIds?: string[];
+  allowedCategories?: StockCategoryId[];
   pendingTransfersByBranch?: Record<string, number>;
   onSelectBranchAndCategory: (branchId: string, categoryId: StockCategoryId) => void;
   onClose?: () => void;
@@ -39,6 +41,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
   currentBranchId,
   currentCategoryId,
   allowedBranchIds,
+  allowedCategories,
   pendingTransfersByBranch = {},
   onSelectBranchAndCategory,
   onClose,
@@ -51,6 +54,14 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
     }
     return BRANCHES;
   }, [allowedBranchIds]);
+
+  const visibleCategories = React.useMemo(() => {
+    if (allowedCategories && allowedCategories.length > 0) {
+      const filtered = ALL_STOCK_CATEGORIES.filter((c) => allowedCategories.includes(c));
+      if (filtered.length > 0) return filtered;
+    }
+    return ALL_STOCK_CATEGORIES;
+  }, [allowedCategories]);
 
   const isSingleBranchLocked = visibleBranches.length === 1;
 
@@ -118,7 +129,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
             <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-xl">
               {viewStep === 'branches'
                 ? 'Manage and maintain verified daily stock across 5 branches, factories, and storage depots.'
-                : 'Choose the inventory register (Battery, Charger, or Vehicle) to view closing balances and daily dispatches.'}
+                : `Showing ${visibleCategories.length} of ${ALL_STOCK_CATEGORIES.length} permitted stock register${visibleCategories.length === 1 ? '' : 's'} for ${selectedBranch.shortName}.`}
             </p>
           </div>
 
@@ -216,20 +227,24 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                   {/* Stock Highlights footer */}
                   <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 flex-wrap gap-2">
                     <div className="flex items-center gap-2.5 flex-wrap">
-                      <span className="flex items-center gap-1 text-slate-700 font-semibold">
-                        <BatteryCharging className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Battery</span>
-                      </span>
-                      <span className="text-slate-300">·</span>
-                      <span className="flex items-center gap-1 text-slate-700 font-semibold">
-                        <Zap className="w-3.5 h-3.5 text-amber-600" />
-                        <span>Charger</span>
-                      </span>
-                      <span className="text-slate-300">·</span>
-                      <span className="flex items-center gap-1 text-slate-700 font-semibold">
-                        <Car className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Vehicle</span>
-                      </span>
+                      {visibleCategories.includes('battery') && (
+                        <span className="flex items-center gap-1 text-slate-700 font-semibold">
+                          <BatteryCharging className="w-3.5 h-3.5 text-blue-600" />
+                          <span>Battery</span>
+                        </span>
+                      )}
+                      {visibleCategories.includes('charger') && (
+                        <span className="flex items-center gap-1 text-slate-700 font-semibold">
+                          <Zap className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Charger</span>
+                        </span>
+                      )}
+                      {visibleCategories.includes('vehicle') && (
+                        <span className="flex items-center gap-1 text-slate-700 font-semibold">
+                          <Car className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Vehicle</span>
+                        </span>
+                      )}
                     </div>
 
                     <span className="text-blue-600 font-bold group-hover:translate-x-0.5 transition-transform flex items-center gap-1">
@@ -264,8 +279,17 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div
+            className={`grid grid-cols-1 gap-5 ${
+              visibleCategories.length === 1
+                ? 'md:grid-cols-1 max-w-xl'
+                : visibleCategories.length === 2
+                ? 'md:grid-cols-2'
+                : 'md:grid-cols-3'
+            }`}
+          >
             {/* 1. BATTERY STOCK CARD (Opens our verified full register!) */}
+            {visibleCategories.includes('battery') && (
             <div
               onClick={() => onSelectBranchAndCategory(selectedBranch.id, 'battery')}
               className="group relative p-6 rounded-2xl border-2 border-slate-200 hover:border-blue-500 bg-white hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between"
@@ -309,8 +333,10 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                 </button>
               </div>
             </div>
+            )}
 
             {/* 2. CHARGER STOCK CARD */}
+            {visibleCategories.includes('charger') && (
             <div
               onClick={() => onSelectBranchAndCategory(selectedBranch.id, 'charger')}
               className="group relative p-6 rounded-2xl border-2 border-slate-200 hover:border-amber-500 bg-white hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between"
@@ -353,8 +379,10 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                 </button>
               </div>
             </div>
+            )}
 
             {/* 3. VEHICLE STOCK CARD */}
+            {visibleCategories.includes('vehicle') && (
             <div
               onClick={() => onSelectBranchAndCategory(selectedBranch.id, 'vehicle')}
               className="group relative p-6 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 bg-white hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between"
@@ -397,6 +425,7 @@ export const BranchCategoryPortal: React.FC<BranchCategoryPortalProps> = ({
                 </button>
               </div>
             </div>
+            )}
           </div>
         </div>
       )}

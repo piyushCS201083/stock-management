@@ -16,9 +16,11 @@ import type {
   BranchTransfer,
   BranchTransferItem,
   DayRecord,
+  StockCategoryId,
   TeamMember,
 } from '../src/types/stock.ts';
 import {
+  ALL_STOCK_CATEGORIES,
   BRANCHES,
   BRANCH_LOGIN_ACCOUNTS,
   DEFAULT_BATTERY_COLUMNS,
@@ -62,6 +64,12 @@ export interface BranchCredentialRecord {
   isCustomPassword: boolean;
   version: number;
   updatedAt: string;
+  role?: 'branch' | 'master';
+  branchId?: string | null;
+  allowedCategories?: StockCategoryId[];
+  label?: string;
+  isBuiltIn?: boolean;
+  deleted?: boolean;
 }
 
 interface DatabaseState {
@@ -2773,6 +2781,61 @@ function writeBranchCredentialsDiskFile(credsMap: Record<string, BranchCredentia
   return serialized;
 }
 
+function sanitizeAllowedCategories(
+  raw?: unknown,
+  fallbackAll = true
+): StockCategoryId[] {
+  if (!Array.isArray(raw)) {
+    return fallbackAll ? [...ALL_STOCK_CATEGORIES] : [];
+  }
+  const valid = new Set<StockCategoryId>();
+  for (const item of raw) {
+    if (item === 'battery' || item === 'charger' || item === 'vehicle') {
+      valid.add(item);
+    }
+  }
+  const list = ALL_STOCK_CATEGORIES.filter((cat) => valid.has(cat));
+  if (list.length === 0 && fallbackAll) {
+    return [...ALL_STOCK_CATEGORIES];
+  }
+  return list;
+}
+
+function resolveAccountMetaFromRecord(
+  loginId: string,
+  rec?: BranchCredentialRecord
+): BranchLoginAccountMeta | null {
+  if (rec?.deleted) return null;
+  const builtIn = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
+  if (builtIn) {
+    const allowedCategories =
+      builtIn.role === 'master'
+        ? [...ALL_STOCK_CATEGORIES]
+        : sanitizeAllowedCategories(rec?.allowedCategories, true);
+    return {
+      ...builtIn,
+      allowedCategories,
+      label: rec?.label || builtIn.label,
+      isBuiltIn: true,
+    };
+  }
+
+  if (!rec || !rec.branchId) return null;
+  const branch = BRANCHES.find((b) => b.id === rec.branchId);
+  if (!branch) return null;
+  const allowedCategories = sanitizeAllowedCategories(rec.allowedCategories, true);
+  return {
+    loginId,
+    role: 'branch',
+    branchId: branch.id,
+    allowedBranchIds: [branch.id],
+    allowedCategories,
+    label: rec.label || `${branch.name} (${loginId})`,
+    shortLabel: branch.shortName,
+    isBuiltIn: false,
+  };
+}
+
 function mergeCredentialMaps(
   base: Record<string, BranchCredentialRecord>,
   incoming?: Record<string, BranchCredentialRecord> | null
@@ -2781,7 +2844,8 @@ function mergeCredentialMaps(
   let changed = false;
   for (const [rawId, rec] of Object.entries(incoming)) {
     const loginId = rawId.trim().toLowerCase();
-    if (!rec || !rec.passwordHash || !rec.salt) continue;
+    const isTombstone = Boolean(rec?.deleted);
+    if (!rec || (!isTombstone && (!rec.passwordHash || !rec.salt))) continue;
     const existing = base[loginId];
     const recVer = Number(rec.version || 1);
     const existingVer = Number(existing?.version || 0);
@@ -2790,11 +2854,19 @@ function mergeCredentialMaps(
     if (!existing || recVer > existingVer || (recVer === existingVer && recTs > existingTs)) {
       base[loginId] = {
         loginId,
-        passwordHash: rec.passwordHash,
-        salt: rec.salt,
+        passwordHash: isTombstone ? '' : rec.passwordHash,
+        salt: isTombstone ? '' : rec.salt,
         isCustomPassword: Boolean(rec.isCustomPassword),
         version: recVer,
         updatedAt: rec.updatedAt || new Date().toISOString(),
+        ...(rec.role ? { role: rec.role } : {}),
+        ...(rec.branchId !== undefined ? { branchId: rec.branchId } : {}),
+        ...(Array.isArray(rec.allowedCategories)
+          ? { allowedCategories: sanitizeAllowedCategories(rec.allowedCategories, !isTombstone) }
+          : {}),
+        ...(rec.label ? { label: rec.label } : {}),
+        ...(rec.isBuiltIn !== undefined ? { isBuiltIn: Boolean(rec.isBuiltIn) } : {}),
+        ...(isTombstone ? { deleted: true } : {}),
       };
       changed = true;
     }
@@ -2847,20 +2919,25 @@ async function ensureBranchCredentialsMap(): Promise<Record<string, BranchCreden
     }
   }
 
-  // 4. Bootstrap any missing account slots with hashed initial passcode (never plaintext on disk)
+  // 4. Bootstrap any missing built-in account slots with hashed initial passcode (never plaintext on disk)
   const initialPasscode = cleanEnvValue(process.env.DEFAULT_BRANCH_PASSCODE) || '1234';
   const now = new Date().toISOString();
   let bootstrapped = false;
   for (const acct of BRANCH_LOGIN_ACCOUNTS) {
-    if (!merged[acct.loginId]) {
+    if (!merged[acct.loginId] || merged[acct.loginId].deleted) {
       const salt = crypto.randomBytes(16).toString('hex');
       merged[acct.loginId] = {
         loginId: acct.loginId,
         passwordHash: hashPasswordWithScrypt(initialPasscode, salt),
         salt,
         isCustomPassword: false,
-        version: 1,
+        version: (merged[acct.loginId]?.version || 0) + 1,
         updatedAt: now,
+        role: acct.role,
+        branchId: acct.branchId,
+        allowedCategories: [...acct.allowedCategories],
+        label: acct.label,
+        isBuiltIn: true,
       };
       bootstrapped = true;
     }
@@ -2948,6 +3025,25 @@ export async function getBranchCredentialVersion(loginId: string): Promise<numbe
   return map[normalized]?.version || 1;
 }
 
+export async function getBranchCredentialMeta(loginId: string): Promise<{
+  active: boolean;
+  version: number;
+  account: BranchLoginAccountMeta | null;
+}> {
+  const normalized = loginId.trim().toLowerCase();
+  const map = await ensureBranchCredentialsMap();
+  const rec = map[normalized];
+  if (!rec || rec.deleted) {
+    return { active: false, version: rec?.version || 1, account: null };
+  }
+  const account = resolveAccountMetaFromRecord(normalized, rec);
+  return {
+    active: Boolean(account),
+    version: rec.version || 1,
+    account,
+  };
+}
+
 export async function verifyBranchLoginPassword(
   rawLoginId: string,
   password: string
@@ -2957,14 +3053,18 @@ export async function verifyBranchLoginPassword(
   version?: number;
 }> {
   const loginId = typeof rawLoginId === 'string' ? rawLoginId.trim().toLowerCase() : '';
-  const account = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
-  if (!account || typeof password !== 'string' || !password) {
+  if (!loginId || typeof password !== 'string' || !password) {
     return { valid: false };
   }
 
   const map = await ensureBranchCredentialsMap();
   const rec = map[loginId];
-  if (!rec?.passwordHash || !rec?.salt) {
+  if (!rec || rec.deleted || !rec.passwordHash || !rec.salt) {
+    return { valid: false };
+  }
+
+  const account = resolveAccountMetaFromRecord(loginId, rec);
+  if (!account) {
     return { valid: false };
   }
 
@@ -2981,22 +3081,54 @@ export async function getBranchCredentialsSummary(): Promise<{
   githubStatus: ReturnType<typeof getGitHubSyncStatus>;
 }> {
   const map = await ensureBranchCredentialsMap();
-  const credentials: BranchCredentialSummary[] = BRANCH_LOGIN_ACCOUNTS.map((acct) => {
+  const builtInIds = new Set(BRANCH_LOGIN_ACCOUNTS.map((a) => a.loginId));
+  const credentials: BranchCredentialSummary[] = [];
+
+  for (const acct of BRANCH_LOGIN_ACCOUNTS) {
     const rec = map[acct.loginId];
-    return {
-      loginId: acct.loginId,
-      role: acct.role,
-      branchId: acct.branchId,
-      allowedBranchIds: acct.allowedBranchIds,
-      label: acct.label,
+    const resolved = resolveAccountMetaFromRecord(acct.loginId, rec) || acct;
+    credentials.push({
+      loginId: resolved.loginId,
+      role: resolved.role,
+      branchId: resolved.branchId,
+      allowedBranchIds: resolved.allowedBranchIds,
+      allowedCategories: resolved.allowedCategories,
+      label: resolved.label,
+      isBuiltIn: true,
       isCustomPassword: Boolean(rec?.isCustomPassword),
       version: rec?.version || 1,
       updatedAt: rec?.updatedAt || new Date().toISOString(),
-    };
+    });
+  }
+
+  const customSummaries: BranchCredentialSummary[] = [];
+  for (const [id, rec] of Object.entries(map)) {
+    if (builtInIds.has(id) || rec.deleted) continue;
+    const resolved = resolveAccountMetaFromRecord(id, rec);
+    if (!resolved) continue;
+    customSummaries.push({
+      loginId: resolved.loginId,
+      role: resolved.role,
+      branchId: resolved.branchId,
+      allowedBranchIds: resolved.allowedBranchIds,
+      allowedCategories: resolved.allowedCategories,
+      label: resolved.label,
+      isBuiltIn: false,
+      isCustomPassword: Boolean(rec.isCustomPassword),
+      version: rec.version || 1,
+      updatedAt: rec.updatedAt || new Date().toISOString(),
+    });
+  }
+
+  customSummaries.sort((a, b) => {
+    const numA = BRANCHES.find((br) => br.id === a.branchId)?.number || 99;
+    const numB = BRANCHES.find((br) => br.id === b.branchId)?.number || 99;
+    if (numA !== numB) return numA - numB;
+    return a.loginId.localeCompare(b.loginId);
   });
 
   return {
-    credentials,
+    credentials: [...credentials, ...customSummaries],
     githubStatus: getGitHubSyncStatus(),
   };
 }
@@ -3009,16 +3141,16 @@ export async function updateBranchLoginPassword(
   githubSync: GitHubCommitResult;
 }> {
   const loginId = typeof rawLoginId === 'string' ? rawLoginId.trim().toLowerCase() : '';
-  const account = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
-  if (!account) {
+  const map = { ...(await ensureBranchCredentialsMap()) };
+  const prev = map[loginId];
+  const account = resolveAccountMetaFromRecord(loginId, prev);
+  if (!account || prev?.deleted) {
     throw new Error('Unknown branch or master login ID');
   }
   if (typeof newPassword !== 'string' || newPassword.length < 4) {
     throw new Error('Password must be at least 4 characters long');
   }
 
-  const map = { ...(await ensureBranchCredentialsMap()) };
-  const prev = map[loginId];
   const nextVersion = (prev?.version || 1) + 1;
   const now = new Date().toISOString();
   const salt = crypto.randomBytes(16).toString('hex');
@@ -3030,6 +3162,11 @@ export async function updateBranchLoginPassword(
     isCustomPassword: true,
     version: nextVersion,
     updatedAt: now,
+    role: account.role,
+    branchId: account.branchId,
+    allowedCategories: [...account.allowedCategories],
+    label: account.label,
+    isBuiltIn: Boolean(account.isBuiltIn),
   };
 
   const githubSync = await persistBranchCredentialsMap(
@@ -3051,7 +3188,9 @@ export async function updateBranchLoginPassword(
       role: account.role,
       branchId: account.branchId,
       allowedBranchIds: account.allowedBranchIds,
+      allowedCategories: [...account.allowedCategories],
       label: account.label,
+      isBuiltIn: Boolean(account.isBuiltIn),
       isCustomPassword: true,
       version: nextVersion,
       updatedAt: now,
@@ -3077,15 +3216,15 @@ export async function bulkUpdateBranchLoginPasswords(
 
   for (const item of updates) {
     const loginId = typeof item?.loginId === 'string' ? item.loginId.trim().toLowerCase() : '';
-    const account = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
-    if (!account) {
+    const prev = map[loginId];
+    const account = resolveAccountMetaFromRecord(loginId, prev);
+    if (!account || prev?.deleted) {
       throw new Error(`Unknown login ID: ${item?.loginId}`);
     }
     if (typeof item?.newPassword !== 'string' || item.newPassword.length < 4) {
       throw new Error(`Password for ${loginId} must be at least 4 characters long`);
     }
 
-    const prev = map[loginId];
     const nextVersion = (prev?.version || 1) + 1;
     const salt = crypto.randomBytes(16).toString('hex');
     map[loginId] = {
@@ -3095,6 +3234,11 @@ export async function bulkUpdateBranchLoginPasswords(
       isCustomPassword: true,
       version: nextVersion,
       updatedAt: now,
+      role: account.role,
+      branchId: account.branchId,
+      allowedCategories: [...account.allowedCategories],
+      label: account.label,
+      isBuiltIn: Boolean(account.isBuiltIn),
     };
     updatedIds.push(loginId);
   }
@@ -3116,6 +3260,218 @@ export async function bulkUpdateBranchLoginPasswords(
     credentials,
     githubSync,
   };
+}
+
+export async function createBranchLoginUser(input: {
+  loginId: string;
+  branchId: string;
+  label?: string;
+  password: string;
+  allowedCategories: StockCategoryId[];
+}): Promise<{
+  summary: BranchCredentialSummary;
+  githubSync: GitHubCommitResult;
+}> {
+  const loginId = typeof input?.loginId === 'string' ? input.loginId.trim().toLowerCase() : '';
+  if (!/^[a-z0-9][a-z0-9._-]{1,39}$/.test(loginId)) {
+    throw new Error('Login ID must be 2–40 characters (letters, numbers, dot, underscore, or hyphen).');
+  }
+
+  const branch = BRANCHES.find((b) => b.id === input?.branchId);
+  if (!branch) {
+    throw new Error('Please select a valid branch.');
+  }
+
+  if (typeof input?.password !== 'string' || input.password.length < 4) {
+    throw new Error('Password must be at least 4 characters long.');
+  }
+
+  const allowedCategories = sanitizeAllowedCategories(input?.allowedCategories, false);
+  if (allowedCategories.length === 0) {
+    throw new Error('Select at least one stock category permission (Battery, Charger, or Vehicle).');
+  }
+
+  const map = { ...(await ensureBranchCredentialsMap()) };
+  const builtIn = BRANCH_LOGIN_ACCOUNTS.find((a) => a.loginId === loginId);
+  if (builtIn) {
+    throw new Error(`"${loginId}" is a built-in system ID. Choose another Login ID.`);
+  }
+
+  const existing = map[loginId];
+  if (existing && !existing.deleted) {
+    throw new Error(`Login ID "${loginId}" already exists.`);
+  }
+
+  const now = new Date().toISOString();
+  const nextVersion = (existing?.version || 0) + 1;
+  const salt = crypto.randomBytes(16).toString('hex');
+  const cleanLabel =
+    typeof input.label === 'string' && input.label.trim()
+      ? `${branch.shortName} — ${input.label.trim().slice(0, 60)}`
+      : `${branch.name} (${loginId})`;
+
+  map[loginId] = {
+    loginId,
+    passwordHash: hashPasswordWithScrypt(input.password, salt),
+    salt,
+    isCustomPassword: true,
+    version: nextVersion,
+    updatedAt: now,
+    role: 'branch',
+    branchId: branch.id,
+    allowedCategories,
+    label: cleanLabel,
+    isBuiltIn: false,
+  };
+
+  const githubSync = await persistBranchCredentialsMap(
+    map,
+    `security: create branch user ${loginId} for ${branch.id}`
+  );
+
+  await logAudit('ADMIN_BRANCH_USER_CREATED', {
+    loginId,
+    branchId: branch.id,
+    allowedCategories,
+    label: cleanLabel,
+    githubSynced: githubSync.synced,
+    timestamp: now,
+  });
+
+  return {
+    summary: {
+      loginId,
+      role: 'branch',
+      branchId: branch.id,
+      allowedBranchIds: [branch.id],
+      allowedCategories,
+      label: cleanLabel,
+      isBuiltIn: false,
+      isCustomPassword: true,
+      version: nextVersion,
+      updatedAt: now,
+    },
+    githubSync,
+  };
+}
+
+export async function updateBranchUserPermissions(input: {
+  loginId: string;
+  allowedCategories: StockCategoryId[];
+  label?: string;
+}): Promise<{
+  summary: BranchCredentialSummary;
+  githubSync: GitHubCommitResult;
+}> {
+  const loginId = typeof input?.loginId === 'string' ? input.loginId.trim().toLowerCase() : '';
+  const map = { ...(await ensureBranchCredentialsMap()) };
+  const prev = map[loginId];
+  const account = resolveAccountMetaFromRecord(loginId, prev);
+  if (!account || prev?.deleted) {
+    throw new Error('Unknown branch or master login ID');
+  }
+
+  if (account.role === 'master') {
+    throw new Error('Master administrator account always retains access to all stock categories.');
+  }
+
+  const allowedCategories = sanitizeAllowedCategories(input?.allowedCategories, false);
+  if (allowedCategories.length === 0) {
+    throw new Error('At least one stock category permission must remain enabled.');
+  }
+
+  const now = new Date().toISOString();
+  const nextVersion = (prev?.version || 1) + 1;
+  const updatedLabel =
+    typeof input.label === 'string' && input.label.trim()
+      ? input.label.trim().slice(0, 80)
+      : account.label;
+
+  map[loginId] = {
+    ...prev,
+    loginId,
+    version: nextVersion,
+    updatedAt: now,
+    role: account.role,
+    branchId: account.branchId,
+    allowedCategories,
+    label: updatedLabel,
+    isBuiltIn: Boolean(account.isBuiltIn),
+  };
+
+  const githubSync = await persistBranchCredentialsMap(
+    map,
+    `security: update stock permissions for ${loginId} [${allowedCategories.join(', ')}]`
+  );
+
+  await logAudit('ADMIN_BRANCH_USER_PERMISSIONS_UPDATED', {
+    loginId,
+    allowedCategories,
+    label: updatedLabel,
+    version: nextVersion,
+    githubSynced: githubSync.synced,
+    timestamp: now,
+  });
+
+  return {
+    summary: {
+      loginId: account.loginId,
+      role: account.role,
+      branchId: account.branchId,
+      allowedBranchIds: account.allowedBranchIds,
+      allowedCategories,
+      label: updatedLabel,
+      isBuiltIn: Boolean(account.isBuiltIn),
+      isCustomPassword: Boolean(prev.isCustomPassword),
+      version: nextVersion,
+      updatedAt: now,
+    },
+    githubSync,
+  };
+}
+
+export async function deleteBranchLoginUser(rawLoginId: string): Promise<{
+  deletedLoginId: string;
+  githubSync: GitHubCommitResult;
+}> {
+  const loginId = typeof rawLoginId === 'string' ? rawLoginId.trim().toLowerCase() : '';
+  if (BRANCH_LOGIN_ACCOUNTS.some((a) => a.loginId === loginId)) {
+    throw new Error(`Built-in login "${loginId}" cannot be deleted.`);
+  }
+
+  const map = { ...(await ensureBranchCredentialsMap()) };
+  const prev = map[loginId];
+  if (!prev || prev.deleted) {
+    throw new Error(`User "${loginId}" does not exist.`);
+  }
+
+  const now = new Date().toISOString();
+  const nextVersion = (prev.version || 1) + 1;
+  map[loginId] = {
+    loginId,
+    passwordHash: '',
+    salt: '',
+    isCustomPassword: false,
+    version: nextVersion,
+    updatedAt: now,
+    branchId: prev.branchId,
+    isBuiltIn: false,
+    deleted: true,
+  };
+
+  const githubSync = await persistBranchCredentialsMap(
+    map,
+    `security: remove custom branch user ${loginId}`
+  );
+
+  await logAudit('ADMIN_BRANCH_USER_DELETED', {
+    loginId,
+    branchId: prev.branchId,
+    githubSynced: githubSync.synced,
+    timestamp: now,
+  });
+
+  return { deletedLoginId: loginId, githubSync };
 }
 
 // =========================================================================

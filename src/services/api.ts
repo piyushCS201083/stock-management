@@ -6,6 +6,7 @@ import {
   BranchTransfer,
   DayRecord,
   DEFAULT_BRANCH_ID,
+  StockCategoryId,
   TeamMember,
   getBatteryRecordKey,
 } from '../types/stock';
@@ -285,6 +286,15 @@ export async function apiFetchRecordsWithMeta(
       headers: buildBranchHeaders(),
     });
     handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return {
+        records: {},
+        resetEpoch: localEpoch || undefined,
+        resetDateIST: localResetDate || undefined,
+        epochResetTriggered: false,
+        fromRemote: true,
+      };
+    }
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -647,6 +657,9 @@ export async function apiFetchSerials(
       headers: buildBranchHeaders(),
     });
     handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return {};
+    }
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -1507,6 +1520,102 @@ export async function apiBulkUpdateBranchPasswords(
   }
 }
 
+export async function apiCreateBranchUser(
+  payload: {
+    loginId: string;
+    branchId: string;
+    label?: string;
+    password: string;
+    allowedCategories: StockCategoryId[];
+  },
+  adminToken: string
+): Promise<{
+  success: boolean;
+  credential?: BranchCredentialSummary;
+  githubSync?: GitHubCommitOutcome;
+  unauthorized?: boolean;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/branch-credentials/create`, {
+      method: 'POST',
+      headers: buildAdminHeaders(adminToken, true),
+      body: JSON.stringify(payload),
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: parsed?.error || 'Session expired' };
+    }
+    if (parsed) return parsed;
+    return { success: false, error: `Create user failed (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Create user failed' };
+  }
+}
+
+export async function apiUpdateBranchUserPermissions(
+  payload: {
+    loginId: string;
+    allowedCategories: StockCategoryId[];
+    label?: string;
+  },
+  adminToken: string
+): Promise<{
+  success: boolean;
+  credential?: BranchCredentialSummary;
+  githubSync?: GitHubCommitOutcome;
+  unauthorized?: boolean;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/admin/branch-credentials/permissions`, {
+      method: 'POST',
+      headers: buildAdminHeaders(adminToken, true),
+      body: JSON.stringify(payload),
+    });
+    const parsed = await safeParseJsonResponse(res);
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: parsed?.error || 'Session expired' };
+    }
+    if (parsed) return parsed;
+    return { success: false, error: `Permission update failed (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Permission update failed' };
+  }
+}
+
+export async function apiDeleteBranchUser(
+  loginId: string,
+  adminToken: string
+): Promise<{
+  success: boolean;
+  deletedLoginId?: string;
+  githubSync?: GitHubCommitOutcome;
+  unauthorized?: boolean;
+  error?: string;
+}> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(
+      `${base}/api/admin/branch-credentials/${encodeURIComponent(loginId)}`,
+      {
+        method: 'DELETE',
+        headers: buildAdminHeaders(adminToken),
+      }
+    );
+    const parsed = await safeParseJsonResponse(res);
+    if (res.status === 401) {
+      return { success: false, unauthorized: true, error: parsed?.error || 'Session expired' };
+    }
+    if (parsed) return parsed;
+    return { success: false, error: `Delete user failed (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Delete user failed' };
+  }
+}
+
 const STORAGE_KEY_CHARGERS = 'charger_stock_records_v1';
 
 export function loadLocalChargers(): Record<string, any> {
@@ -1531,6 +1640,9 @@ export async function apiFetchChargers(): Promise<Record<string, any>> {
       headers: buildBranchHeaders(),
     });
     handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return {};
+    }
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -1602,6 +1714,9 @@ export async function apiFetchVehicles(): Promise<Record<string, any>> {
       headers: buildBranchHeaders(),
     });
     handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return {};
+    }
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -1677,6 +1792,9 @@ export async function apiFetchTransfers(): Promise<BranchTransfer[]> {
       headers: buildBranchHeaders(),
     });
     handleMaybeUnauthorized(res);
+    if (res.status === 403) {
+      return [];
+    }
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  ALL_STOCK_CATEGORIES,
   BatteryColumn,
   DEFAULT_VEHICLE_COLUMNS,
   BranchInfo,
@@ -40,6 +41,8 @@ interface VehicleStockViewProps {
   remoteVehicleRecords?: Record<string, any>;
   onSaveVehicleRecord?: (branchId: string, date: string, record: Record<string, any>) => void;
   isCloudDbConnected?: boolean;
+  allowedCategories?: StockCategoryId[];
+  canSwitchBranch?: boolean;
 }
 
 export const VehicleStockView: React.FC<VehicleStockViewProps> = ({
@@ -50,6 +53,8 @@ export const VehicleStockView: React.FC<VehicleStockViewProps> = ({
   remoteVehicleRecords,
   onSaveVehicleRecord,
   isCloudDbConnected = false,
+  allowedCategories = ALL_STOCK_CATEGORIES,
+  canSwitchBranch = true,
 }) => {
   const [columns, setColumns] = useState<BatteryColumn[]>(DEFAULT_VEHICLE_COLUMNS);
   const [newModelName, setNewModelName] = useState('');
@@ -244,25 +249,29 @@ export const VehicleStockView: React.FC<VehicleStockViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => onSwitchStockCategory('battery')}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer shadow-xs"
-          >
-            <span>Battery Stock</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => onSwitchStockCategory('charger')}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors cursor-pointer shadow-xs"
-          >
-            <span>Charger Stock</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+          {allowedCategories.includes('battery') && (
+            <button
+              onClick={() => onSwitchStockCategory('battery')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer shadow-xs"
+            >
+              <span>Battery Stock</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {allowedCategories.includes('charger') && (
+            <button
+              onClick={() => onSwitchStockCategory('charger')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors cursor-pointer shadow-xs"
+            >
+              <span>Charger Stock</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             onClick={onOpenBranchPortal}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition-colors cursor-pointer"
           >
-            <span>Change Branch (1-5)</span>
+            <span>{canSwitchBranch ? 'Change Branch (1-5)' : 'Branch Categories'}</span>
           </button>
           <button
             onClick={handleShareWhatsApp}

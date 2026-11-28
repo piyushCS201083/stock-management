@@ -113,11 +113,15 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [scannerTarget, setScannerTarget] = useState<'primary' | 'both_in'>('primary');
   const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
   const [lastScannedSerial, setLastScannedSerial] = useState<string | null>(null);
+  const [validationAttempted, setValidationAttempted] = useState<boolean>(false);
+  const serialInputRef = React.useRef<HTMLInputElement>(null);
+  const batchInputRef = React.useRef<HTMLInputElement>(null);
 
   const otherBranches = BRANCHES.filter((b) => b.id !== activeBranch.id);
 
   useEffect(() => {
     if (isOpen) {
+      setValidationAttempted(false);
       if (initialEntryType === 'transfer') {
         setEntryType('out');
         setTargetBranchId((prev) => prev || otherBranches[0]?.id || '');
@@ -298,6 +302,20 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   };
 
   const handleSave = async (andSendWhatsApp = false) => {
+    if (entryType !== 'both') {
+      const missingSerial = buildSerialList(serialInput).length === 0;
+      const missingBatch = !batchNo.trim();
+      if (missingSerial || missingBatch) {
+        setValidationAttempted(true);
+        if (missingSerial) {
+          serialInputRef.current?.focus();
+        } else {
+          batchInputRef.current?.focus();
+        }
+        return;
+      }
+    }
+
     const updated: DayRecord = {
       ...record,
       branchId: activeBranch.id,
@@ -590,6 +608,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     setBatchNo('');
     setTargetBranchId('');
     setExtraOutItems([]);
+    setValidationAttempted(false);
   };
 
   const selectedCol = resolveModel(selectedColId);
@@ -1367,8 +1386,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                   <div className="sm:col-span-2">
                     <div className="flex items-center justify-between mb-1">
                       <label className="block text-[11px] font-semibold text-slate-700">
-                        Serial Number(s){' '}
-                        <span className="text-slate-400 font-normal">(comma or enter separated)</span>:
+                        Serial Number(s) <span className="text-rose-600 font-bold">*</span>{' '}
+                        <span className="text-slate-400 font-normal">(required · comma or enter separated)</span>:
                       </label>
                       {serialInput.trim() && (
                         <button
@@ -1382,11 +1401,18 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     </div>
                     <div className="relative flex items-center">
                       <input
+                        ref={serialInputRef}
                         type="text"
-                        placeholder="e.g. 6024-FLAT-001 (or click Camera to scan)"
+                        required
+                        aria-required="true"
+                        placeholder="Required: e.g. 6024-FLAT-001 (or click Camera to scan)"
                         value={serialInput}
                         onChange={(e) => setSerialInput(e.target.value)}
-                        className="w-full pl-2.5 pr-24 py-2 text-xs font-mono font-medium border border-blue-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                        className={`w-full pl-2.5 pr-24 py-2 text-xs font-mono font-medium border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs ${
+                          validationAttempted && buildSerialList(serialInput).length === 0
+                            ? 'border-rose-500 ring-2 ring-rose-500/20 focus:ring-rose-500'
+                            : 'border-blue-300 focus:ring-blue-500'
+                        }`}
                       />
                       <button
                         type="button"
@@ -1401,19 +1427,36 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                         <span>Scan</span>
                       </button>
                     </div>
+                    {validationAttempted && buildSerialList(serialInput).length === 0 && (
+                      <p className="mt-1 text-[11px] font-semibold text-rose-600">
+                        Serial Number(s) is mandatory.
+                      </p>
+                    )}
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      Batch (Battery Model):
+                      Batch (Battery Model) <span className="text-rose-600 font-bold">*</span>:
                     </label>
                     <input
+                      ref={batchInputRef}
                       type="text"
-                      placeholder={selectedCol?.name || 'e.g. 60×24 FLAT'}
+                      required
+                      aria-required="true"
+                      placeholder={`Required: ${selectedCol?.name || 'e.g. 60×24 FLAT'}`}
                       value={batchNo}
                       onChange={(e) => setBatchNo(e.target.value)}
-                      className="w-full px-2.5 py-2 text-xs font-mono border border-blue-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                      className={`w-full px-2.5 py-2 text-xs font-mono border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs ${
+                        validationAttempted && !batchNo.trim()
+                          ? 'border-rose-500 ring-2 ring-rose-500/20 focus:ring-rose-500'
+                          : 'border-blue-300 focus:ring-blue-500'
+                      }`}
                     />
+                    {validationAttempted && !batchNo.trim() && (
+                      <p className="mt-1 text-[11px] font-semibold text-rose-600">
+                        Batch (Battery Model) is mandatory.
+                      </p>
+                    )}
                   </div>
                 </div>
 

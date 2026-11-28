@@ -50,14 +50,19 @@ import {
   getBackendAnalyticsSnapshot,
   verifyBranchLoginPassword,
   getBranchCredentialsSummary,
-  getBranchCredentialVersion,
+  getBranchCredentialMeta,
   updateBranchLoginPassword,
   bulkUpdateBranchLoginPasswords,
+  createBranchLoginUser,
+  updateBranchUserPermissions,
+  deleteBranchLoginUser,
 } from './server/db.ts';
 import {
+  ALL_STOCK_CATEGORIES,
   BRANCHES,
   DEFAULT_BRANCH_ID,
   parseBatteryRecordKey,
+  type StockCategoryId,
 } from './src/types/stock.ts';
 import {
   getCloudinaryStatus,
@@ -177,6 +182,7 @@ interface BranchTokenClaims {
   role: 'branch' | 'master';
   branchId: string | null;
   allowedBranchIds: string[];
+  allowedCategories?: StockCategoryId[];
   label: string;
   credVersion: number;
   iat: number;
@@ -188,6 +194,7 @@ export interface BranchAccessContext {
   role: 'branch' | 'master';
   branchId: string | null;
   allowedBranchIds: string[];
+  allowedCategories: StockCategoryId[];
   label: string;
 }
 
@@ -238,11 +245,21 @@ async function verifyBranchTokenAsync(token?: string): Promise<BranchTokenClaims
     if (claims.jti && revokedBranchJtis.has(claims.jti)) {
       return null;
     }
-    const currentVer = await getBranchCredentialVersion(claims.loginId);
-    if (Number(claims.credVersion || 0) < currentVer) {
+    const meta = await getBranchCredentialMeta(claims.loginId);
+    if (!meta.active || !meta.account) {
       return null;
     }
-    return claims;
+    if (Number(claims.credVersion || 0) < meta.version) {
+      return null;
+    }
+    return {
+      ...claims,
+      role: meta.account.role,
+      branchId: meta.account.branchId,
+      allowedBranchIds: meta.account.allowedBranchIds,
+      allowedCategories: meta.account.allowedCategories,
+      label: meta.account.label,
+    };
   } catch {
     return null;
   }
@@ -257,6 +274,7 @@ async function resolveBranchAccessFromToken(token?: string): Promise<BranchAcces
       role: branchClaims.role,
       branchId: branchClaims.branchId,
       allowedBranchIds: branchClaims.allowedBranchIds,
+      allowedCategories: branchClaims.allowedCategories || [...ALL_STOCK_CATEGORIES],
       label: branchClaims.label,
     };
   }
@@ -267,6 +285,7 @@ async function resolveBranchAccessFromToken(token?: string): Promise<BranchAcces
       role: 'master',
       branchId: null,
       allowedBranchIds: BRANCHES.map((b) => b.id),
+      allowedCategories: [...ALL_STOCK_CATEGORIES],
       label: adminClaims.sub || 'Admin Master',
     };
   }
@@ -298,18 +317,63 @@ function isBranchAllowed(access: BranchAccessContext | undefined, branchId?: str
   return access.allowedBranchIds.includes(target);
 }
 
+function isCategoryAllowed(access: BranchAccessContext | undefined, category?: StockCategoryId | string | null): boolean {
+  if (!access) return false;
+  if (access.role === 'master') return true;
+  const target: StockCategoryId =
+    category === 'charger' || category === 'vehicle' ? category : 'battery';
+  return (access.allowedCategories || ALL_STOCK_CATEGORIES).includes(target);
+}
+
+function requireBranchCategory(category: StockCategoryId) {
+  return (
+    req: express.Request & { branchAccess?: BranchAccessContext },
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    if (!isCategoryAllowed(req.branchAccess, category)) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied: your account does not have permission for ${category} stock.`,
+      });
+    }
+    next();
+  };
+}
+
 // Real-Time Server-Sent Events (SSE) Hub
 interface RealtimeClient {
   id: string;
   res: express.Response;
   allowedBranchIds: string[];
+  allowedCategories: StockCategoryId[];
 }
 const realtimeClients: RealtimeClient[] = [];
 
+function getEventCategory(event: string): StockCategoryId | null {
+  if (
+    event === 'RECORD_UPDATED' ||
+    event === 'RECORD_DELETED' ||
+    event === 'COLUMNS_UPDATED' ||
+    event === 'SERIAL_UPDATED' ||
+    event === 'SERIALS_BULK_UPDATED' ||
+    event === 'SERIAL_DELETED'
+  ) {
+    return 'battery';
+  }
+  if (event === 'CHARGER_UPDATED') return 'charger';
+  if (event === 'VEHICLE_UPDATED') return 'vehicle';
+  return null;
+}
+
 function broadcastRealtime(event: string, payload: any, targetBranchIds?: string[]) {
   const timestamp = new Date().toISOString();
+  const eventCategory = getEventCategory(event);
   for (let i = realtimeClients.length - 1; i >= 0; i--) {
     const client = realtimeClients[i];
+    if (eventCategory && !client.allowedCategories.includes(eventCategory)) {
+      continue;
+    }
     if (
       targetBranchIds &&
       targetBranchIds.length > 0 &&
@@ -322,8 +386,11 @@ function broadcastRealtime(event: string, payload: any, targetBranchIds?: string
     if (event === 'TRANSFERS_UPDATED' && Array.isArray(payload)) {
       scopedPayload = payload.filter(
         (t: any) =>
-          client.allowedBranchIds.includes(t?.fromBranchId) ||
-          client.allowedBranchIds.includes(t?.toBranchId)
+          (client.allowedBranchIds.includes(t?.fromBranchId) ||
+            client.allowedBranchIds.includes(t?.toBranchId)) &&
+          client.allowedCategories.includes(
+            t?.category === 'charger' || t?.category === 'vehicle' ? t.category : 'battery'
+          )
       );
     } else if (event === 'SERIALS_BULK_UPDATED' && Array.isArray(payload)) {
       scopedPayload = payload.filter((s: any) =>
@@ -402,6 +469,7 @@ app.get('/api/realtime', async (req, res) => {
     id: clientId,
     res,
     allowedBranchIds: access.allowedBranchIds,
+    allowedCategories: access.allowedCategories,
   };
   realtimeClients.push(client);
 
@@ -659,6 +727,7 @@ app.post('/api/auth/branch-login', async (req, res) => {
       role: result.account.role,
       branchId: result.account.branchId,
       allowedBranchIds: result.account.allowedBranchIds,
+      allowedCategories: result.account.allowedCategories,
       label: result.account.label,
       credVersion: result.version || 1,
     });
@@ -667,6 +736,7 @@ app.post('/api/auth/branch-login', async (req, res) => {
       loginId: result.account.loginId,
       role: result.account.role,
       branchId: result.account.branchId,
+      allowedCategories: result.account.allowedCategories,
       timestamp: new Date().toISOString(),
     });
 
@@ -678,6 +748,7 @@ app.post('/api/auth/branch-login', async (req, res) => {
         role: result.account.role,
         branchId: result.account.branchId,
         allowedBranchIds: result.account.allowedBranchIds,
+        allowedCategories: result.account.allowedCategories,
         label: result.account.label,
         expiresAt: new Date(exp).toISOString(),
       },
@@ -702,6 +773,7 @@ app.get('/api/auth/branch-session', async (req, res) => {
         role: claims.role,
         branchId: claims.branchId,
         allowedBranchIds: claims.allowedBranchIds,
+        allowedCategories: claims.allowedCategories || [...ALL_STOCK_CATEGORIES],
         label: claims.label,
         expiresAt: new Date(claims.exp).toISOString(),
       },
@@ -740,6 +812,7 @@ app.post('/api/admin/branch-credentials/update', requireAdmin, async (req, res) 
     broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
       loginId: result.summary.loginId,
       version: result.summary.version,
+      reason: 'password',
     });
     res.json({
       success: true,
@@ -760,6 +833,7 @@ app.post('/api/admin/branch-credentials/bulk-update', requireAdmin, async (req, 
       broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
         loginId: id,
         version: summary?.version || 1,
+        reason: 'password',
       });
     });
     res.json({
@@ -771,8 +845,73 @@ app.post('/api/admin/branch-credentials/bulk-update', requireAdmin, async (req, 
   }
 });
 
-// Stock Records CRUD (Branch-Scoped)
-app.get('/api/records', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/admin/branch-credentials/create', requireAdmin, async (req, res) => {
+  try {
+    const { loginId, branchId, label, password, allowedCategories } = req.body || {};
+    const result = await createBranchLoginUser({
+      loginId,
+      branchId,
+      label,
+      password,
+      allowedCategories,
+    });
+    broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
+      loginId: result.summary.loginId,
+      version: result.summary.version,
+      reason: 'created',
+    });
+    res.json({
+      success: true,
+      credential: result.summary,
+      githubSync: result.githubSync,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/branch-credentials/permissions', requireAdmin, async (req, res) => {
+  try {
+    const { loginId, allowedCategories, label } = req.body || {};
+    const result = await updateBranchUserPermissions({
+      loginId,
+      allowedCategories,
+      label,
+    });
+    broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
+      loginId: result.summary.loginId,
+      version: result.summary.version,
+      reason: 'permissions',
+    });
+    res.json({
+      success: true,
+      credential: result.summary,
+      githubSync: result.githubSync,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/admin/branch-credentials/:loginId', requireAdmin, async (req, res) => {
+  try {
+    const result = await deleteBranchLoginUser(req.params.loginId);
+    broadcastRealtime('BRANCH_CREDENTIALS_UPDATED', {
+      loginId: req.params.loginId.trim().toLowerCase(),
+      version: 999999,
+      reason: 'deleted',
+    });
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Stock Records CRUD (Branch-Scoped & Category-Scoped)
+app.get('/api/records', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const records = await getAllRecords();
     const scoped: Record<string, any> = {};
@@ -793,7 +932,7 @@ app.get('/api/records', requireBranchAccess, async (req: express.Request & { bra
   }
 });
 
-app.get('/api/records/:date', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.get('/api/records/:date', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const requestedBranch = parseBatteryRecordKey(req.params.date).branchId;
     if (!isBranchAllowed(req.branchAccess, requestedBranch)) {
@@ -809,7 +948,7 @@ app.get('/api/records/:date', requireBranchAccess, async (req: express.Request &
   }
 });
 
-app.post('/api/records', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/records', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const record = req.body;
     if (!record || !record.date) {
@@ -834,7 +973,7 @@ app.post('/api/records', requireBranchAccess, async (req: express.Request & { br
   }
 });
 
-app.delete('/api/records/:date', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.delete('/api/records/:date', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const targetBranch = parseBatteryRecordKey(req.params.date).branchId;
     if (!isBranchAllowed(req.branchAccess, targetBranch)) {
@@ -860,7 +999,7 @@ app.get('/api/columns', requireBranchAccess, async (req, res) => {
   }
 });
 
-app.post('/api/columns', requireBranchAccess, async (req, res) => {
+app.post('/api/columns', requireBranchAccess, requireBranchCategory('battery'), async (req, res) => {
   try {
     const columns = req.body;
     if (!Array.isArray(columns)) {
@@ -910,8 +1049,8 @@ app.post('/api/team', requireBranchAccess, async (req, res) => {
   }
 });
 
-// Battery Serial & Batch Tracker Routes (Branch-Scoped)
-app.get('/api/serials', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+// Battery Serial & Batch Tracker Routes (Branch-Scoped & Category-Scoped)
+app.get('/api/serials', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const serials = await getAllSerials();
     const scoped: Record<string, any> = {};
@@ -932,7 +1071,7 @@ app.get('/api/serials', requireBranchAccess, async (req: express.Request & { bra
   }
 });
 
-app.get('/api/serials/:serialNo', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.get('/api/serials/:serialNo', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const item = await getSerial(req.params.serialNo);
     if (!item) {
@@ -947,7 +1086,7 @@ app.get('/api/serials/:serialNo', requireBranchAccess, async (req: express.Reque
   }
 });
 
-app.post('/api/serials', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/serials', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const item = req.body;
     if (!item || !item.serialNo) {
@@ -971,7 +1110,7 @@ app.post('/api/serials', requireBranchAccess, async (req: express.Request & { br
   }
 });
 
-app.post('/api/serials/bulk', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/serials/bulk', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const items = req.body;
     if (!Array.isArray(items)) {
@@ -999,7 +1138,7 @@ app.post('/api/serials/bulk', requireBranchAccess, async (req: express.Request &
   }
 });
 
-app.delete('/api/serials/:serialNo', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.delete('/api/serials/:serialNo', requireBranchAccess, requireBranchCategory('battery'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const existing = await getSerial(req.params.serialNo);
     const bId = existing?.branchId || DEFAULT_BRANCH_ID;
@@ -1016,8 +1155,8 @@ app.delete('/api/serials/:serialNo', requireBranchAccess, async (req: express.Re
   }
 });
 
-// Charger Stock Register Routes (Branch-Scoped)
-app.get('/api/chargers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+// Charger Stock Register Routes (Branch-Scoped & Category-Scoped)
+app.get('/api/chargers', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const chargers = await getChargerRecords();
     const scoped: Record<string, any> = {};
@@ -1033,7 +1172,7 @@ app.get('/api/chargers', requireBranchAccess, async (req: express.Request & { br
   }
 });
 
-app.post('/api/chargers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/chargers', requireBranchAccess, requireBranchCategory('charger'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const { branchId, date, record } = req.body || {};
     if (!branchId || !date || !record) {
@@ -1056,8 +1195,8 @@ app.post('/api/chargers', requireBranchAccess, async (req: express.Request & { b
   }
 });
 
-// Vehicle Stock Register Routes (Branch-Scoped)
-app.get('/api/vehicles', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+// Vehicle Stock Register Routes (Branch-Scoped & Category-Scoped)
+app.get('/api/vehicles', requireBranchAccess, requireBranchCategory('vehicle'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const vehicles = await getVehicleRecords();
     const scoped: Record<string, any> = {};
@@ -1073,7 +1212,7 @@ app.get('/api/vehicles', requireBranchAccess, async (req: express.Request & { br
   }
 });
 
-app.post('/api/vehicles', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
+app.post('/api/vehicles', requireBranchAccess, requireBranchCategory('vehicle'), async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const { branchId, date, record } = req.body || {};
     if (!branchId || !date || !record) {
@@ -1096,12 +1235,15 @@ app.post('/api/vehicles', requireBranchAccess, async (req: express.Request & { b
   }
 });
 
-// Inter-Branch Stock Transfers & Receive Goods Notifications (Branch-Scoped)
+// Inter-Branch Stock Transfers & Receive Goods Notifications (Branch-Scoped & Category-Scoped)
 app.get('/api/transfers', requireBranchAccess, async (req: express.Request & { branchAccess?: BranchAccessContext }, res) => {
   try {
     const transfers = await getBranchTransfers();
     const scoped = transfers.filter(
-      (t) => isBranchAllowed(req.branchAccess, t.fromBranchId) || isBranchAllowed(req.branchAccess, t.toBranchId)
+      (t) =>
+        (isBranchAllowed(req.branchAccess, t.fromBranchId) ||
+          isBranchAllowed(req.branchAccess, t.toBranchId)) &&
+        isCategoryAllowed(req.branchAccess, t.category || 'battery')
     );
     res.json({ success: true, data: scoped });
   } catch (err: any) {
@@ -1121,6 +1263,10 @@ app.post('/api/transfers', requireBranchAccess, async (req: express.Request & { 
     if (!isBranchAllowed(req.branchAccess, body.fromBranchId)) {
       return res.status(403).json({ success: false, error: 'Access denied for sending from this branch' });
     }
+    const transferCategory = body.category || 'battery';
+    if (!isCategoryAllowed(req.branchAccess, transferCategory)) {
+      return res.status(403).json({ success: false, error: `Access denied: your account cannot send ${transferCategory} stock transfers` });
+    }
     const result = await createBranchTransfer(body);
     const storage = getActiveStorageTarget();
     broadcastRealtime('TRANSFERS_UPDATED', result.transfers, [body.fromBranchId, body.toBranchId]);
@@ -1128,7 +1274,10 @@ app.post('/api/transfers', requireBranchAccess, async (req: express.Request & { 
       success: true,
       data: result.created,
       transfers: result.transfers.filter(
-        (t) => isBranchAllowed(req.branchAccess, t.fromBranchId) || isBranchAllowed(req.branchAccess, t.toBranchId)
+        (t) =>
+          (isBranchAllowed(req.branchAccess, t.fromBranchId) ||
+            isBranchAllowed(req.branchAccess, t.toBranchId)) &&
+          isCategoryAllowed(req.branchAccess, t.category || 'battery')
       ),
       storage,
       persistedToRemote: storage !== 'local_file',
@@ -1150,6 +1299,9 @@ app.post('/api/transfers/receive', requireBranchAccess, async (req: express.Requ
       if (trf && !isBranchAllowed(req.branchAccess, trf.toBranchId)) {
         return res.status(403).json({ success: false, error: 'Only the receiving branch or master can accept this transfer' });
       }
+      if (trf && !isCategoryAllowed(req.branchAccess, trf.category || 'battery')) {
+        return res.status(403).json({ success: false, error: `Access denied for receiving ${trf.category || 'battery'} stock` });
+      }
     }
     const result = await receiveBranchTransfers(selections, receivedBy);
     const storage = getActiveStorageTarget();
@@ -1162,7 +1314,10 @@ app.post('/api/transfers/receive', requireBranchAccess, async (req: express.Requ
     res.json({
       success: true,
       data: result.transfers.filter(
-        (t) => isBranchAllowed(req.branchAccess, t.fromBranchId) || isBranchAllowed(req.branchAccess, t.toBranchId)
+        (t) =>
+          (isBranchAllowed(req.branchAccess, t.fromBranchId) ||
+            isBranchAllowed(req.branchAccess, t.toBranchId)) &&
+          isCategoryAllowed(req.branchAccess, t.category || 'battery')
       ),
       newlyReceived: result.newlyReceived,
       storage,
@@ -1179,8 +1334,9 @@ app.delete('/api/transfers/:id', requireBranchAccess, async (req: express.Reques
     const target = existing.find((t) => t.id === req.params.id);
     if (
       target &&
-      !isBranchAllowed(req.branchAccess, target.fromBranchId) &&
-      !isBranchAllowed(req.branchAccess, target.toBranchId)
+      ((!isBranchAllowed(req.branchAccess, target.fromBranchId) &&
+        !isBranchAllowed(req.branchAccess, target.toBranchId)) ||
+        !isCategoryAllowed(req.branchAccess, target.category || 'battery'))
     ) {
       return res.status(403).json({ success: false, error: 'Access denied for this transfer' });
     }
@@ -1355,7 +1511,7 @@ app.get('/api/cloud/excel/serials/export', requireAdmin, async (req, res) => {
 });
 
 // Automated WhatsApp Dispatch & Audit Log
-app.post('/api/whatsapp/dispatch', requireBranchAccess, async (req, res) => {
+app.post('/api/whatsapp/dispatch', requireBranchAccess, requireBranchCategory('battery'), async (req, res) => {
   try {
     const { date, recipients, message, imageDataUrl } = req.body;
 
@@ -1382,7 +1538,7 @@ app.post('/api/whatsapp/dispatch', requireBranchAccess, async (req, res) => {
 });
 
 // Battery Barcode & Serial OCR via Gemini Flash / Vision
-app.post('/api/scan-barcode-ocr', requireBranchAccess, async (req, res) => {
+app.post('/api/scan-barcode-ocr', requireBranchAccess, requireBranchCategory('battery'), async (req, res) => {
   try {
     const { imageBase64, mimeType = 'image/jpeg' } = req.body;
     if (!imageBase64) {
