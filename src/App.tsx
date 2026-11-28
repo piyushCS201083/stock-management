@@ -593,6 +593,7 @@ export default function App() {
   const hasCompletedInitialSyncRef = useRef(false);
   const inFlightRecordKeysRef = useRef<Set<string>>(new Set());
   const inFlightSerialKeysRef = useRef<Set<string>>(new Set());
+  const lastColumnMutationAtRef = useRef<number>(0);
   const recordsRef = useRef(records);
   const columnsRef = useRef(columns);
   const serialsRef = useRef(serials);
@@ -762,7 +763,7 @@ export default function App() {
             .catch(() => {});
         }
       }
-      if (remoteCols && remoteCols.length > 0) {
+      if (remoteCols && remoteCols.length > 0 && Date.now() - lastColumnMutationAtRef.current > 8000) {
         setColumns(remoteCols);
       }
       if (remoteTeam && remoteTeam.length > 0) {
@@ -1815,13 +1816,16 @@ export default function App() {
 
   // Add battery column
   const handleAddColumn = async (name: string) => {
-    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!id) return;
     if (columns.some((c) => c.id === id)) {
       showToast('Column already exists!');
       return;
     }
+    lastColumnMutationAtRef.current = Date.now();
     const newCol: BatteryColumn = { id, name };
     const updated = [...columns, newCol];
+    columnsRef.current = updated;
     setColumns(updated);
     saveColumns(updated);
     await apiSaveColumns(updated);

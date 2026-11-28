@@ -116,26 +116,67 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [validationAttempted, setValidationAttempted] = useState<boolean>(false);
   const serialInputRef = React.useRef<HTMLInputElement>(null);
   const batchInputRef = React.useRef<HTMLInputElement>(null);
+  const isBatchCustomRef = React.useRef<boolean>(false);
 
   const otherBranches = BRANCHES.filter((b) => b.id !== activeBranch.id);
-
-  useEffect(() => {
-    if (isOpen) {
-      setValidationAttempted(false);
-      if (initialEntryType === 'transfer') {
-        setEntryType('out');
-        setTargetBranchId((prev) => prev || otherBranches[0]?.id || '');
-      } else {
-        setEntryType(initialEntryType || 'in');
-        setTargetBranchId('');
-      }
-    }
-  }, [isOpen, initialEntryType]);
 
   const resolveModel = (id: string): BatteryColumn | undefined =>
     id === 'service'
       ? { id: 'service', name: 'SERVICE BATTERY', isSpecial: true }
       : columns.find((c) => c.id === id);
+
+  const getModelCurrentClosing = (colId: string): number =>
+    (record.stock[colId] || 0) +
+    (record.inStock[colId] || 0) +
+    (record.outStock[colId] || 0);
+
+  const getDefaultBatchName = (
+    mode: 'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service',
+    colId: string
+  ): string => {
+    if (mode === 'repair_in' || mode === 'repair_out') return 'OLD BATTERY FOR REPAIR';
+    if (mode === 'service') return 'SERVICE BATTERY';
+    return resolveModel(colId)?.name || '';
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      setValidationAttempted(false);
+      isBatchCustomRef.current = false;
+      const nextMode: 'in' | 'out' | 'both' | 'repair_in' | 'repair_out' | 'service' =
+        initialEntryType === 'transfer' ? 'out' : initialEntryType || 'in';
+      if (initialEntryType === 'transfer') {
+        setEntryType('out');
+        setTargetBranchId((prev) => prev || otherBranches[0]?.id || '');
+      } else {
+        setEntryType(nextMode);
+        setTargetBranchId('');
+      }
+      const effectiveColId =
+        selectedColId === 'service' || columns.some((c) => c.id === selectedColId)
+          ? selectedColId
+          : columns[0]?.id || selectedColId;
+      if (effectiveColId !== selectedColId) {
+        setSelectedColId(effectiveColId);
+      }
+      setBatchNo(getDefaultBatchName(nextMode, effectiveColId));
+    }
+  }, [isOpen, initialEntryType]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (
+      selectedColId !== 'service' &&
+      !columns.some((c) => c.id === selectedColId) &&
+      columns[0]?.id
+    ) {
+      setSelectedColId(columns[0].id);
+      return;
+    }
+    if (!isBatchCustomRef.current) {
+      setBatchNo(getDefaultBatchName(entryType, selectedColId));
+    }
+  }, [isOpen, entryType, selectedColId, columns]);
 
   const inStockSerialsForOutModel = useMemo(() => {
     const col =
@@ -605,7 +646,8 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     setVehicleOrLocation('');
     setSerialInput('');
     setInSerialInput('');
-    setBatchNo('');
+    isBatchCustomRef.current = false;
+    setBatchNo(getDefaultBatchName(entryType, selectedColId));
     setTargetBranchId('');
     setExtraOutItems([]);
     setValidationAttempted(false);
@@ -823,7 +865,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     >
                       {columns.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.name} (Open: {record.stock[col.id] || 0})
+                          {col.name} (Current: {getModelCurrentClosing(col.id)})
                         </option>
                       ))}
                     </select>
@@ -915,7 +957,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     >
                       {columns.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.name} (Open: {record.stock[col.id] || 0})
+                          {col.name} (Current: {getModelCurrentClosing(col.id)})
                         </option>
                       ))}
                     </select>
@@ -1039,15 +1081,11 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                     >
                       {columns.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.name} (Current: {record.stock[col.id] || 0} units)
+                          {col.name} (Current: {getModelCurrentClosing(col.id)} units)
                         </option>
                       ))}
                       <option value="service">
-                        SERVICE BATTERY (Current:{' '}
-                        {(record.stock['service'] || 0) +
-                          (record.inStock['service'] || 0) +
-                          (record.outStock['service'] || 0)}{' '}
-                        units)
+                        SERVICE BATTERY (Current: {getModelCurrentClosing('service')} units)
                       </option>
                     </select>
                   </div>
@@ -1445,7 +1483,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                       aria-required="true"
                       placeholder={`Required: ${selectedCol?.name || 'e.g. 60×24 FLAT'}`}
                       value={batchNo}
-                      onChange={(e) => setBatchNo(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const defaultName = getDefaultBatchName(entryType, selectedColId);
+                        isBatchCustomRef.current =
+                          val.trim().length > 0 && val.trim() !== defaultName;
+                        setBatchNo(val);
+                      }}
                       className={`w-full px-2.5 py-2 text-xs font-mono border rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 shadow-2xs ${
                         validationAttempted && !batchNo.trim()
                           ? 'border-rose-500 ring-2 ring-rose-500/20 focus:ring-rose-500'
